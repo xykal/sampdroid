@@ -103,6 +103,13 @@ jobs:
           name: SampDroid-debug
           path: release-assets
 
+      - name: Give release APK a stable name
+        run: |
+          APK=$(find release-assets -maxdepth 1 -type f -name '*.apk' -print -quit)
+          test -n "$APK" || { echo "::error::APK artifact tidak ditemukan"; exit 1; }
+          VERSION="${GITHUB_REF_NAME#v}"
+          mv "$APK" "release-assets/SampDroid-${VERSION}-debug.apk"
+
       - name: Attach APK to release
         uses: softprops/action-gh-release@v2
         with:
