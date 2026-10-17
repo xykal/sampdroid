@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SampDroid</string>
+    <string name="search_hint">Cari server, gamemode, atau IP…</string>
+    <string name="refresh">Muat ulang</string>
+    <string name="loading">Memuat…</string>
+    <string name="btn_info">Info</string>
+    <string name="btn_rules">Rules</string>
+    <string name="btn_players">Players</string>
+    <string name="btn_ping">Ping</string>
+    <string name="btn_probe">Probe RakNet</string>
+</resources>

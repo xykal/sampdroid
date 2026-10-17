@@ -1,0 +1,24 @@
+# --- secrets: JANGAN pernah masuk repo publik ---
+.env
+.env.*
+*.env
+secrets/
+keystore.properties
+*.jks
+*.keystore
+
+# android
+local.properties
+.gradle/
+build/
+app/build/
+captures/
+.cxx/
+.externalNativeBuild/
+*.iml
+.idea/
+output-metadata.json
+
+# os
+.DS_Store
+Thumbs.db
