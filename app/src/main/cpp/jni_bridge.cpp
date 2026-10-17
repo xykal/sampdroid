@@ -27,7 +27,7 @@ extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeVersion(JNIEnv* env, jclass) {
-  return to_java(env, "sampdroid-native 0.1.0 / raknet2 + query");
+  return to_java(env, "sampdroid-native 0.2.0 / raknet2 full handshake");
 }
 
 JNIEXPORT jstring JNICALL
@@ -94,6 +94,7 @@ Java_com_xykal_sampdroid_NativeBridge_nativeRaknetProbe(JNIEnv* env, jclass, jst
   std::ostringstream o;
   o << "{\"openConnection\":" << (r.openConnection ? "true" : "false")
     << ",\"cookieOk\":" << (r.cookieOk ? "true" : "false")
+    << ",\"authenticated\":" << (r.authenticated ? "true" : "false")
     << ",\"accepted\":" << (r.accepted ? "true" : "false")
     << ",\"variant\":\"" << samp::json_escape(r.variant) << "\""
     << ",\"error\":\"" << samp::json_escape(r.error) << "\""

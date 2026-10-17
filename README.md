@@ -19,11 +19,16 @@ Bukan porting engine: engine-nya (GTA: San Andreas Android) sudah ada, yang diba
 | Server browser (open.mp index) | **DONE** | 1.200+ server, live query per server |
 | Obfuscation layer (checksum + key table) | **DONE** | diverifikasi vs `SAMPRakNet.cpp` |
 | RakNet 2.x open connection + cookie | **DONE** | server live balas `19 00` |
-| RakNet reliability datagram | format OK | belum diterima server |
-| CONNECTION_REQUEST_ACCEPTED | **BELUM** | lihat `docs/protocol/raknet-samp.md` §5 |
+| CONNECTION_REQUEST_ACCEPTED | **DONE** | `22` diterima dari server live |
+| RakNet reliability datagram | **DONE** | byte-identical vs `BitStream` RakNet |
+| AUTH_KEY challenge/response | **DONE** | 256 entri tabel, lookup runtime |
+| CONNECTION_REQUEST_ACCEPTED | **DONE** | diterima dari server open.mp live |
+| NEW_INCOMING_CONNECTION | **DONE** | peer RakNet terdaftar |
+| RPC ClientJoin / PlayerSync | belum | langkah berikutnya |
 | Hook ke `libGTASA.so` | belum | butuh binary dari device sendiri |
 
-APK v0.1.0 = **server browser + diagnostics**, belum gameplay.
+APK v0.2.0 = **server browser + handshake RakNet penuh**, belum gameplay.
+Tekan **Probe RakNet** di detail server untuk melihat handshake berjalan live.
 Semua tombol (Info / Rules / Players / Ping / Probe RakNet) memanggil implementasi native beneran.
 
 ---

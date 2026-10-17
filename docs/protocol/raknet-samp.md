@@ -158,33 +158,56 @@ Contoh nyata — `ID_CONNECTION_REQUEST` reliable, messageNumber=1, payload `0B`
 | Query protocol (i/r/c/d/p) | ✅ | 1.237 server dari open.mp index, live query |
 | Open connection + cookie | ✅ | server 185.169.134.67 membalas `19 00` |
 | Obfuscation layer | ✅ | semua fase di atas butuh ini |
-| Reliability datagram | ⚠️ format terverifikasi vs source, tapi server belum membalas |
-| Connection request accepted | ❌ belum |
-| Auth key (open.mp) | belum dicoba |
+| Reliability datagram | ✅ **byte-identical** dengan BitStream RakNet |
+| Connection request accepted | ✅ **diterima dari server live** |
+| AUTH_KEY challenge/response | ✅ 256 entri tabel, lookup runtime |
 | ClientJoin RPC / gameplay | belum |
 
-### Yang sudah dicoba untuk connection request (semua timeout)
+### Bug yang ditemukan (dan diperbaiki)
 
-- messageNumber 0 dan 1
-- reliability 6 (unreliable), 8 (reliable), 9 (ordered)
-- dengan/tanpa header ACK (hasAcks=1, count=0)
-- delay antar paket 0–400 ms
-- payload dengan/tanpa terminator password
+**Bit ordering.** RakNet menulis bit **MSB-first** di dalam setiap byte, dan
+nilai multi-byte ditulis byte-per-byte mulai dari byte paling rendah
+(little-endian), tiap byte MSB-first. Implementasi pertama memakai LSB-first,
+sehingga server membaca `messageNumber=260, reliability=10, length=1284` dan
+membuang paket sebagai sampah. Versi yang benar menghasilkan:
 
-### Hipotesis berikutnya (urutan prioritas)
+```
+00 80 43 80 0B     # msg=1, rel=8, len=8, payload=0x0B
+```
 
-1. **Bandingkan byte-per-byte dengan capture client asli.** Jalankan SA-MP di
-   Wine/Windows + Wireshark, ambil paket `ID_CONNECTION_REQUEST`, diff dengan
-   hasil encoder kita. Ini cara tercepat menyelesaikan.
-2. **Baca ulang `SendImmediate`** — mungkin ada padding/header tambahan yang
-   tidak ada di path `GenerateDatagram` biasa.
-3. **Cek `SocketLayer::RecvFrom`** untuk paket dari peer yang sudah terdaftar:
-   mungkin ada filter tambahan sebelum `ProcessNetworkPacket`.
-4. **Uji ke server open.mp lokal** — tidak bisa dilakukan di sandbox ini karena
-   binary open.mp hanya tersedia x86 32-bit dan environment-nya tidak punya
-   dukungan multilib.
-5. **Cek `samp-re`** (reimplementasi `samp.dll` hasil IDA, 6.244 fungsi) —
-   cari fungsi yang membangun connection request, bandingkan.
+Diverifikasi dengan mengompilasi `BitStream` milik RakNet sendiri dan
+membandingkan output byte-per-byte.
+
+### Alur lengkap yang sekarang bekerja (terverifikasi live)
+
+```
+C -> S  [18 00 00]                    OPEN_CONNECTION_REQUEST (probe)
+S -> C  [1A xx xx]                    OPEN_CONNECTION_COOKIE
+C -> S  [18 lo hi]                    cookie ^ 0x6969
+S -> C  [19 00]                       OPEN_CONNECTION_REPLY
+C -> S  reliable msg=1 {0B}           CONNECTION_REQUEST
+S -> C  [E3 01 00]                    ACK untuk msg=1
+S -> C  reliable {0C 11 "4C67EC42..."}  AUTH_KEY challenge
+C -> S  reliable msg=2 {0C 28 "B64DC7..."}  AUTH_KEY response
+S -> C  reliable {22 ...}             CONNECTION_REQUEST_ACCEPTED
+C -> S  reliable msg=3 {13}           NEW_INCOMING_CONNECTION
+```
+
+Tabel auth berisi 256 pasangan tetap `{"challenge", "response"}` di
+`app/src/main/cpp/samp_auth_table.inc`. Challenge dipilih acak oleh server,
+jadi response harus dicari saat runtime.
+
+Catatan: server **SA-MP 0.3.7 legacy** memakai tabel berbeda yang tidak
+tersedia di source open.mp. Untuk server legacy, challenge tidak akan ketemu
+di tabel — perlu tabel dari `samp.dll` (lihat `samp-re`).
+
+### Yang berikutnya
+
+1. **RPC ClientJoin / InitGame** — setelah NEW_INCOMING_CONNECTION, client harus
+   mengirim RPC join lalu menunggu `InitGame` dari server.
+2. **PlayerSync (207)** — kirim posisi; tanpa ini server menganggap player diam.
+3. **Hook ke `libGTASA.so`** — baru bisa setelah transport 100% dan ada binary
+   game dari device sendiri.
 
 ---
 

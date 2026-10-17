@@ -7,6 +7,7 @@ namespace samp {
 struct ProbeResult {
   bool openConnection = false;   // OPEN_CONNECTION_REPLY diterima
   bool cookieOk = false;         // cookie challenge lolos
+  bool authenticated = false;    // challenge AUTH_KEY berhasil dijawab
   bool accepted = false;         // CONNECTION_REQUEST_ACCEPTED diterima
   std::string variant;           // "samp" / "omp" / ""
   std::string log;               // log langkah demi langkah

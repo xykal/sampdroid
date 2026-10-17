@@ -129,6 +129,7 @@ object ServerDetailDialog {
                     append(o.optString("log")).append('\n')
                     append("open connection : ").append(o.optBoolean("openConnection")).append('\n')
                     append("cookie ok       : ").append(o.optBoolean("cookieOk")).append('\n')
+                    append("auth challenge  : ").append(o.optBoolean("authenticated")).append('\n')
                     append("accepted        : ").append(o.optBoolean("accepted")).append('\n')
                     append("varian          : ").append(o.optString("variant").ifBlank { "-" }).append('\n')
                     append("status          : ").append(o.optString("error").ifBlank { "ok" })

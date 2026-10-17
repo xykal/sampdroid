@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cstring>
 #include <vector>
 
 namespace samp {
@@ -29,6 +30,24 @@ struct InvTable {
 const InvTable& inv_table() {
   static InvTable t;
   return t;
+}
+
+// ---- tabel autentikasi client SA-MP/open.mp ------------------------------
+// Server mengirim challenge acak; client wajib membalas pasangan tetapnya.
+// 256 entri, diekstrak dari openmultiplayer/RakNet (SAMPRakNet.cpp).
+struct AuthPair {
+  const char* send;
+  const char* recv;
+};
+static const AuthPair kAuthTable[256] = {
+#include "samp_auth_table.inc"
+};
+
+const char* auth_lookup(const std::string& challenge) {
+  for (const auto& p : kAuthTable) {
+    if (challenge == p.send) return p.recv;
+  }
+  return nullptr;
 }
 
 std::vector<uint8_t> wrap_packet(const std::vector<uint8_t>& plain, uint16_t port) {
@@ -52,13 +71,20 @@ struct BitWriter {
   std::vector<uint8_t> buf;
   size_t bitPos = 0;
 
+  // RakNet menulis MSB-first di dalam tiap byte.
   void bit(bool v) {
     if (bitPos / 8 >= buf.size()) buf.push_back(0);
-    if (v) buf[bitPos / 8] |= static_cast<uint8_t>(1u << (bitPos % 8));
+    if (v) buf[bitPos / 8] |= static_cast<uint8_t>(0x80 >> (bitPos % 8));
     ++bitPos;
   }
+  // Nilai ditulis per byte mulai dari byte paling rendah (little-endian),
+  // tiap byte MSB-first. Ini konvensi BitStream::WriteBits(..., true).
   void bits(uint32_t v, int n) {
-    for (int i = 0; i < n; ++i) bit((v >> i) & 1u);
+    for (int c = 0; c < (n + 7) / 8; ++c) {
+      const int s = (n - 8 * c) < 8 ? (n - 8 * c) : 8;
+      const uint8_t b = static_cast<uint8_t>((v >> (8 * c)) & 0xFF);
+      for (int i = 0; i < s; ++i) bit((b >> (s - 1 - i)) & 1u);
+    }
   }
   void align() {
     while (bitPos % 8) bit(false);
@@ -100,14 +126,18 @@ struct BitReader {
       ok = false;
       return false;
     }
-    bool v = (d[bitPos / 8] >> (bitPos % 8)) & 1u;
+    bool v = (d[bitPos / 8] >> (7 - (bitPos % 8))) & 1u;
     ++bitPos;
     return v;
   }
   uint32_t bits(int count) {
     uint32_t v = 0;
-    for (int i = 0; i < count; ++i)
-      if (bit()) v |= (1u << i);
+    for (int c = 0; c < (count + 7) / 8 && ok; ++c) {
+      const int s = (count - 8 * c) < 8 ? (count - 8 * c) : 8;
+      uint32_t b = 0;
+      for (int i = 0; i < s; ++i) b = (b << 1) | (bit() ? 1u : 0u);
+      v |= b << (8 * c);
+    }
     return v;
   }
   void align() {
@@ -139,6 +169,8 @@ struct BitReader {
 
 enum : uint8_t {
   ID_CONNECTION_REQUEST = 11,
+  ID_AUTH_KEY = 12,
+  ID_NEW_INCOMING_CONNECTION = 30,
   ID_OPEN_CONNECTION_REQUEST = 24,
   ID_OPEN_CONNECTION_REPLY = 25,
   ID_OPEN_CONNECTION_COOKIE = 26,
@@ -317,32 +349,80 @@ ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs) {
     return res;
   }
 
-  // ---- 3. connection request (reliable) ------------------------------------
-  logln(res, "[3] CONNECTION_REQUEST (reliable)");
+  // ---- 3. connection request ----------------------------------------------
+  logln(res, "[3] CONNECTION_REQUEST (reliable, msg=1)");
   net.send(wrap_packet(build_reliable(1, {ID_CONNECTION_REQUEST}), port));
 
-  for (int i = 0; i < 6; ++i) {
-    int n = net.recv(resp);
-    if (n <= 0) {
-      logln(res, "    timeout");
-      break;
-    }
+  // ---- 4. tantangan AUTH_KEY ----------------------------------------------
+  uint16_t msgNo = 2;
+  bool gotChallenge = false;
+  for (int i = 0; i < 12 && !gotChallenge; ++i) {
+    if (net.recv(resp) <= 0) continue;
     logln(res, "    <- " + hex(resp));
-    auto packet = parse_accepted(resp);
-    if (packet.empty()) continue;
-    if (packet[0] == ID_CONNECTION_REQUEST_ACCEPTED) {
+    auto pkt = parse_accepted(resp);
+    if (pkt.empty()) {          // bisa jadi ack-only (E3 xx 00)
+      if (resp.size() >= 3 && resp[0] == 0xE3) {
+        logln(res, "       (ACK reliable)");
+        continue;
+      }
+      continue;
+    }
+    if (pkt[0] == ID_AUTH_KEY && pkt.size() >= 2) {
+      const uint8_t len = pkt[1];
+      std::string challenge(reinterpret_cast<const char*>(pkt.data()) + 2,
+                            len > 0 ? len - 1 : 0);
+      logln(res, "    challenge: " + challenge);
+      const char* answer = auth_lookup(challenge);
+      if (!answer) {
+        res.error = "challenge tidak dikenal (bukan tabel open.mp)";
+        logln(res, "    challenge tidak ada di tabel (kemungkinan server SA-MP 0.3.7 legacy)");
+        return res;
+      }
+      res.authenticated = true;
+      std::vector<uint8_t> payload = {ID_AUTH_KEY,
+                                      static_cast<uint8_t>(std::strlen(answer))};
+      payload.insert(payload.end(), answer, answer + std::strlen(answer));
+      logln(res, std::string("[4] AUTH_KEY response: ") + answer);
+      net.send(wrap_packet(build_reliable(msgNo++, payload), port));
+      gotChallenge = true;
+    }
+  }
+
+  if (!gotChallenge) {
+    res.error = "tidak menerima AUTH_KEY challenge";
+    logln(res, "    tidak ada challenge auth");
+    return res;
+  }
+
+  // ---- 5. tunggu ACCEPTED --------------------------------------------------
+  logln(res, "[5] menunggu CONNECTION_REQUEST_ACCEPTED...");
+  for (int i = 0; i < 20; ++i) {
+    if (net.recv(resp) <= 0) continue;
+    auto pkt = parse_accepted(resp);
+    if (pkt.empty()) continue;
+    logln(res, "    <- id 0x" + hex({pkt[0]}));
+    if (pkt[0] == ID_CONNECTION_REQUEST_ACCEPTED) {
       res.accepted = true;
-      logln(res, "    === CONNECTION ACCEPTED ===");
-      logln(res, "    RakNet handshake selesai. Client terdaftar di server.");
+      logln(res, "    === CONNECTION REQUEST ACCEPTED ===");
+      // selesaikan handshake RakNet
+      std::vector<uint8_t> nic = {ID_NEW_INCOMING_CONNECTION};
+      net.send(wrap_packet(build_reliable(msgNo++, nic), port));
+      logln(res, "[6] NEW_INCOMING_CONNECTION terkirim — peer terdaftar");
+      logln(res, "");
+      logln(res, "STATUS: terhubung sebagai peer RakNet (belum join game)");
       return res;
     }
-    if (packet[0] == ID_NO_FREE_INCOMING_CONNECTIONS) {
+    if (pkt[0] == ID_NO_FREE_INCOMING_CONNECTIONS) {
       res.error = "server penuh";
       return res;
     }
-    if (packet[0] == ID_DISCONNECTION_NOTIFICATION) {
+    if (pkt[0] == ID_DISCONNECTION_NOTIFICATION) {
       res.error = "server memutus koneksi";
       return res;
+    }
+    if (pkt[0] == ID_AUTH_KEY) {
+      // challenge ulang, diabaikan
+      continue;
     }
   }
 
