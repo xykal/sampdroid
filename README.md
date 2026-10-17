@@ -1,123 +1,102 @@
-# samp-android
+# SampDroid
 
-Native SA-MP client untuk Android — dibangun dari nol, modul per modul.
-Bukan porting engine: game engine-nya (GTA: San Andreas Android) sudah ada, yang dibangun adalah
-**network client + HUD + input**.
+Native SA-MP (San Andreas Multiplayer) client untuk Android — dibangun dari nol.
+Bukan porting engine: engine-nya (GTA: San Andreas Android) sudah ada, yang dibangun adalah
+**transport network + server browser + HUD + input**.
 
-Blueprint lengkap: [`../blueprint-samp-android.md`](../blueprint-samp-android.md)
+[![Build APK](https://github.com/xykal/sampdroid/actions/workflows/build-apk.yml/badge.svg)](https://github.com/xykal/sampdroid/actions/workflows/build-apk.yml)
+
+**Download APK:** [Releases → v0.1.0](https://github.com/xykal/sampdroid/releases) ·
+`armeabi-v7a` + `arm64-v8a`
 
 ---
 
-## Status
+## Status build
 
 | Modul | Status | Bukti |
 |---|---|---|
-| M1 — SA-MP query protocol (i/r/c/d/p) | **DONE** | `tools/sampquery` — UDP client portable, jalan di Linux & NDK |
-| M1 — Server browser data layer | **DONE** | `tools/serverlist` — 1.237 server dari open.mp index, live query |
-| M2 — Open connection + cookie challenge | **DONE** | `native/net/raknet_handshake` — server SA-MP live membalas `19 00` |
-| M2 — Obfuscation layer (checksum + key table) | **DONE** | `samp_crypto_table.inc`, diverifikasi vs `SAMPRakNet.cpp` |
-| M2 — Reliability datagram encoder | format OK, handshake belum | lihat `docs/protocol/raknet-samp.md` §5 |
-| M2 — Connection request accepted | **blocked** — sedang di-debug | butuh capture client asli untuk diff |
-| M3 — Hook / engine API | blocked | butuh `libGTASA.so` dari device kamu |
+| SA-MP query protocol (i/r/c/d/p) | **DONE** | `tools/sampquery`, live ke server publik |
+| Server browser (open.mp index) | **DONE** | 1.200+ server, live query per server |
+| Obfuscation layer (checksum + key table) | **DONE** | diverifikasi vs `SAMPRakNet.cpp` |
+| RakNet 2.x open connection + cookie | **DONE** | server live balas `19 00` |
+| RakNet reliability datagram | format OK | belum diterima server |
+| CONNECTION_REQUEST_ACCEPTED | **BELUM** | lihat `docs/protocol/raknet-samp.md` §5 |
+| Hook ke `libGTASA.so` | belum | butuh binary dari device sendiri |
 
-Detail lengkap protokol yang sudah di-reverse: [`docs/protocol/raknet-samp.md`](docs/protocol/raknet-samp.md)
-
----
-
-## tools/sampquery
-
-Klien query SA-MP/open.mp, zero dependency, C++17, ~300 baris.
-Protocol: `"SAMP"` + IP octets + port LE (2 byte) + opcode.
-
-```bash
-cd tools/sampquery
-g++ -O2 -std=c++17 -o sampquery samp_query.cpp
-./sampquery 185.194.177.29:7777 all
-```
-
-Contoh output nyata:
-
-```
--> 185.194.177.29:7777
-  [i] 83 bytes
-  hostname  NEW YORK TIMES 2010 | ...
-  gamemode  Build 2.7B
-  language  Russian
-  players   0 / 500
-  password  yes
-  [r] 163 bytes
-  rules(8):
-    allowed_clients        = 0.3.7, 0.3.DL
-    version                = omp 1.5.8.3183
-    lagcomp                = On
-    weburl                 = newyork-gta.online
-    ...
-  ping: 153.894 ms (echo ok)
-```
-
-Catatan: opcode `d` (detailed players) sering tidak dijawab open.mp — server bisa mematikannya.
-`i`, `r`, `c`, `p` cukup untuk server browser penuh.
-
-## tools/serverlist
-
-Data layer server browser: ambil open.mp index → urutkan by player count → query live.
-
-```bash
-cd tools/serverlist
-python3 fetch_servers.py --top 10 --query
-```
-
-```
-index: 1237 servers | showing top 6
-
- 1. 188.212.101.20:7777       849/1000 omp   B-Zone RPG | Hunter Job, VIP Account
-    -> hostname:  B-Zone RPG | Hunter Job, VIP Account
-    -> gamemode:  v10.0 (13:25 / 12.10.2026)
-    -> players:   935 / 1000
-```
-
-Perhatikan: satu server melaporkan `players 568 / 500` — slot overflow, normal di server open.mp
-yang limitnya sudah dilepas. Ini alasan client harus membaca `maxplayers` dari response, bukan hardcode.
+APK v0.1.0 = **server browser + diagnostics**, belum gameplay.
+Semua tombol (Info / Rules / Players / Ping / Probe RakNet) memanggil implementasi native beneran.
 
 ---
 
-## Kenapa modul ini dibangun duluan
+## Build
+
+### Otomatis (GitHub Actions)
+
+Push ke `main` → workflow `.github/workflows/build-apk.yml` build debug APK untuk
+**armeabi-v7a** dan **arm64-v8a**, lalu verifikasi kedua `.so` benar-benar ada di dalam APK.
+
+### Lokal
+
+```bash
+# butuh: JDK 17, Android SDK (platform 34, build-tools 34.0.0),
+#        NDK 26.1.10909125, CMake 3.22.1
+gradle :app:assembleDebug
+# output: app/build/outputs/apk/debug/app-debug.apk
+```
+
+NDK r26b, `minSdk 24`, `targetSdk 34`, C++17.
+
+---
+
+## Arsitektur
+
+```
+app/                        Kotlin (UI)
+  ui/MainActivity           server browser
+  ui/ServerDetailDialog     query info/rules/players/ping + RakNet probe
+  net/ServerListRepository  open.mp server index
+  NativeBridge              JNI
+
+app/src/main/cpp/           C++ native (dipakai dua ABI)
+  samp_query.cpp            protokol query SA-MP
+  raknet_probe.cpp          RakNet 2.x handshake + obfuscation + datagram encoder
+  samp_crypto_table.inc     substitution table hasil ekstraksi
+
+tools/sampquery/            query client versi CLI (desktop)
+tools/serverlist/           server browser versi Python
+native/net/raknet_handshake/ prototype handshake (desktop)
+docs/protocol/raknet-samp.md  protokol hasil reverse
+```
+
+---
+
+## Kenapa bagian network dibangun duluan
 
 Ini satu-satunya bagian yang **tidak butuh game, tidak butuh device, tidak butuh offset**.
-Semua bisa diverifikasi dari laptop. Kalau network layer belum benar, hook engine cuma bikin bug
-yang mustahil dilacak. Urutan debugging yang benar: protokol dulu → engine belakangan.
+Semua bisa diverifikasi dari CI. Kalau transport belum benar, hook engine cuma bikin bug
+yang mustahil dilacak.
+
+Temuan utama yang bikin proyek sejenis gagal:
+
+1. **SA-MP pakai RakNet 2.52, bukan RakNet 4.x.** Handshake-nya 3 byte, tanpa magic, tanpa MTU probing.
+2. **Semua paket dibungkus obfuscation** — `[checksum][byte ter-substitusi via table 256, di-XOR port]`.
+   Paket RakNet polos di-drop diam-diam.
+3. **Cookie challenge anti-bot** — server balas `[26][cookie]`, client harus echo `cookie ^ 0x6969`
+   (SA-MP) atau `cookie ^ 0x6D70` (open.mp).
+
+Detail lengkap + hex dump: [`docs/protocol/raknet-samp.md`](docs/protocol/raknet-samp.md)
 
 ---
 
-## Struktur yang akan diisi
+## Legal
 
-```
-samp-android/
-├── app/                    # Kotlin launcher (deteksi GTA, OBB, patch, settings)
-├── native/
-│   ├── core/               # hook manager, pattern scan, offset table per versi
-│   ├── engine/             # CPlayerPed, CVehicle, CStreaming, CCamera wrappers
-│   ├── net/                # RakNet + SA-MP bitstream + session
-│   ├── sync/               # player/vehicle/bullet/aim sync + interpolasi
-│   ├── render/             # ImGui + GLES3: chat, scoreboard, dialog, HUD
-│   └── input/              # touch layout, gamepad, gyro
-├── tools/
-│   ├── sampquery/          # ✅ query protocol
-│   ├── serverlist/         # ✅ server browser data layer
-│   ├── packet-dump/        # dump & replay paket dari server lokal
-│   └── offset-scanner/     # pattern scan libGTASA.so
-└── docs/
-    └── offsets/            # tabel offset per versi game (2.00 / 2.10 / 2.11)
-```
+- Project ini **tidak** mengandung aset Rockstar. User wajib punya GTA: San Andreas sendiri.
+- **Tidak** mendistribusikan `libGTASA.so`, OBB, atau APK game.
+- Sideload only. Tidak untuk Play Store.
+- Nama "SampDroid" tidak berafiliasi dengan Rockstar Games, Take-Two, atau tim SA-MP.
 
 ---
 
-## Yang dibutuhkan dari sisi kamu
+## Lisensi
 
-1. **GTA SA Android legal** dari Play Store (versi 2.10 atau 2.11).
-2. **Device/emulator** buat testing — ARM64.
-3. **`libGTASA.so`** hasil ekstrak dari APK kamu sendiri (jangan redistribute).
-4. Server open.mp lokal di PC buat test harness.
-
-Tanpa #3, bagian hook tidak bisa dimulai — bukan karena susah, tapi karena offset hanya
-bisa dihitung dari binary yang kamu punya.
+MIT untuk kode di repo ini. Lihat `LICENSE`.
