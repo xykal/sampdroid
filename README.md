@@ -29,7 +29,7 @@ dibangun dan diuji dulu agar backend renderer serta kontrol komunitas nanti
 | `ClientJoin` RPC 25 | ✅ | server memproses lalu mengirim stream balik |
 | ACK reliable + multi-packet datagram | ✅ | retransmisi tidak menumpuk |
 | Split reassembly | ✅ | fragment disusun sebelum RPC didecode |
-| RPC observability | ✅ | nama RPC + decoder `PlayerInit` (139) |
+| RPC observability + state reducer | ✅ | `PlayerInit`, PlayerJoin/Quit/Name/Color jadi model pemain |
 | Persistent game session / sync | ⏳ | milestone berikutnya |
 | Touch/gamepad HUD runtime | ⏳ | schema profile v1 sudah terbuka |
 | Renderer/game bridge | ⏳ | asset-agnostic, belum di APK |

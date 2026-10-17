@@ -11,7 +11,8 @@ menyebut playable.
 - [x] Split reassembly + decode `PlayerInit` (RPC 139).
 - [x] Host regression tests untuk codec wire vector.
 - [ ] Capture parser untuk stream nyata yang sudah disanitasi.
-- [ ] Decode `PlayerJoin`, `PlayerQuit`, color/name, class/spawn response.
+- [x] Decode + state reducer `PlayerJoin`, `PlayerQuit`, `SetPlayerName`, `SetPlayerColor`.
+- [ ] Decode class/spawn response dan entity/world state berikutnya.
 
 ## Milestone 0.5 — persistent session state
 

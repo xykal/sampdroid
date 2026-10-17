@@ -6,7 +6,7 @@ relatif agar satu layout bisa diskalakan untuk layar 16:9, 19.5:9, tablet, dan
 perangkat ARMv7 lama.
 
 > **Status:** schema + contoh sudah siap untuk kontribusi. Runtime touch overlay
-> akan memakai format yang sama; belum aktif di APK v0.4.0.
+> akan memakai format yang sama; belum aktif di APK v0.5.0.
 
 ## File dan schema
 

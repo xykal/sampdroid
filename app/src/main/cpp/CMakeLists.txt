@@ -9,6 +9,7 @@ add_library(sampdroid SHARED
         samp_query.cpp
         raknet_codec.cpp
         rpc_decoder.cpp
+        rpc_state.cpp
         raknet_probe.cpp)
 
 target_compile_options(sampdroid PRIVATE -O2 -fvisibility=hidden -Wall)

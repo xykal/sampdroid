@@ -1,5 +1,6 @@
 #include "raknet_codec.h"
 #include "rpc_decoder.h"
+#include "rpc_state.h"
 
 #include <cmath>
 #include <cstdio>
@@ -64,6 +65,48 @@ std::vector<uint8_t> makePlayerInit() {
   std::vector<uint8_t> models(212, 0);
   writer.writeBytes(models.data(), models.size());
   writer.writeBits(1, 32);  // EnableVehicleFriendlyFire
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makePlayerJoin(uint16_t id, uint32_t rgba, bool npc,
+                                    const std::string& name) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 137};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(id, 16);
+  writer.writeBits(rgba, 32);
+  writer.writeBits(npc ? 1u : 0u, 8);
+  writer.writeBits(static_cast<uint32_t>(name.size()), 8);
+  writer.writeBytes(reinterpret_cast<const uint8_t*>(name.data()), name.size());
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makePlayerColor(uint16_t id, uint32_t rgba) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 72};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(id, 16);
+  writer.writeBits(rgba, 32);
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makePlayerName(uint16_t id, const std::string& name) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 11};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(id, 16);
+  writer.writeBits(static_cast<uint32_t>(name.size()), 8);
+  writer.writeBytes(reinterpret_cast<const uint8_t*>(name.data()), name.size());
+  writer.writeBits(1, 8);  // Success
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makePlayerQuit(uint16_t id, uint8_t reason) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 138};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(id, 16);
+  writer.writeBits(reason, 8);
   return writer.buffer;
 }
 
@@ -134,6 +177,36 @@ void testPlayerInitDecoder() {
          "PlayerInit summary has no RPC name");
 }
 
+void testWorldStateReducer() {
+  samp::state::WorldState world;
+  samp::state::RpcEvent event;
+
+  expect(world.applyRpc(makePlayerInit(), event), "WorldState rejected PlayerInit");
+  expect(world.initialized() && world.playerInit().playerId == 42,
+         "WorldState did not retain PlayerInit");
+
+  expect(world.applyRpc(makePlayerJoin(7, 0xAABBCCDDu, false, "Darius"), event),
+         "WorldState rejected PlayerJoin");
+  expect(event.kind == samp::state::RpcEventKind::PlayerJoined, "wrong join event kind");
+  expect(world.playerCount() == 1, "join did not create player");
+  const auto* player = world.findPlayer(7);
+  expect(player && player->name == "Darius" && player->rgba == 0xAABBCCDDu,
+         "join player data wrong");
+
+  expect(world.applyRpc(makePlayerColor(7, 0x10203040u), event),
+         "WorldState rejected SetPlayerColor");
+  expect(world.findPlayer(7)->rgba == 0x10203040u, "color did not update");
+
+  expect(world.applyRpc(makePlayerName(7, "Darius KG"), event),
+         "WorldState rejected SetPlayerName");
+  expect(world.findPlayer(7)->name == "Darius KG", "name did not update");
+
+  expect(world.applyRpc(makePlayerQuit(7, 1), event), "WorldState rejected PlayerQuit");
+  expect(event.kind == samp::state::RpcEventKind::PlayerQuit, "wrong quit event kind");
+  expect(world.playerCount() == 0 && world.findPlayer(7) == nullptr,
+         "quit did not remove player");
+}
+
 }  // namespace
 
 int main() {
@@ -141,6 +214,7 @@ int main() {
   testCompressedU32();
   testSplitReassembly();
   testPlayerInitDecoder();
-  std::puts("raknet codec regression tests: OK");
+  testWorldStateReducer();
+  std::puts("raknet codec/state regression tests: OK");
   return 0;
 }

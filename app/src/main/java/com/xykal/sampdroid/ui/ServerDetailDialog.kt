@@ -142,6 +142,8 @@ object ServerDetailDialog {
                     append("fragment        : ").append(o.optInt("splitFragments"))
                         .append(" split / ").append(o.optInt("reassembledPackets")).append(" tersusun\n")
                     append("RPC terlihat     : ").append(o.optString("rpcSummary").ifBlank { "-" }).append('\n')
+                    append("state pemain     : ").append(o.optInt("trackedPlayers"))
+                        .append(" terlacak — ").append(o.optString("stateSummary").ifBlank { "-" }).append('\n')
                     append("varian          : ").append(o.optString("variant").ifBlank { "-" }).append('\n')
                     append("status          : ").append(o.optString("error").ifBlank { "ok" })
                 }

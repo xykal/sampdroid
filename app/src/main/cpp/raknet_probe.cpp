@@ -4,6 +4,7 @@
 #include "raknet_probe.h"
 #include "raknet_codec.h"
 #include "rpc_decoder.h"
+#include "rpc_state.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -315,6 +316,8 @@ ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs) {
   int splitFragments = 0;
   int reassembledPackets = 0;
   std::string rpcSummary;
+  std::string stateSummary;
+  state::WorldState world;
   for (int i = 0; i < 20; ++i) {
     if (net.recv(resp) <= 0) continue;
     raknet::Datagram dg = raknet::decodeDatagram(resp);
@@ -336,13 +339,11 @@ ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs) {
           rpcSummary += label;
         }
 
-        if (pkt.payload[1] == 139) {
-          rpc::PlayerInitData init;
-          if (rpc::decodePlayerInit(pkt.payload, init)) {
-            res.playerInit = true;
-            res.playerId = init.playerId;
-            res.serverName = init.serverName;
-          }
+        state::RpcEvent stateEvent;
+        if (world.applyRpc(pkt.payload, stateEvent) && !stateEvent.summary.empty() &&
+            stateSummary.size() + stateEvent.summary.size() + 2 < 240) {
+          if (!stateSummary.empty()) stateSummary += ", ";
+          stateSummary += stateEvent.summary;
         }
       }
     }
@@ -352,7 +353,14 @@ ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs) {
   res.receivedRpcs = rpcCount;
   res.splitFragments = splitFragments;
   res.reassembledPackets = reassembledPackets;
+  res.trackedPlayers = static_cast<int>(world.playerCount());
   res.rpcSummary = rpcSummary;
+  res.stateSummary = stateSummary;
+  res.playerInit = world.initialized();
+  if (res.playerInit) {
+    res.playerId = world.playerInit().playerId;
+    res.serverName = world.playerInit().serverName;
+  }
 
   res.joined = rxPackets > 0;
   char sb[512];
@@ -366,6 +374,10 @@ ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs) {
                   static_cast<unsigned>(res.playerId), res.serverName.c_str());
     logln(res, sb);
   }
+  std::snprintf(sb, sizeof(sb), "    State reducer: %d tracked player(s)%s%s",
+                res.trackedPlayers, stateSummary.empty() ? "" : " — ",
+                stateSummary.empty() ? "" : stateSummary.c_str());
+  logln(res, sb);
   if (rxPackets > 0) {
     logln(res, "");
     logln(res, "STATUS: ClientJoin diterima server, stream data berjalan");

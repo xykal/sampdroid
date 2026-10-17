@@ -34,7 +34,7 @@ Simpan sebagai `manifest.json`; validasikan dengan
   "version": "1.0.0",
   "license": "CC-BY-4.0",
   "authors": [{ "name": "Nama Kontributor", "url": "https://example.org" }],
-  "minSampDroid": "0.4.0",
+  "minSampDroid": "0.5.0",
   "targets": ["armeabi-v7a", "arm64-v8a"],
   "controlProfile": "controls/city-rp.json",
   "hudProfile": "hud/city-rp.json",
