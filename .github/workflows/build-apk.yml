@@ -2,26 +2,44 @@ name: Build APK
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
+# PR build hanya perlu membaca source. Hak tulis release diisolasi ke job release.
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: apk-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
+    name: Build + protocol tests
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Native protocol regression tests
+        run: |
+          mkdir -p .ci-native
+          c++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+            -Iapp/src/main/cpp \
+            app/src/main/cpp/raknet_codec.cpp \
+            app/src/main/cpp/rpc_decoder.cpp \
+            tests/native/raknet_codec_test.cpp \
+            -o .ci-native/raknet-codec-test
+          .ci-native/raknet-codec-test
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
       # Runner GitHub sudah menyediakan Android SDK di /usr/local/lib/android/sdk.
       # Jangan pakai android-actions/setup-android@v3: action itu masih memanggil
@@ -46,7 +64,7 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.7'
+          gradle-version: "8.7"
 
       - name: Build debug APK (armeabi-v7a + arm64-v8a)
         run: gradle :app:assembleDebug --no-daemon --stacktrace
@@ -68,10 +86,25 @@ jobs:
           name: SampDroid-debug
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          retention-days: 30
 
-      - name: Attach APK to release (saat push tag)
-        if: startsWith(github.ref, 'refs/tags/')
+  release:
+    name: Publish GitHub release
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: SampDroid-debug
+          path: release-assets
+
+      - name: Attach APK to release
         uses: softprops/action-gh-release@v2
         with:
-          files: app/build/outputs/apk/debug/*.apk
+          files: release-assets/*.apk
           generate_release_notes: true

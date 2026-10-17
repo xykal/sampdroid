@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Diskusi desain / ide modpack
+    url: https://github.com/xykal/sampdroid/discussions
+    about: Pakai Discussions untuk ide terbuka yang belum siap jadi issue.
+  - name: Laporan keamanan
+    url: https://github.com/xykal/sampdroid/security/advisories/new
+    about: Jangan buka issue publik untuk vulnerability atau packet exploit.

@@ -1,3 +1,8 @@
+/*
+ * Legacy protocol compatibility challenge/response data.
+ * Provenance and third-party notices: repository-root NOTICE.md.
+ * This is data, not a linked RakNet implementation or game asset.
+ */
   {"6C407EC29DE59E2", "D9412F235647BAA582089C6F66817F8B8811C057"},
   {"277C2AD934406F33", "132770E4744F6E78F2CBB4D3F3638EC05D7EA79D"},
   {"3A968DE22423B39", "D1080D41AD614649282887E4001C93AAEDBCA570"},

@@ -27,7 +27,7 @@ extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeVersion(JNIEnv* env, jclass) {
-  return to_java(env, "sampdroid-native 0.3.0 / raknet2 handshake+clientjoin");
+  return to_java(env, "sampdroid-native 0.4.0 / codec+split+rpc-observability");
 }
 
 JNIEXPORT jstring JNICALL
@@ -97,6 +97,14 @@ Java_com_xykal_sampdroid_NativeBridge_nativeRaknetProbe(JNIEnv* env, jclass, jst
     << ",\"authenticated\":" << (r.authenticated ? "true" : "false")
     << ",\"joined\":" << (r.joined ? "true" : "false")
     << ",\"accepted\":" << (r.accepted ? "true" : "false")
+    << ",\"playerInit\":" << (r.playerInit ? "true" : "false")
+    << ",\"playerId\":" << r.playerId
+    << ",\"receivedPackets\":" << r.receivedPackets
+    << ",\"receivedRpcs\":" << r.receivedRpcs
+    << ",\"splitFragments\":" << r.splitFragments
+    << ",\"reassembledPackets\":" << r.reassembledPackets
+    << ",\"serverName\":\"" << samp::json_escape(r.serverName) << "\""
+    << ",\"rpcSummary\":\"" << samp::json_escape(r.rpcSummary) << "\""
     << ",\"variant\":\"" << samp::json_escape(r.variant) << "\""
     << ",\"error\":\"" << samp::json_escape(r.error) << "\""
     << ",\"log\":\"" << samp::json_escape(r.log) << "\"}";

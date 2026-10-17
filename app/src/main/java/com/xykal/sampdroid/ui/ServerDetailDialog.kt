@@ -132,6 +132,16 @@ object ServerDetailDialog {
                     append("auth challenge  : ").append(o.optBoolean("authenticated")).append('\n')
                     append("client join     : ").append(o.optBoolean("joined")).append('\n')
                     append("accepted        : ").append(o.optBoolean("accepted")).append('\n')
+                    append("PlayerInit RPC  : ").append(o.optBoolean("playerInit")).append('\n')
+                    if (o.optBoolean("playerInit")) {
+                        append("player ID       : ").append(o.optInt("playerId")).append('\n')
+                        append("nama server     : ").append(o.optString("serverName")).append('\n')
+                    }
+                    append("stream          : ").append(o.optInt("receivedPackets"))
+                        .append(" packet / ").append(o.optInt("receivedRpcs")).append(" RPC\n")
+                    append("fragment        : ").append(o.optInt("splitFragments"))
+                        .append(" split / ").append(o.optInt("reassembledPackets")).append(" tersusun\n")
+                    append("RPC terlihat     : ").append(o.optString("rpcSummary").ifBlank { "-" }).append('\n')
                     append("varian          : ").append(o.optString("variant").ifBlank { "-" }).append('\n')
                     append("status          : ").append(o.optString("error").ifBlank { "ok" })
                 }

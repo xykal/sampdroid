@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <random>
 
@@ -107,14 +108,23 @@ bool send_query(const std::string& ip, uint16_t port, char opcode,
 std::string json_escape(const std::string& s) {
   std::string out;
   out.reserve(s.size() + 8);
-  for (char c : s) {
+  for (unsigned char c : s) {
     switch (c) {
       case '"': out += "\\\""; break;
       case '\\': out += "\\\\"; break;
       case '\n': out += "\\n"; break;
       case '\r': out += "\\r"; break;
       case '\t': out += "\\t"; break;
-      default: out += c;
+      default:
+        // JSON strings may not contain raw control bytes. Server-provided
+        // names/rules and decoded RPC strings are untrusted network input.
+        if (c < 0x20) {
+          char escaped[7];
+          std::snprintf(escaped, sizeof(escaped), "\\u%04X", static_cast<unsigned>(c));
+          out += escaped;
+        } else {
+          out += static_cast<char>(c);
+        }
     }
   }
   return out;

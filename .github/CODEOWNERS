@@ -1,0 +1,7 @@
+# CODEOWNERS is advisory unless branch protection enables required reviews.
+# It makes the current maintainer easy to find without restricting forks.
+* @xykal
+
+# Security-sensitive transport and release automation.
+/app/src/main/cpp/ @xykal
+/.github/ @xykal

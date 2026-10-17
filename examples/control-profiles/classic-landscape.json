@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "id": "org.sampdroid.classic-landscape",
+  "name": "Classic landscape",
+  "orientation": "landscape",
+  "safeArea": true,
+  "controls": [
+    { "id": "move", "kind": "stick", "action": "move", "anchor": "bottom-start", "x": 0.12, "y": 0.82, "size": 0.18, "opacity": 0.72 },
+    { "id": "look", "kind": "swipe-zone", "action": "look", "anchor": "center", "x": 0.70, "y": 0.44, "size": 0.48, "opacity": 0.10 },
+    { "id": "jump", "kind": "button", "action": "jump", "anchor": "bottom-end", "x": 0.14, "y": 0.78, "size": 0.12, "opacity": 0.78, "label": "JUMP" },
+    { "id": "sprint", "kind": "button", "action": "sprint", "anchor": "bottom-end", "x": 0.29, "y": 0.89, "size": 0.11, "opacity": 0.72, "hold": true, "label": "RUN" },
+    { "id": "fire", "kind": "trigger", "action": "fire", "anchor": "bottom-end", "x": 0.13, "y": 0.58, "size": 0.13, "opacity": 0.78, "hold": true, "label": "FIRE" },
+    { "id": "aim", "kind": "trigger", "action": "aim", "anchor": "bottom-end", "x": 0.30, "y": 0.62, "size": 0.11, "opacity": 0.72, "hold": true, "label": "AIM" },
+    { "id": "enter", "kind": "button", "action": "enter-vehicle", "anchor": "bottom-end", "x": 0.46, "y": 0.86, "size": 0.10, "opacity": 0.72, "label": "USE" },
+    { "id": "weapons", "kind": "radial", "action": "weapon-wheel", "anchor": "top-end", "x": 0.12, "y": 0.14, "size": 0.11, "opacity": 0.70, "label": "WPN" }
+  ]
+}

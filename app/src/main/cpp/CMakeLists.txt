@@ -7,6 +7,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_library(sampdroid SHARED
         jni_bridge.cpp
         samp_query.cpp
+        raknet_codec.cpp
+        rpc_decoder.cpp
         raknet_probe.cpp)
 
 target_compile_options(sampdroid PRIVATE -O2 -fvisibility=hidden -Wall)

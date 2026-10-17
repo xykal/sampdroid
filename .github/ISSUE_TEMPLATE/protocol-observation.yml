@@ -1,0 +1,39 @@
+name: Protocol observation
+description: Tambah bukti interoperabilitas / test vector yang aman dan legal.
+title: "[Protocol]: "
+labels: [protocol, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Jangan upload capture mentah berisi credential, serial, data pemain, atau packet yang bisa dipakai menyerang server.
+        Jelaskan izin dan sanitasi capture. Security issue tetap ke Security Advisory.
+  - type: input
+    id: topic
+    attributes:
+      label: RPC / tahap yang diamati
+      placeholder: "Contoh: RPC 139 PlayerInit"
+    validations:
+      required: true
+  - type: textarea
+    id: observation
+    attributes:
+      label: Observasi dan hipotesis layout
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Bukti tersanitasi / test vector minimal
+      description: Sertakan hanya data minim yang aman dipublikasikan dan jelaskan cara mendapatkannya.
+    validations:
+      required: true
+  - type: checkboxes
+    id: legal
+    attributes:
+      label: Provenance
+      options:
+        - label: Saya berhak membagikan bukti ini dan sudah menghapus data sensitif.
+          required: true
+        - label: Saya tidak menyalin binary/proprietary source tanpa izin.
+          required: true

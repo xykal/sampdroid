@@ -25,6 +25,9 @@ object NativeBridge {
     /** @return ping ms, atau -1 kalau gagal */
     external fun nativeQueryPing(ip: String, port: Int, timeoutMs: Int): Int
 
-    /** @return JSON: {openConnection,cookieOk,accepted,variant,error,log} */
+    /**
+     * @return JSON status handshake + stream: connection/auth/join, fragment
+     * reassembly, RPC summary, and PlayerInit data when the server sends it.
+     */
     external fun nativeRaknetProbe(ip: String, port: Int, timeoutMs: Int): String
 }

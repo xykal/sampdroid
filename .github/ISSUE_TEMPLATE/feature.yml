@@ -1,0 +1,30 @@
+name: Feature / improvement
+description: Usulkan perbaikan untuk client native, controls, atau tooling komunitas.
+title: "[Feature]: "
+labels: [enhancement, needs-triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Masalah pengguna
+      description: Masalah apa di perangkat Android/Winlator/modpack PC yang ingin diselesaikan?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Usulan
+      description: Jelaskan behavior, batas, dan UI/API jika ada.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: Usulan tidak membundel atau mengunduh asset game/proprietary binary.
+          required: true
+        - label: Usulan mempertimbangkan armeabi-v7a dan arm64-v8a.
+          required: true
+        - label: Usulan tidak meminta cheat, bypass, atau fitur merusak server.
+          required: true

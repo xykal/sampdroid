@@ -102,7 +102,7 @@ out[0] = checksum
 ```
 
 `key[256]` ada di `SAMPRakNet.cpp` dan sudah diekstrak ke
-`native/net/raknet_handshake/samp_crypto_table.inc`.
+`app/src/main/cpp/samp_crypto_table.inc`. Provenance tercatat di `NOTICE.md`.
 
 **Konsekuensi:** siapa pun yang mencoba connect dengan RakNet library biasa
 (termasuk `facebookarchive/RakNet`) akan gagal total — paketnya di-drop diam-diam
@@ -125,7 +125,7 @@ per internal packet:
   uint4          : reliability   (RAKNET_LEGACY offset: UNRELIABLE=6, RELIABLE=8, ORDERED=9)
   [jika ordered/sequenced]: uint5 orderingChannel + uint16 orderingIndex
   bit            : isSplit
-  [jika split]   : uint16 splitId + compressed splitIndex + compressed splitCount
+  [jika split]   : uint16 splitId + compressed uint32 splitIndex + compressed uint32 splitCount
   compressed u16 : dataBitLength
   align ke byte  : data
 ```
@@ -161,7 +161,11 @@ Contoh nyata — `ID_CONNECTION_REQUEST` reliable, messageNumber=1, payload `0B`
 | Reliability datagram | ✅ **byte-identical** dengan BitStream RakNet |
 | Connection request accepted | ✅ **diterima dari server live** |
 | AUTH_KEY challenge/response | ✅ 256 entri tabel, lookup runtime |
-| ClientJoin RPC / gameplay | belum |
+| ClientJoin / PlayerConnect RPC 25 | ✅ server memproses dan mengirim stream balik |
+| ACK reliable | ✅ setiap fragment reliable di-ACK |
+| Multi-paket datagram + split reassembly | ✅ sebelum RPC diserahkan ke decoder |
+| PlayerInit RPC 139 | ✅ decoder wire format + test vector; observability di UI |
+| Persistent game session / sync | ⏳ belum |
 
 ### Bug yang ditemukan (dan diperbaiki)
 
@@ -191,7 +195,14 @@ S -> C  reliable {0C 11 "4C67EC42..."}  AUTH_KEY challenge
 C -> S  reliable msg=2 {0C 28 "B64DC7..."}  AUTH_KEY response
 S -> C  reliable {22 ...}             CONNECTION_REQUEST_ACCEPTED
 C -> S  reliable msg=3 {13}           NEW_INCOMING_CONNECTION
+C -> S  reliable msg=4 {14 19 ...}    PlayerConnect / ClientJoin RPC 25
+S -> C  reliable RPC stream            PlayerJoin, time, PlayerInit, world RPC, dst.
 ```
+
+Setiap paket reliable yang diterima segera di-ACK, termasuk **setiap fragment**
+dari split packet. Fragment tidak boleh didecode sebagai RPC sendiri: codec
+menyusun seluruh split sequence lebih dulu, baru `rpc_decoder` membaca payload.
+Ini penting karena `PlayerInit` dapat lebih besar daripada satu datagram.
 
 Tabel auth berisi 256 pasangan tetap `{"challenge", "response"}` di
 `app/src/main/cpp/samp_auth_table.inc`. Challenge dipilih acak oleh server,
@@ -203,11 +214,13 @@ di tabel — perlu tabel dari `samp.dll` (lihat `samp-re`).
 
 ### Yang berikutnya
 
-1. **RPC ClientJoin / InitGame** — setelah NEW_INCOMING_CONNECTION, client harus
-   mengirim RPC join lalu menunggu `InitGame` dari server.
-2. **PlayerSync (207)** — kirim posisi; tanpa ini server menganggap player diam.
-3. **Hook ke `libGTASA.so`** — baru bisa setelah transport 100% dan ada binary
-   game dari device sendiri.
+1. **Persistent session + RPC state** — jangan lagi berhenti setelah probe;
+   simpan PlayerInit, player/class/spawn/chat/object/vehicle state dengan queue
+   ordered dan timeout/retry yang benar.
+2. **PlayerSync (207)** — encode posisi dari semantic input dengan rate limiter;
+   jangan membuat server/pemain lain kena flood.
+3. **Renderer adapter** — interface asset-agnostic yang membaca data milik
+   pengguna sendiri, bukan hook/bundle `libGTASA.so` ke APK.
 
 ---
 
@@ -218,8 +231,8 @@ Yang bikin fase ini bisa dikerjakan tanpa game dan tanpa HP:
 - Semua paket handshake adalah **UDP polos** — bisa dikirim dari laptop/CI.
 - Semua offset dan algoritma dipastikan dari **source server open-source**,
   bukan dari binary hasil decompile.
-- Setiap klaim diuji dengan tes yang bisa diulang (`tools/sampquery`,
-  `native/net/raknet_handshake`).
+- Setiap klaim diuji dengan test vector yang bisa diulang
+  (`tests/native/raknet_codec_test.cpp`, `tools/sampquery`).
 
 Kalau nanti bagian engine mulai dikerjakan, urutan debugging yang sama berlaku:
 transport dulu, baru memori game.

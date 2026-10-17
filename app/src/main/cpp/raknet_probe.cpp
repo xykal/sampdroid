@@ -2,6 +2,8 @@
 // Handshake + obfuscation + reliability datagram encoder.
 // Dipakai app untuk mendiagnosis kemampuan connect ke server tertentu.
 #include "raknet_probe.h"
+#include "raknet_codec.h"
+#include "rpc_decoder.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -9,7 +11,6 @@
 #include <unistd.h>
 
 #include <cstdio>
-#include <cstring>
 #include <cstring>
 #include <vector>
 
@@ -34,7 +35,7 @@ const InvTable& inv_table() {
 
 // ---- tabel autentikasi client SA-MP/open.mp ------------------------------
 // Server mengirim challenge acak; client wajib membalas pasangan tetapnya.
-// 256 entri, diekstrak dari openmultiplayer/RakNet (SAMPRakNet.cpp).
+// Provenance dan third-party notice data kompatibilitas ini ada di NOTICE.md.
 struct AuthPair {
   const char* send;
   const char* recv;
@@ -66,106 +67,9 @@ std::vector<uint8_t> wrap_packet(const std::vector<uint8_t>& plain, uint16_t por
   return out;
 }
 
-// ---- bit writer ------------------------------------------------------------
-struct BitWriter {
-  std::vector<uint8_t> buf;
-  size_t bitPos = 0;
-
-  // RakNet menulis MSB-first di dalam tiap byte.
-  void bit(bool v) {
-    if (bitPos / 8 >= buf.size()) buf.push_back(0);
-    if (v) buf[bitPos / 8] |= static_cast<uint8_t>(0x80 >> (bitPos % 8));
-    ++bitPos;
-  }
-  // Nilai ditulis per byte mulai dari byte paling rendah (little-endian),
-  // tiap byte MSB-first. Ini konvensi BitStream::WriteBits(..., true).
-  void bits(uint32_t v, int n) {
-    for (int c = 0; c < (n + 7) / 8; ++c) {
-      const int s = (n - 8 * c) < 8 ? (n - 8 * c) : 8;
-      const uint8_t b = static_cast<uint8_t>((v >> (8 * c)) & 0xFF);
-      for (int i = 0; i < s; ++i) bit((b >> (s - 1 - i)) & 1u);
-    }
-  }
-  void align() {
-    while (bitPos % 8) bit(false);
-  }
-  void bytes(const uint8_t* d, size_t n) {
-    align();
-    buf.insert(buf.end(), d, d + n);
-    bitPos += n * 8;
-  }
-  void compressed_u16(uint16_t v) {
-    const uint8_t hi = static_cast<uint8_t>(v >> 8);
-    const uint8_t lo = static_cast<uint8_t>(v & 0xFF);
-    if (hi == 0) {
-      bit(true);
-      if ((lo & 0xF0) == 0) {
-        bit(true);
-        bits(lo & 0x0F, 4);
-      } else {
-        bit(false);
-        bits(lo, 8);
-      }
-    } else {
-      bit(false);
-      bits(v, 16);
-    }
-  }
-};
-
-// ---- bit reader ------------------------------------------------------------
-struct BitReader {
-  const uint8_t* d;
-  size_t n;
-  size_t bitPos = 0;
-  bool ok = true;
-
-  BitReader(const uint8_t* data, size_t size) : d(data), n(size) {}
-  bool bit() {
-    if (bitPos / 8 >= n) {
-      ok = false;
-      return false;
-    }
-    bool v = (d[bitPos / 8] >> (7 - (bitPos % 8))) & 1u;
-    ++bitPos;
-    return v;
-  }
-  uint32_t bits(int count) {
-    uint32_t v = 0;
-    for (int c = 0; c < (count + 7) / 8 && ok; ++c) {
-      const int s = (count - 8 * c) < 8 ? (count - 8 * c) : 8;
-      uint32_t b = 0;
-      for (int i = 0; i < s; ++i) b = (b << 1) | (bit() ? 1u : 0u);
-      v |= b << (8 * c);
-    }
-    return v;
-  }
-  void align() {
-    while (bitPos % 8) bit();
-  }
-  std::vector<uint8_t> bytes(size_t len) {
-    align();
-    if (bitPos / 8 + len > n) {
-      ok = false;
-      return {};
-    }
-    std::vector<uint8_t> out(d + bitPos / 8, d + bitPos / 8 + len);
-    bitPos += len * 8;
-    return out;
-  }
-  uint16_t compressed_u16() {
-    int byteIndex = 1;
-    while (byteIndex > 0) {
-      if (bit()) {
-        --byteIndex;
-      } else {
-        return static_cast<uint16_t>(bits((byteIndex + 1) * 8));
-      }
-    }
-    if (bit()) return static_cast<uint16_t>(bits(4));
-    return static_cast<uint16_t>(bits(8));
-  }
-};
+// Shared codec lives in raknet_codec.{h,cpp}; keeping it separate lets CI run
+// protocol regression tests on a normal host compiler as well as Android NDK.
+using raknet::BitWriter;
 
 enum : uint8_t {
   ID_CONNECTION_REQUEST = 11,
@@ -177,7 +81,6 @@ enum : uint8_t {
   ID_NO_FREE_INCOMING_CONNECTIONS = 31,
   ID_DISCONNECTION_NOTIFICATION = 32,
   ID_CONNECTION_REQUEST_ACCEPTED = 34,
-  REL_RELIABLE = 8,
 };
 
 struct Net {
@@ -211,83 +114,6 @@ struct Net {
   }
 };
 
-std::vector<uint8_t> build_reliable(uint16_t msgNumber, const std::vector<uint8_t>& payload) {
-  BitWriter w;
-  w.bit(false);                      // hasAcks
-  w.bits(msgNumber, 16);             // message number
-  w.bits(REL_RELIABLE, 4);           // reliability (RAKNET_LEGACY: 8)
-  w.bit(false);                      // isSplit
-  w.compressed_u16(static_cast<uint16_t>(payload.size() * 8));
-  w.bytes(payload.data(), payload.size());
-  return w.buf;
-}
-
-// ---- decoder datagram penuh (bisa multi-paket per datagram) ----------------
-struct InPacket {
-  uint16_t msg = 0;
-  uint8_t rel = 0;
-  bool split = false;
-  std::vector<uint8_t> payload;
-};
-
-struct Datagram {
-  bool ok = false;
-  std::vector<uint16_t> ackRanges;   // msg number yang harus di-ACK
-  std::vector<InPacket> packets;
-};
-
-Datagram decode_datagram(const std::vector<uint8_t>& dgram) {
-  Datagram out;
-  BitReader r(dgram.data(), dgram.size());
-  const bool hasAcks = r.bit();
-  if (!r.ok) return out;
-  if (hasAcks) {
-    const uint16_t count = r.compressed_u16();
-    if (count > 64) return out;
-    for (uint16_t i = 0; i < count && r.ok; ++i) {
-      const bool single = r.bit();
-      r.bits(16);
-      if (!single) r.bits(16);
-    }
-  }
-  while (r.ok && r.bitPos < dgram.size() * 8) {
-    InPacket p;
-    p.msg = static_cast<uint16_t>(r.bits(16));
-    p.rel = static_cast<uint8_t>(r.bits(4));
-    if (p.rel == 7 || p.rel == 9 || p.rel == 10) {
-      r.bits(5);
-      r.bits(16);
-    }
-    p.split = r.bit();
-    if (p.split) {
-      r.bits(16);
-      r.compressed_u16();
-      r.compressed_u16();
-    }
-    const uint16_t bitLen = r.compressed_u16();
-    if (!r.ok || bitLen == 0) break;
-    p.payload = r.bytes((bitLen + 7) / 8);
-    if (!r.ok || p.payload.empty()) break;
-    if (p.rel == 8 || p.rel == 9 || p.rel == 10) out.ackRanges.push_back(p.msg);
-    out.packets.push_back(std::move(p));
-  }
-  out.ok = !out.packets.empty();
-  return out;
-}
-
-// ACK datagram: hasAcks=1, jumlah terkompresi, lalu per-range (single, min).
-std::vector<uint8_t> build_ack(const std::vector<uint16_t>& msgs) {
-  BitWriter w;
-  w.bit(true);
-  w.compressed_u16(static_cast<uint16_t>(msgs.size()));
-  for (uint16_t m : msgs) {
-    w.bit(true);        // max == min
-    w.bits(m, 16);
-  }
-  while (w.bitPos % 8) w.bit(false);
-  return w.buf;
-}
-
 // Payload ID_CONNECTION_REQUEST_ACCEPTED: [id][ip x4][port u16][idx u16][token u32]
 bool parse_accepted(const std::vector<uint8_t>& payload, uint32_t& token) {
   if (payload.size() < 13 || payload[0] != ID_CONNECTION_REQUEST_ACCEPTED) return false;
@@ -300,20 +126,20 @@ bool parse_accepted(const std::vector<uint8_t>& payload, uint32_t& token) {
 // RPC PlayerConnect (ClientJoin): id 20 / rpc 25
 std::vector<uint8_t> build_client_join(uint32_t challengeResponse, const std::string& nick) {
   BitWriter w;
-  w.bits(20, 8);   // ID_RPC
-  w.bits(25, 8);   // RPC_ClientJoin / PlayerConnect
-  w.bits(4057, 32);  // VersionNumber (0.3.7)
-  w.bits(1, 8);      // Modded
-  w.bits(static_cast<uint32_t>(nick.size()), 8);
-  w.bytes(reinterpret_cast<const uint8_t*>(nick.data()), nick.size());
-  w.bits(challengeResponse, 32);
+  w.writeBits(20, 8);   // ID_RPC
+  w.writeBits(25, 8);   // RPC_ClientJoin / PlayerConnect
+  w.writeBits(4057, 32);  // VersionNumber (0.3.7)
+  w.writeBits(1, 8);      // Modded
+  w.writeBits(static_cast<uint32_t>(nick.size()), 8);
+  w.writeBytes(reinterpret_cast<const uint8_t*>(nick.data()), nick.size());
+  w.writeBits(challengeResponse, 32);
   static const char kKey[] = "1234567890123456789012345678901234567890";  // 40 hex
-  w.bits(40, 8);
-  w.bytes(reinterpret_cast<const uint8_t*>(kKey), 40);
+  w.writeBits(40, 8);
+  w.writeBytes(reinterpret_cast<const uint8_t*>(kKey), 40);
   static const char kVer[] = "0.3.7-R5";
-  w.bits(9, 8);
-  w.bytes(reinterpret_cast<const uint8_t*>(kVer), 9);
-  return w.buf;
+  w.writeBits(9, 8);
+  w.writeBytes(reinterpret_cast<const uint8_t*>(kVer), 9);
+  return w.buffer;
 }
 
 std::string hex(const std::vector<uint8_t>& v, size_t max = 24) {
@@ -410,50 +236,57 @@ ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs) {
 
   // ---- 3. connection request ----------------------------------------------
   logln(res, "[3] CONNECTION_REQUEST (reliable, msg=1)");
-  net.send(wrap_packet(build_reliable(1, {ID_CONNECTION_REQUEST}), port));
+  net.send(wrap_packet(raknet::buildReliable(1, {ID_CONNECTION_REQUEST}), port));
 
   // ---- 4. AUTH_KEY -> ACCEPTED --------------------------------------------
   uint16_t msgNo = 2;
   uint32_t token = 0;
   bool gotChallenge = false;
+  // One reassembler is kept for the entire session: a server can legally
+  // split an RPC over more than one UDP datagram.
+  raknet::SplitReassembler reassembler;
   for (int i = 0; i < 20 && !res.accepted; ++i) {
     if (net.recv(resp) <= 0) continue;
-    Datagram dg = decode_datagram(resp);
-    if (!dg.ackRanges.empty()) net.send(wrap_packet(build_ack(dg.ackRanges), port));
-    for (const auto& pkt : dg.packets) {
-      if (pkt.payload.empty()) continue;
-      const uint8_t id = pkt.payload[0];
-      if (id == ID_AUTH_KEY && pkt.payload.size() >= 3) {
-        const uint8_t len = pkt.payload[1];
-        std::string challenge(reinterpret_cast<const char*>(pkt.payload.data()) + 2,
-                              len > 0 ? len - 1 : 0);
-        logln(res, "    AUTH_KEY challenge: " + challenge);
-        const char* answer = auth_lookup(challenge);
-        if (!answer) {
-          logln(res, "    challenge tidak ada di tabel ini");
-          continue;
+    raknet::Datagram dg = raknet::decodeDatagram(resp);
+    if (!dg.ackMessageNumbers.empty()) {
+      net.send(wrap_packet(raknet::buildAck(dg.ackMessageNumbers), port));
+    }
+    for (const auto& raw : dg.packets) {
+      for (const auto& pkt : reassembler.push(raw)) {
+        if (pkt.payload.empty()) continue;
+        const uint8_t id = pkt.payload[0];
+        if (id == ID_AUTH_KEY && pkt.payload.size() >= 3) {
+          const uint8_t len = pkt.payload[1];
+          std::string challenge(reinterpret_cast<const char*>(pkt.payload.data()) + 2,
+                                len > 0 ? len - 1 : 0);
+          logln(res, "    AUTH_KEY challenge: " + challenge);
+          const char* answer = auth_lookup(challenge);
+          if (!answer) {
+            logln(res, "    challenge tidak ada di tabel ini");
+            continue;
+          }
+          res.authenticated = true;
+          std::vector<uint8_t> pl = {ID_AUTH_KEY,
+                                     static_cast<uint8_t>(std::strlen(answer))};
+          pl.insert(pl.end(), answer, answer + std::strlen(answer));
+          net.send(wrap_packet(raknet::buildReliable(msgNo++, pl), port));
+          logln(res, std::string("[4] AUTH_KEY response: ") + answer);
+          gotChallenge = true;
+        } else if (id == ID_CONNECTION_REQUEST_ACCEPTED) {
+          if (parse_accepted(pkt.payload, token)) {
+            res.accepted = true;
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "    token server 0x%08X", token);
+            logln(res, "    === CONNECTION REQUEST ACCEPTED ===");
+            logln(res, buf);
+          }
+        } else if (id == ID_NO_FREE_INCOMING_CONNECTIONS) {
+          res.error = "server penuh";
+          return res;
+        } else if (id == ID_DISCONNECTION_NOTIFICATION) {
+          res.error = "server memutus koneksi";
+          return res;
         }
-        res.authenticated = true;
-        std::vector<uint8_t> pl = {ID_AUTH_KEY,
-                                   static_cast<uint8_t>(std::strlen(answer))};
-        pl.insert(pl.end(), answer, answer + std::strlen(answer));
-        net.send(wrap_packet(build_reliable(msgNo++, pl), port));
-        logln(res, std::string("[4] AUTH_KEY response: ") + answer);
-        gotChallenge = true;
-      } else if (id == ID_CONNECTION_REQUEST_ACCEPTED) {
-        if (parse_accepted(pkt.payload, token)) {
-          res.accepted = true;
-          char buf[64];
-          std::snprintf(buf, sizeof(buf), "    token server 0x%08X", token);
-          logln(res, "    === CONNECTION REQUEST ACCEPTED ===");
-          logln(res, buf);
-        }
-      } else if (id == ID_NO_FREE_INCOMING_CONNECTIONS) {
-        res.error = "server penuh";
-        return res;
-      } else if (id == ID_DISCONNECTION_NOTIFICATION) {
-        res.error = "server memutus koneksi";
-        return res;
       }
     }
   }
@@ -465,12 +298,12 @@ ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs) {
   }
 
   // ---- 5. NEW_INCOMING + ClientJoin ---------------------------------------
-  net.send(wrap_packet(build_reliable(msgNo++, {ID_NEW_INCOMING_CONNECTION}), port));
+  net.send(wrap_packet(raknet::buildReliable(msgNo++, {ID_NEW_INCOMING_CONNECTION}), port));
 
   const uint32_t challengeResponse = token ^ 4057u;
   const std::string nick = "SampDroid";
   auto join = build_client_join(challengeResponse, nick);
-  net.send(wrap_packet(build_reliable(msgNo++, join), port));
+  net.send(wrap_packet(raknet::buildReliable(msgNo++, join), port));
   char jb[96];
   std::snprintf(jb, sizeof(jb), "[5] ClientJoin terkirim (nick %s, cr %u)",
                 nick.c_str(), challengeResponse);
@@ -479,30 +312,60 @@ ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs) {
   // ---- 6. dengarkan stream server ----------------------------------------
   int rxPackets = 0;
   int rpcCount = 0;
-  std::string firstRpcs;
+  int splitFragments = 0;
+  int reassembledPackets = 0;
+  std::string rpcSummary;
   for (int i = 0; i < 20; ++i) {
     if (net.recv(resp) <= 0) continue;
-    Datagram dg = decode_datagram(resp);
-    if (!dg.ackRanges.empty()) net.send(wrap_packet(build_ack(dg.ackRanges), port));
-    for (const auto& pkt : dg.packets) {
-      if (pkt.payload.empty()) continue;
-      ++rxPackets;
-      if (pkt.payload[0] == 20 && pkt.payload.size() > 1) {
+    raknet::Datagram dg = raknet::decodeDatagram(resp);
+    if (!dg.ackMessageNumbers.empty()) {
+      net.send(wrap_packet(raknet::buildAck(dg.ackMessageNumbers), port));
+    }
+    for (const auto& raw : dg.packets) {
+      if (raw.split) ++splitFragments;
+      for (const auto& pkt : reassembler.push(raw)) {
+        if (pkt.payload.empty()) continue;
+        ++rxPackets;
+        if (pkt.reassembled) ++reassembledPackets;
+        if (pkt.payload[0] != 20 || pkt.payload.size() < 2) continue;
+
         ++rpcCount;
-        if (firstRpcs.size() < 60) {
-          char b[8];
-          std::snprintf(b, sizeof(b), "%u ", pkt.payload[1]);
-          firstRpcs += b;
+        const std::string label = rpc::summarize(pkt.payload);
+        if (rpcSummary.size() + label.size() + 2 < 320) {
+          if (!rpcSummary.empty()) rpcSummary += ", ";
+          rpcSummary += label;
+        }
+
+        if (pkt.payload[1] == 139) {
+          rpc::PlayerInitData init;
+          if (rpc::decodePlayerInit(pkt.payload, init)) {
+            res.playerInit = true;
+            res.playerId = init.playerId;
+            res.serverName = init.serverName;
+          }
         }
       }
     }
   }
 
+  res.receivedPackets = rxPackets;
+  res.receivedRpcs = rpcCount;
+  res.splitFragments = splitFragments;
+  res.reassembledPackets = reassembledPackets;
+  res.rpcSummary = rpcSummary;
+
   res.joined = rxPackets > 0;
-  char sb[160];
-  std::snprintf(sb, sizeof(sb), "[6] %d paket diterima, %d RPC (id: %s)", rxPackets,
-                rpcCount, firstRpcs.c_str());
+  char sb[512];
+  std::snprintf(sb, sizeof(sb),
+                "[6] %d paket diterima, %d RPC, split=%d/reassembled=%d (%s)",
+                rxPackets, rpcCount, splitFragments, reassembledPackets,
+                rpcSummary.empty() ? "belum ada RPC" : rpcSummary.c_str());
   logln(res, sb);
+  if (res.playerInit) {
+    std::snprintf(sb, sizeof(sb), "    PlayerInit: playerId=%u server=%s",
+                  static_cast<unsigned>(res.playerId), res.serverName.c_str());
+    logln(res, sb);
+  }
   if (rxPackets > 0) {
     logln(res, "");
     logln(res, "STATUS: ClientJoin diterima server, stream data berjalan");

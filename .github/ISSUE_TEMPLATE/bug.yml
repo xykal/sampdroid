@@ -1,0 +1,52 @@
+name: Bug report
+description: Laporkan masalah app, protocol, UI, atau kompatibilitas perangkat.
+title: "[Bug]: "
+labels: [bug, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Jangan sertakan credential, game asset, packet exploit, atau data pemain.
+        Untuk vulnerability gunakan Security Advisory, bukan issue publik.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Ringkasan
+      description: Apa yang seharusnya terjadi dan apa yang terjadi?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [Android UI, Server browser, RakNet/protocol, ARMv7, ARM64, Controls, Modpack schema, Documentation]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Versi / commit
+      placeholder: v0.4.0 atau hash commit
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Perangkat + Android + ABI
+      placeholder: "Contoh: Redmi Note 8, Android 11, armeabi-v7a"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Langkah reproduksi
+      placeholder: "1. ...\n2. ...\n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log/screenshot tersanitasi
+      description: Hapus IP privat, nama pemain, token, dan informasi sensitif.
+    validations:
+      required: false

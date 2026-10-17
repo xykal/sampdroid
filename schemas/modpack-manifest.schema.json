@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/xykal/sampdroid/schemas/modpack-manifest.schema.json",
+  "title": "SampDroid modpack manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "name", "version", "license", "authors", "minSampDroid", "targets", "assets"],
+  "properties": {
+    "schema": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z0-9]+([.-][a-z0-9]+)+$", "maxLength": 120 },
+    "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+([+-][A-Za-z0-9.-]+)?$", "maxLength": 64 },
+    "license": { "type": "string", "minLength": 2, "maxLength": 64 },
+    "authors": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "url": { "type": "string", "format": "uri", "maxLength": 300 }
+        }
+      }
+    },
+    "minSampDroid": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "enum": ["armeabi-v7a", "arm64-v8a"] }
+    },
+    "controlProfile": { "$ref": "#/$defs/relativePath" },
+    "hudProfile": { "$ref": "#/$defs/relativePath" },
+    "assets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "notice"],
+      "properties": {
+        "mode": { "const": "user-provided" },
+        "notice": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
+    }
+  },
+  "$defs": {
+    "relativePath": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+\\.json$",
+      "maxLength": 240
+    }
+  }
+}
