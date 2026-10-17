@@ -24,11 +24,15 @@ Bukan porting engine: engine-nya (GTA: San Andreas Android) sudah ada, yang diba
 | AUTH_KEY challenge/response | **DONE** | 256 entri tabel, lookup runtime |
 | CONNECTION_REQUEST_ACCEPTED | **DONE** | diterima dari server open.mp live |
 | NEW_INCOMING_CONNECTION | **DONE** | peer RakNet terdaftar |
-| RPC ClientJoin / PlayerSync | belum | langkah berikutnya |
+| ClientJoin (RPC 25) | **DONE** | server proses, langsung streaming balik |
+| ACK / retransmisi | **DONE** | server berhenti retransmisi |
+| Decode RPC server (InitGame dll) | belum | layout sudah didokumentasikan |
+| RPC ClientJoin / PlayerSync | sebagian | ClientJoin OK, sync belum |
 | Hook ke `libGTASA.so` | belum | butuh binary dari device sendiri |
 
-APK v0.2.0 = **server browser + handshake RakNet penuh**, belum gameplay.
-Tekan **Probe RakNet** di detail server untuk melihat handshake berjalan live.
+APK v0.3.0 = **server browser + handshake RakNet + ClientJoin**, belum gameplay.
+Tekan **Probe RakNet** di detail server untuk melihat seluruh handshake berjalan live:
+`open → cookie → auth → accepted → client join`.
 Semua tombol (Info / Rules / Players / Ping / Probe RakNet) memanggil implementasi native beneran.
 
 ---
