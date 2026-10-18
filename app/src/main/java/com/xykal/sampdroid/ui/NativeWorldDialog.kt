@@ -283,7 +283,7 @@ private class NativeWorldSurfaceView(context: Context) : View(context) {
         drawMapFrame(canvas)
         canvas.save()
         canvas.clipRect(mapBounds)
-        drawGrid(canvas, originX, originY, scale, screenX, screenY)
+        drawGrid(canvas, originX, originY, scale, ::screenX, ::screenY)
         if (frame.checkpoint.active) {
             drawCheckpoint(canvas, screenX(frame.checkpoint.x), screenY(frame.checkpoint.y),
                 max(dp(8f), frame.checkpoint.size * scale), Color.rgb(255, 222, 62), false)
