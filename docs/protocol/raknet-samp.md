@@ -24,10 +24,12 @@ ID paket (RakNet 2.52 / `RAKNET_LEGACY`):
 
 | ID | Nama |
 |---|---|
+| 6 | ID_INTERNAL_PING |
 | 7 | ID_PING |
-| 9 | ID_PONG |
+| 9 | ID_CONNECTED_PONG |
 | 11 | ID_CONNECTION_REQUEST |
 | 12 | ID_AUTH_KEY |
+| 23 | ID_DETECT_LOST_CONNECTIONS |
 | 24 | ID_OPEN_CONNECTION_REQUEST |
 | 25 | ID_OPEN_CONNECTION_REPLY |
 | 26 | ID_OPEN_CONNECTION_COOKIE |
@@ -149,6 +151,17 @@ Contoh nyata — `ID_CONNECTION_REQUEST` reliable, messageNumber=1, payload `0B`
 └─────────── ack bit + messageNumber low bits
 ```
 
+### Keepalive transport retained session
+
+Referensi RakNet 2.52 mengirim `ID_DETECT_LOST_CONNECTIONS` (23) sebagai
+`RELIABLE` apabila tidak ada reliable send selama lima detik dan resend queue
+kosong. SampDroid menerapkan policy yang sama di retained session; frame
+keepalive ikut queue/ACK/retry bounded biasa. Bila server mengirim
+`ID_INTERNAL_PING` (6) dengan timestamp 32-bit, client membalas
+`ID_CONNECTED_PONG` (9) unreliable dengan timestamp peer yang diecho dan
+monotonic timestamp lokal. Ini behavior transport yang dicakup regression test,
+bukan pengganti `PlayerSync` atau validasi gameplay live.
+
 ---
 
 ## 5. Status implementasi
@@ -166,7 +179,7 @@ Contoh nyata — `ID_CONNECTION_REQUEST` reliable, messageNumber=1, payload `0B`
 | Multi-paket datagram + split reassembly | ✅ sebelum RPC diserahkan ke decoder |
 | PlayerInit RPC 139 | ✅ decoder wire format + test vector; observability di UI |
 | SendClientMessage RPC 93 | ✅ bounded chat state + regression coverage; HUD renderer masih pending |
-| Retained native session | 🧪 socket/session state + class request di `main`; live capture multi-server masih pending |
+| Retained native session | 🧪 auto-poll, bounded ACK/retry, 5s reliable keepalive, internal-ping pong; live capture multi-server masih pending |
 | Persistent game sync | ⏳ belum |
 
 ### Bug yang ditemukan (dan diperbaiki)
@@ -216,8 +229,9 @@ di tabel — perlu tabel dari `samp.dll` (lihat `samp-re`).
 
 ### Yang berikutnya
 
-1. **Session loop yang benar** — lifecycle-aware poll/heartbeat, full ACK range,
-   reconnect, resend window, lalu capture sanitasi terhadap beberapa server.
+1. **Session loop yang benar** — full ACK range, reconnect, ping/timeout
+   metrics, resend window, lalu capture sanitasi terhadap beberapa server di
+   atas auto-poll/keepalive transport yang sudah ada.
 2. **PlayerSync (207)** — encode posisi dari semantic input dengan rate limiter;
    jangan membuat server/pemain lain kena flood.
 3. **Renderer adapter** — interface asset-agnostic yang membaca data milik

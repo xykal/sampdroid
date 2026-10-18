@@ -9,6 +9,7 @@
 
 namespace samp::raknet {
 
+constexpr uint8_t kReliabilityUnreliable = 6;
 constexpr uint8_t kReliabilityReliable = 8;
 constexpr uint8_t kReliabilityReliableOrdered = 9;
 constexpr uint8_t kReliabilityReliableSequenced = 10;
@@ -79,6 +80,7 @@ struct Datagram {
   std::vector<IncomingPacket> packets;
 };
 
+std::vector<uint8_t> buildUnreliable(uint16_t messageNumber, const std::vector<uint8_t>& payload);
 std::vector<uint8_t> buildReliable(uint16_t messageNumber, const std::vector<uint8_t>& payload);
 std::vector<uint8_t> buildReliableOrdered(uint16_t messageNumber, uint8_t orderingChannel,
                                           uint16_t orderingIndex,

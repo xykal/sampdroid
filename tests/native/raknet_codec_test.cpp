@@ -1,6 +1,7 @@
 #include "client_rpc.h"
 #include "raknet_codec.h"
 #include "raknet_session.h"
+#include "raknet_session_policy.h"
 #include "rpc_decoder.h"
 #include "rpc_state.h"
 
@@ -164,6 +165,31 @@ void testReliableAndAck() {
   expect(decoded.packets[0].payload == std::vector<uint8_t>({0x0B}),
          "wrong reliable payload");
   expect(decoded.ackMessageNumbers == std::vector<uint16_t>({1}), "ACK list missing");
+
+  // RakNet 2.52 transport keepalive is a one-byte reliable frame, not an
+  // application RPC. Its ACK behavior must stay distinct from connected pong.
+  const auto keepalive = samp::raknet::buildReliable(23, {23});
+  const auto decodedKeepalive = samp::raknet::decodeDatagram(keepalive);
+  expect(decodedKeepalive.ok && decodedKeepalive.packets.size() == 1,
+         "keepalive frame did not decode");
+  expect(decodedKeepalive.packets[0].messageNumber == 23 &&
+         decodedKeepalive.packets[0].reliability == samp::raknet::kReliabilityReliable &&
+         decodedKeepalive.packets[0].payload == std::vector<uint8_t>({23}),
+         "keepalive wire semantics changed");
+  expect(samp::sessionpolicy::shouldSendReliableKeepalive(5000, 0),
+         "keepalive must begin at five-second reliable idle");
+  expect(!samp::sessionpolicy::shouldSendReliableKeepalive(4999, 0) &&
+         !samp::sessionpolicy::shouldSendReliableKeepalive(5000, 1),
+         "keepalive policy ignored interval or pending ACK");
+
+  const auto pong = samp::raknet::buildUnreliable(24, {9, 1, 2, 3, 4, 5, 6, 7, 8});
+  const auto decodedPong = samp::raknet::decodeDatagram(pong);
+  expect(decodedPong.ok && decodedPong.packets.size() == 1 &&
+         decodedPong.packets[0].messageNumber == 24 &&
+         decodedPong.packets[0].reliability == samp::raknet::kReliabilityUnreliable &&
+         decodedPong.packets[0].payload == std::vector<uint8_t>({9, 1, 2, 3, 4, 5, 6, 7, 8}) &&
+         decodedPong.ackMessageNumbers.empty(),
+         "connected pong must remain unacked/unreliable");
 
   const auto ack = samp::raknet::buildAck({1});
   expect(ack == std::vector<uint8_t>({0xE3, 0x01, 0x00}), "ACK wire vector changed");

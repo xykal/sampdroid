@@ -5,6 +5,7 @@
 #include "client_rpc.h"
 #include "raknet_codec.h"
 #include "raknet_session.h"
+#include "raknet_session_policy.h"
 #include "rpc_decoder.h"
 #include "rpc_state.h"
 
@@ -80,8 +81,12 @@ std::vector<uint8_t> wrap_packet(const std::vector<uint8_t>& plain, uint16_t por
 using raknet::BitWriter;
 
 enum : uint8_t {
+  // Values match the SA-MP-compatible RakNet 2.52 identifier table.
+  ID_INTERNAL_PING = 6,
+  ID_CONNECTED_PONG = 9,
   ID_CONNECTION_REQUEST = 11,
   ID_AUTH_KEY = 12,
+  ID_DETECT_LOST_CONNECTIONS = 23,
   ID_NEW_INCOMING_CONNECTION = 30,
   ID_OPEN_CONNECTION_REQUEST = 24,
   ID_OPEN_CONNECTION_REPLY = 25,
@@ -175,6 +180,9 @@ struct LiveSession {
   int receivedRpcs = 0;
   int splitFragments = 0;
   int reassembledPackets = 0;
+  int reliableKeepalives = 0;
+  int connectedPongs = 0;
+  std::chrono::steady_clock::time_point lastReliableSent = std::chrono::steady_clock::now();
   std::string rpcSummary;
   std::string stateSummary;
   std::string error;
@@ -252,6 +260,7 @@ bool sendSessionReliable(LiveSession& session, const std::vector<uint8_t>& packe
     session.error = "gagal mengirim packet reliable";
     return false;
   }
+  session.lastReliableSent = pending.lastSent;
   session.pendingReliable.push_back(std::move(pending));
   return true;
 }
@@ -285,7 +294,51 @@ void resendDueReliable(LiveSession& session) {
       return;
     }
     pending.lastSent = now;
+    session.lastReliableSent = now;
     ++pending.retries;
+  }
+}
+
+uint32_t monotonicMilliseconds32() {
+  const auto elapsed = std::chrono::steady_clock::now().time_since_epoch();
+  const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+  return static_cast<uint32_t>(milliseconds);
+}
+
+void replyToInternalPing(LiveSession& session, const std::vector<uint8_t>& payload) {
+  // RakNet 2.52 replies to ID_INTERNAL_PING (6) with an unreliable
+  // ID_CONNECTED_PONG (9), echoing the peer timestamp and adding ours.
+  if (!session.net || session.net->fd < 0 || payload.size() != 5) return;
+  raknet::BitReader reader(payload.data() + 1, payload.size() - 1);
+  const uint32_t remoteTimestamp = reader.readBits(32);
+  if (!reader.ok()) return;
+
+  BitWriter pong;
+  pong.writeBits(ID_CONNECTED_PONG, 8);
+  pong.writeBits(remoteTimestamp, 32);
+  pong.writeBits(monotonicMilliseconds32(), 32);
+  const uint16_t messageNumber = session.nextMessageNumber;
+  const auto packet = raknet::buildUnreliable(messageNumber, pong.buffer);
+  if (!session.net->send(wrap_packet(packet, session.port))) {
+    session.error = "gagal membalas RakNet internal ping";
+    return;
+  }
+  ++session.nextMessageNumber;
+  ++session.connectedPongs;
+}
+
+void sendDueReliableKeepalive(LiveSession& session) {
+  if (!session.net || session.net->fd < 0) return;
+  const auto now = std::chrono::steady_clock::now();
+  const uint64_t idleMs = static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(now - session.lastReliableSent).count());
+  if (!sessionpolicy::shouldSendReliableKeepalive(idleMs, session.pendingReliable.size())) return;
+
+  const uint16_t messageNumber = session.nextMessageNumber++;
+  if (sendSessionReliable(session, raknet::buildReliable(messageNumber,
+                                                           {ID_DETECT_LOST_CONNECTIONS}),
+                          messageNumber)) {
+    ++session.reliableKeepalives;
   }
 }
 
@@ -309,6 +362,12 @@ void processSessionDatagram(LiveSession& session, const std::vector<uint8_t>& by
         session.net->close();
         return;
       }
+      if (id == ID_INTERNAL_PING) {
+        replyToInternalPing(session, packet.payload);
+        continue;
+      }
+      // Transport control frames are handled above or require no app-level
+      // reducer action. Game state starts at ID_RPC (20).
       if (id != 20 || packet.payload.size() < 2) continue;
 
       ++session.receivedRpcs;
@@ -345,6 +404,8 @@ SessionSnapshot snapshotFrom(const LiveSession* session) {
   snapshot.reassembledPackets = session->reassembledPackets;
   snapshot.trackedPlayers = static_cast<int>(session->world.playerCount());
   snapshot.chatMessages = static_cast<int>(session->world.chatCount());
+  snapshot.reliableKeepalives = session->reliableKeepalives;
+  snapshot.connectedPongs = session->connectedPongs;
   snapshot.serverName = snapshot.playerInit ? session->world.playerInit().serverName : "";
   snapshot.rpcSummary = session->rpcSummary;
   snapshot.stateSummary = session->stateSummary;
@@ -590,6 +651,9 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     live->port = port;
     live->nextMessageNumber = msgNo;
     live->nextOrderingIndex = 0;
+    // ClientJoin was the most recent reliable handshake send; start the
+    // steady-state transport keepalive interval from hand-off to the session.
+    live->lastReliableSent = std::chrono::steady_clock::now();
     live->accepted = res.accepted;
     live->joined = res.joined;
     live->receivedPackets = rxPackets;
@@ -648,6 +712,7 @@ SessionSnapshot raknet_session_poll(int timeoutMs) {
     processSessionDatagram(*gLiveSession, packet);
   }
   resendDueReliable(*gLiveSession);
+  sendDueReliableKeepalive(*gLiveSession);
   return snapshotFrom(gLiveSession.get());
 }
 

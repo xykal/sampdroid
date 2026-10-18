@@ -49,7 +49,7 @@ Detail kontrak port: [docs/NATIVE_PORT_TARGET.md](docs/NATIVE_PORT_TARGET.md).
 | State pemain dasar | ✅ | `PlayerInit`, Join/Quit/Name/Color → model native |
 | Native chat state | ✅ | `SendClientMessage` bounded 100 line; HUD chat masih berikutnya |
 | Class/spawn packet core | ✅ | request builder + response state native |
-| Persistent native session | 🧪 | socket retained after ClientJoin, auto-poll while detail aktif, peer filter, ACK/retry bounded |
+| Persistent native session | 🧪 | auto-poll, peer filter, ACK/retry bounded, keepalive transport reliable + internal pong; belum player sync/reconnect |
 | Class selection native | 🧪 | explicit `Class 0` request dari detail server; belum gameplay/render |
 | Player/vehicle/object sync penuh | ⏳ | belum |
 | HUD + textdraw/dialog native | ⏳ | belum |

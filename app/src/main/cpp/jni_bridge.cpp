@@ -40,6 +40,8 @@ std::string session_json(const samp::SessionSnapshot& s) {
     << ",\"reassembledPackets\":" << s.reassembledPackets
     << ",\"trackedPlayers\":" << s.trackedPlayers
     << ",\"chatMessages\":" << s.chatMessages
+    << ",\"reliableKeepalives\":" << s.reliableKeepalives
+    << ",\"connectedPongs\":" << s.connectedPongs
     << ",\"serverName\":\"" << samp::json_escape(s.serverName) << "\""
     << ",\"rpcSummary\":\"" << samp::json_escape(s.rpcSummary) << "\""
     << ",\"stateSummary\":\"" << samp::json_escape(s.stateSummary) << "\""
@@ -53,7 +55,7 @@ extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeVersion(JNIEnv* env, jclass) {
-  return to_java(env, "0.9.0 / native-chat-state");
+  return to_java(env, "0.10.0 / transport-keepalive");
 }
 
 JNIEXPORT jstring JNICALL

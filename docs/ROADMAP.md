@@ -22,7 +22,8 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 - [x] `RELIABLE_ORDERED` channel-2 class request, ACK consumption, bounded retry queue.
 - [x] Class selection + spawn response state reducer.
 - [x] Lifecycle-aware automatic poll saat detail session terlihat.
-- [ ] Heartbeat, full ACK-range behavior, reconnect, dan resend window.
+- [x] Transport keepalive reliable 5 detik + reply internal ping.
+- [ ] Full ACK-range behavior, reconnect, ping/timeout metrics, dan resend window.
 - [x] Bounded `SendClientMessage` chat state.
 - [ ] Dialog/checkpoint/textdraw native state.
 - [ ] Player sync encoder dengan rate limiter dan test vector.

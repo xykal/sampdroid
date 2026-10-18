@@ -32,13 +32,16 @@ Native Android renderer backend (future)
 
 `raknet_session` mempertahankan satu socket UDP yang dipilih pengguna setelah
 `ClientJoin`, membawa message/order counter, split reassembler, `WorldState`, ACK
-inbound, ACK outbound, dan retry queue bounded. Android shell memanggil JNI ini
-dari Kotlin IO coroutine; selama detail server terbuka, poll UDP berjalan
-otomatis dan berhenti/disconnect saat dialog ditutup.
+inbound, ACK outbound, dan retry queue bounded. Saat idle lima detik tanpa
+reliable outbound yang pending, session mengirim reliable transport keepalive
+`ID_DETECT_LOST_CONNECTIONS`; inbound `ID_INTERNAL_PING` dibalas dengan
+unreliable `ID_CONNECTED_PONG`. Android shell memanggil JNI ini dari Kotlin IO
+coroutine; selama detail server terbuka, poll UDP berjalan otomatis dan
+berhenti/disconnect saat dialog ditutup.
 
-Belum ada gameplay loop, protocol heartbeat/full congestion handling, atau sync
-encoder. Karena itu session surface sekarang diberi label eksperimen dan tidak
-boleh dipasarkan sebagai renderer/playable client.
+Belum ada gameplay loop, reconnect/full congestion handling, atau sync encoder.
+Transport keepalive bukan player sync. Karena itu session surface sekarang diberi
+label eksperimen dan tidak boleh dipasarkan sebagai renderer/playable client.
 
 ## Batas layer
 

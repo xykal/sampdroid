@@ -159,6 +159,17 @@ uint32_t BitReader::readCompressedU32() {
   return readBits(8);
 }
 
+std::vector<uint8_t> buildUnreliable(uint16_t messageNumber, const std::vector<uint8_t>& payload) {
+  BitWriter writer;
+  writer.writeBit(false);  // hasAcks
+  writer.writeBits(messageNumber, 16);
+  writer.writeBits(kReliabilityUnreliable, 4);
+  writer.writeBit(false);  // isSplit
+  writer.writeCompressedU16(static_cast<uint16_t>(payload.size() * 8));
+  writer.writeAlignedBytes(payload.data(), payload.size());
+  return writer.buffer;
+}
+
 std::vector<uint8_t> buildReliable(uint16_t messageNumber, const std::vector<uint8_t>& payload) {
   BitWriter writer;
   writer.writeBit(false);  // hasAcks

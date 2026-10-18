@@ -24,6 +24,8 @@ struct SessionSnapshot {
   int reassembledPackets = 0;
   int trackedPlayers = 0;
   int chatMessages = 0;
+  int reliableKeepalives = 0;
+  int connectedPongs = 0;
   std::string serverName;
   std::string rpcSummary;
   std::string stateSummary;
