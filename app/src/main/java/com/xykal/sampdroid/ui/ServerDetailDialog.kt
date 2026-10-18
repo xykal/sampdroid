@@ -19,6 +19,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.Locale
 
 object ServerDetailDialog {
 
@@ -35,6 +36,7 @@ object ServerDetailDialog {
         val btnSession: Button = view.findViewById(R.id.btnSession)
         val btnClassZero: Button = view.findViewById(R.id.btnClassZero)
         val btnSpawn: Button = view.findViewById(R.id.btnSpawn)
+        val btnControls: Button = view.findViewById(R.id.btnControls)
         val btnSessionDisconnect: Button = view.findViewById(R.id.btnSessionDisconnect)
 
         log.movementMethod = ScrollingMovementMethod()
@@ -97,12 +99,31 @@ object ServerDetailDialog {
                 }).append('\n')
             append("local spawn     : ")
                 .append(if (o.optBoolean("localSpawnInfoKnown")) {
-                    "skin ${o.optInt("localModel")} @ %.2f, %.2f, %.2f / %.1f°".format(
+                    String.format(
+                        Locale.US,
+                        "skin ${o.optInt("localModel")} @ %.2f, %.2f, %.2f / %.1f°",
                         o.optDouble("localX"), o.optDouble("localY"),
                         o.optDouble("localZ"), o.optDouble("localAngle")
                     )
                 } else {
                     "belum ada SetSpawnInfo"
+                }).append('\n')
+            append("touch input     : ")
+                .append(if (o.optBoolean("nativeControlsKnown")) {
+                    String.format(
+                        Locale.US,
+                        "move %.2f/%.2f, heading %.1f°, keys=0x%04X",
+                        o.optDouble("controlMoveX"), o.optDouble("controlMoveY"),
+                        o.optDouble("controlHeading"), o.optInt("controlKeys")
+                    )
+                } else {
+                    "belum ada"
+                }).append('\n')
+            append("on-foot preview : ")
+                .append(if (o.optBoolean("onFootPreviewReady")) {
+                    "siap lokal (belum dikirim)"
+                } else {
+                    "menunggu state lokal"
                 }).append('\n')
             append("checkpoint      : ")
                 .append(if (o.optBoolean("checkpointActive")) "aktif" else "tidak aktif")
@@ -270,6 +291,23 @@ object ServerDetailDialog {
                     if (snapshot.optBoolean("active")) startSessionPolling()
                 } catch (t: Throwable) {
                     log.text = "Gagal meminta spawn: ${t.message}"
+                }
+            }
+        }
+
+        btnControls.setOnClickListener {
+            activity.lifecycleScope.launch {
+                try {
+                    val snapshot = withContext(Dispatchers.IO) {
+                        JSONObject(NativeBridge.nativeSessionStatus())
+                    }
+                    if (!snapshot.optBoolean("active")) {
+                        log.text = "Buka Sesi native dulu sebelum memakai kontrol touch."
+                    } else {
+                        NativeControlsDialog.show(activity)
+                    }
+                } catch (t: Throwable) {
+                    log.text = "Gagal membuka kontrol touch: ${t.message}"
                 }
             }
         }

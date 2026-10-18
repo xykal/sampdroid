@@ -9,6 +9,8 @@ add_library(sampdroid SHARED
         samp_query.cpp
         client_rpc.cpp
         client_sync.cpp
+        input_state.cpp
+        local_player_sync.cpp
         raknet_codec.cpp
         rpc_decoder.cpp
         rpc_state.cpp

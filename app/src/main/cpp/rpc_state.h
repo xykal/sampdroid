@@ -33,6 +33,9 @@ enum class RpcEventKind : uint8_t {
 struct RpcEvent {
   RpcEventKind kind = RpcEventKind::Ignored;
   uint16_t playerId = 0;
+  // Lets the native input bridge honor an authoritative facing correction
+  // without treating unrelated local-player RPCs as a camera reset.
+  bool localFacingUpdated = false;
   std::string summary;
 };
 

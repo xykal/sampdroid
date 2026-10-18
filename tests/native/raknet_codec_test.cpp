@@ -1,5 +1,7 @@
 #include "client_rpc.h"
 #include "client_sync.h"
+#include "input_state.h"
+#include "local_player_sync.h"
 #include "raknet_codec.h"
 #include "raknet_session.h"
 #include "raknet_session_policy.h"
@@ -415,6 +417,90 @@ void testPlayerFootSyncBuilder() {
          "on-foot spawn/ACK gate changed");
 }
 
+void testNativeInputAndLocalPreview() {
+  samp::input::TouchIntent raw;
+  raw.moveX = 0.5f;
+  raw.moveY = 1.0f;
+  raw.lookDeltaDegrees = 90.0f;
+  raw.heldActions = samp::input::kHeldUse | samp::input::kHeldFire |
+                    samp::input::kHeldSprint | samp::input::kHeldJump |
+                    samp::input::kHeldAim;
+
+  samp::input::TouchIntent sanitized;
+  expect(samp::input::sanitizeTouchIntent(raw, sanitized) &&
+         std::fabs(sanitized.moveX - 0.5f) < 0.001f &&
+         sanitized.heldActions == raw.heldActions,
+         "native touch input sanitization changed");
+  raw.moveX = std::numeric_limits<float>::quiet_NaN();
+  expect(!samp::input::sanitizeTouchIntent(raw, sanitized),
+         "non-finite touch axis must be rejected");
+  raw.moveX = 0.5f;
+  raw.heldActions = 0x8000;
+  expect(!samp::input::sanitizeTouchIntent(raw, sanitized),
+         "unknown touch action bit must be rejected");
+
+  raw.heldActions = samp::input::kHeldUse | samp::input::kHeldFire |
+                    samp::input::kHeldSprint | samp::input::kHeldJump |
+                    samp::input::kHeldAim;
+  samp::input::OnFootInputMapper mapper;
+  expect(!mapper.wireInput().headingKnown, "input mapper must require server heading");
+  mapper.synchronizeHeading(0.0f);
+  expect(mapper.update(raw), "native touch input mapper rejected valid sample");
+  const auto wire = mapper.wireInput();
+  expect(wire.headingKnown && wire.leftRight == 64 && wire.upDown == -128 &&
+         wire.keys == static_cast<uint16_t>(1 | 4 | 8 | 32 | 128) &&
+         std::fabs(wire.headingDegrees - 90.0f) < 0.001f,
+         "semantic touch-to-SA-MP input mapping changed");
+
+  raw.moveX = 4.0f;
+  raw.moveY = -4.0f;
+  raw.lookDeltaDegrees = -180.0f;
+  raw.heldActions = 0;
+  expect(mapper.update(raw), "bounded touch input should be accepted");
+  const auto bounded = mapper.wireInput();
+  expect(bounded.leftRight == 128 && bounded.upDown == 128 && bounded.keys == 0 &&
+         std::fabs(bounded.headingDegrees - 0.0f) < 0.001f,
+         "touch axis/look bounds changed");
+
+  samp::state::LocalPlayer local;
+  local.positionKnown = true;
+  local.facingKnown = true;
+  local.x = 10.0f;
+  local.y = 20.0f;
+  local.z = 30.0f;
+  local.healthKnown = true;
+  local.health = 87.5f;
+  local.armourKnown = true;
+  local.armour = 25.0f;
+  local.specialActionKnown = true;
+  local.specialAction = 3;
+  local.velocityKnown = true;
+  local.velocityX = 3.0f;
+  local.velocityY = 4.0f;
+  local.velocityZ = 0.0f;
+
+  const auto preview = samp::bridge::buildOnFootPreview(local, wire);
+  expect(preview.ready() && preview.state.leftRight == 64 && preview.state.upDown == 0xFF80 &&
+         preview.state.keys == static_cast<uint16_t>(1 | 4 | 8 | 32 | 128) &&
+         std::fabs(preview.state.positionX - 10.0f) < 0.001f &&
+         std::fabs(preview.state.quaternionW - 0.7071067f) < 0.0001f &&
+         std::fabs(preview.state.quaternionZ + 0.7071067f) < 0.0001f &&
+         preview.state.health == 88 && preview.state.armour == 25 &&
+         preview.state.specialAction == 3 && preview.state.velocityY == 4.0f &&
+         samp::sync::buildPlayerFootSync(preview.state).valid(),
+         "local player OnFoot preview bridge changed");
+
+  local.positionKnown = false;
+  expect(samp::bridge::buildOnFootPreview(local, wire).status ==
+             samp::bridge::OnFootPreviewStatus::MissingPosition,
+         "preview must not invent a local position");
+  local.positionKnown = true;
+  local.health = 101.0f;
+  expect(samp::bridge::buildOnFootPreview(local, wire).status ==
+             samp::bridge::OnFootPreviewStatus::InvalidVitals,
+         "preview must not silently clamp out-of-range game vitals");
+}
+
 void testCompressedU32() {
   samp::raknet::BitWriter writer;
   const std::vector<uint32_t> values = {0, 15, 16, 255, 256, 65535, 65536, 0x12345678u};
@@ -487,6 +573,9 @@ void testSessionSafetyWithoutSocket() {
   const auto spawnRequest = samp::raknet_session_request_spawn();
   expect(!spawnRequest.active && !spawnRequest.error.empty(),
          "spawn request without session must be rejected");
+  const auto controls = samp::raknet_session_update_controls(samp::input::TouchIntent{});
+  expect(!controls.active && !controls.error.empty(),
+         "touch input without session must be rejected");
   const auto onFoot = samp::raknet_session_send_onfoot(samp::sync::OnFootState{});
   expect(!onFoot.active && !onFoot.error.empty(),
          "on-foot send without session must be rejected");
@@ -505,7 +594,7 @@ void testWorldStateReducer() {
   expect(world.applyRpc(makeSetSpawnInfo(4, 411, 100.0f, -25.5f, 8.0f, -90.0f), event),
          "WorldState rejected SetSpawnInfo");
   const auto& localSpawn = world.localPlayer();
-  expect(event.kind == samp::state::RpcEventKind::SpawnInfoChanged &&
+  expect(event.kind == samp::state::RpcEventKind::SpawnInfoChanged && event.localFacingUpdated &&
          localSpawn.spawnInfoKnown && localSpawn.positionKnown && localSpawn.facingKnown &&
          localSpawn.team == 4 && localSpawn.model == 411 &&
          std::fabs(localSpawn.x - 100.0f) < 0.001f &&
@@ -523,8 +612,8 @@ void testWorldStateReducer() {
   expect(world.applyRpc(makeVec3Rpc(13, 4.0f, 5.0f, 6.0f), event) &&
          world.localPlayer().positionFindZ && std::fabs(world.localPlayer().z - 6.0f) < 0.001f,
          "SetPlayerPositionFindZ local state wrong");
-  expect(world.applyRpc(makeFloatRpc(19, 450.0f), event) && world.localPlayer().facingKnown &&
-         std::fabs(world.localPlayer().angle - 90.0f) < 0.001f,
+  expect(world.applyRpc(makeFloatRpc(19, 450.0f), event) && event.localFacingUpdated &&
+         world.localPlayer().facingKnown && std::fabs(world.localPlayer().angle - 90.0f) < 0.001f,
          "SetPlayerFacingAngle local state wrong");
   expect(world.applyRpc(makeFloatRpc(14, 87.5f), event) && world.localPlayer().healthKnown &&
          std::fabs(world.localPlayer().health - 87.5f) < 0.001f,
@@ -638,6 +727,7 @@ int main() {
   testReliableAndAck();
   testUnreliableSequencedTransport();
   testPlayerFootSyncBuilder();
+  testNativeInputAndLocalPreview();
   testCompressedU32();
   testSplitReassembly();
   testPlayerInitDecoder();

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "client_sync.h"
+#include "input_state.h"
 
 #include <cstdint>
 #include <string>
@@ -22,6 +23,8 @@ struct SessionSnapshot {
   bool spawnConfirmationAcked = false;
   bool localSpawnInfoKnown = false;
   bool localPositionKnown = false;
+  bool nativeControlsKnown = false;
+  bool onFootPreviewReady = false;
   bool checkpointActive = false;
   bool raceCheckpointActive = false;
   uint16_t playerId = 0;
@@ -31,6 +34,12 @@ struct SessionSnapshot {
   float localY = 0.0f;
   float localZ = 0.0f;
   float localAngle = 0.0f;
+  float controlMoveX = 0.0f;
+  float controlMoveY = 0.0f;
+  float controlHeading = 0.0f;
+  int controlLeftRight = 0;
+  int controlUpDown = 0;
+  uint16_t controlKeys = 0;
   // Raw OnFootRate retained from PlayerInit, plus the safe client-side
   // interval after malformed-rate bounds are applied.
   uint32_t onFootSyncRateMs = 0;
@@ -68,6 +77,12 @@ SessionSnapshot raknet_session_request_class(uint16_t classId);
 // queues the required empty PlayerSpawn RPC; movement remains locked until its
 // reliable transport ACK arrives.
 SessionSnapshot raknet_session_request_spawn();
+
+// Updates bounded Android-native semantic touch/controller input and rebuilds
+// a local-only prospective OnFootSync preview. This function never transmits a
+// gameplay packet; position/collision integration remains the world bridge's
+// responsibility.
+SessionSnapshot raknet_session_update_controls(const input::TouchIntent& input);
 
 // Emits exactly one source-validated client PlayerFootSync packet only after
 // the active session has PlayerInit, a server-approved spawn response, and a

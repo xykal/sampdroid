@@ -164,6 +164,7 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       localPlayer_ = next;
       setEvent(event, RpcEventKind::SpawnInfoChanged,
                initialized_ ? playerInit_.playerId : 0, "SetSpawnInfo");
+      event.localFacingUpdated = true;
       return true;
     }
 
@@ -193,6 +194,7 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       localPlayer_.facingKnown = true;
       setEvent(event, RpcEventKind::LocalPlayerChanged,
                initialized_ ? playerInit_.playerId : 0, "SetPlayerFacingAngle");
+      event.localFacingUpdated = true;
       return true;
     }
 

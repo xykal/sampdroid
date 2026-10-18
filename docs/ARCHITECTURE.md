@@ -43,8 +43,10 @@ Fondasi encoder `OnFootSync` sudah ada: payload client→server yang diuji,
 `UNRELIABLE_SEQUENCED` channel 1, rate gate `PlayerInit`, dan spawn/session
 safety gate. Spawn gate sekarang mencakup `RequestSpawn` → respons → `PlayerSpawn`
 (52) → transport ACK, sementara `WorldState` menahan template spawn/posisi/vitals
-lokal terverifikasi. Namun belum ada gameplay loop, reconnect/full congestion
-handling, world bridge, atau input yang memanggilnya secara periodik. Transport keepalive
+lokal terverifikasi. Touch pad runtime sudah memetakan intent Android ke preview
+input/heading `OnFoot` lokal, tetapi tidak mengirim gameplay packet atau mengarang
+posisi sebelum world/collision bridge ada. Namun belum ada gameplay loop,
+reconnect/full congestion handling, atau world bridge. Transport keepalive
 bukan player sync. Karena itu session surface sekarang diberi label eksperimen
 dan tidak boleh dipasarkan sebagai renderer/playable client.
 

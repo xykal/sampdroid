@@ -51,11 +51,11 @@ Detail kontrak port: [docs/NATIVE_PORT_TARGET.md](docs/NATIVE_PORT_TARGET.md).
 | Checkpoint state | ✅ | normal + race checkpoint reducer; marker renderer masih berikutnya |
 | Class/spawn packet core | ✅ | Class → RequestSpawn → PlayerSpawn confirmation + ACK gate native |
 | Persistent native session | 🧪 | auto-poll, peer filter, ACK/retry bounded, keepalive transport reliable + internal pong; reconnect belum |
-| OnFootSync core | 🧪 | packet-207 client→server vector-tested, USeq channel-1, rate/spawn gate; belum dihubungkan ke input, renderer, atau loop gameplay |
+| OnFootSync core | 🧪 | packet-207 client→server vector-tested, USeq channel-1, rate/spawn gate + native input→local preview; belum ada loop/gameplay packet otomatis |
 | Class/spawn native | 🧪 | explicit `Class 0` + `Spawn`, response/ACK terlihat di diagnostic; belum gameplay/render |
 | Player/vehicle/object sync penuh | ⏳ | belum |
 | HUD + textdraw/dialog native | ⏳ | belum |
-| Touch/gamepad/gyro native | ⏳ | input layout sudah didefinisikan |
+| Touch/gamepad/gyro native | 🧪 | touch pad runtime → semantic native action → OnFoot preview; gamepad/gyro dan world loop berikutnya |
 | World/game bridge Android | ⏳ | belum di APK |
 
 Saat ini tombol **Probe RakNet** di detail server membuktikan alur nyata:

@@ -31,6 +31,8 @@ jobs:
             -Iapp/src/main/cpp \
             app/src/main/cpp/client_rpc.cpp \
             app/src/main/cpp/client_sync.cpp \
+            app/src/main/cpp/input_state.cpp \
+            app/src/main/cpp/local_player_sync.cpp \
             app/src/main/cpp/raknet_codec.cpp \
             app/src/main/cpp/rpc_decoder.cpp \
             app/src/main/cpp/rpc_state.cpp \

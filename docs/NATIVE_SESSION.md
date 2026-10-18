@@ -16,6 +16,7 @@ user pilih server
   → user memilih class lalu meminta spawn secara eksplisit
   → respons spawn nonzero → core kirim RPC PlayerSpawn (52) → tunggu ACK
   → state spawn/posisi lokal direduce dari RPC server
+  → touch semantic action → preview OnFoot lokal (tanpa transmit)
   → core dapat mengirim satu OnFootSync yang sudah digate (belum loop otomatis)
 ```
 
@@ -25,8 +26,10 @@ otomatis saat connect. Ia tetap bukan kontrol gameplay atau renderer.
 ## Fondasi outbound OnFootSync
 
 Core sekarang mempunyai `raknet_session_send_onfoot()` untuk **satu** state lokal
-tervalidasi. API ini belum dipanggil dari UI diagnostik dan tidak membuat loop
-pergerakan sendiri. Ia hanya boleh mengirim setelah semua syarat berikut terpenuhi:
+tervalidasi. Touch pad diagnostik mengisi **preview** state melalui
+`raknet_session_update_controls()`, tetapi tidak memanggil API kirim dan tidak
+membuat loop pergerakan sendiri. Ia hanya boleh mengirim setelah semua syarat
+berikut terpenuhi:
 
 1. UDP session aktif dan `CONNECTION_REQUEST_ACCEPTED` sudah diterima;
 2. `PlayerInit` valid sudah diterima;
@@ -69,6 +72,19 @@ RPC 52 diberi purpose terpisah; ACK lama tidak boleh membuka request spawn baru.
 facing angle, health, armour, special action, dan velocity. Semua float finite,
 posisi dunia, dan velocity dibatasi sebelum masuk state renderer/input. Ini state
 native saja — belum menggambar ped atau mengemulasi fisika GTA.
+
+## Touch input → preview aman
+
+`Kontrol touch` adalah pad multi-touch v1 di Android: stick bergerak,
+horizontal swipe untuk look, dan tombol tahan jump/run/fire/aim/use/crouch. JNI
+mengirim semantic action yang dibatasi ke mapper C++; mapper mengonversinya ke
+`LeftRight`, `UpDown`, `Keys`, dan heading quaternion WXYZ sesuai `GTAQuat`
+legacy. Preview mengambil **hanya** posisi/vital/velocity server yang sudah
+tervalidasi.
+
+Tidak ada packet OnFoot yang dikirim oleh kontrol ini. Tanpa renderer/collision
+bridge, memajukan posisi dari joystick saja akan membuat client mengarang posisi
+dan berisiko pada validasi server. Kontrol tetap diclear saat dialog ditutup.
 
 ## Ownership dan keamanan
 
@@ -113,6 +129,8 @@ Di detail server terdapat:
 - **Class 0** — mengirim `PlayerRequestClass(0)` hanya bila socket aktif;
 - **Spawn** — user-triggered `PlayerRequestSpawn`; respons izin memicu
   `PlayerSpawn` native dan diagnostic menunggu ACK-nya;
+- **Kontrol touch** — membuka semantic multi-touch pad dan preview OnFoot
+  lokal; belum mengirim movement packet;
 - **Putus sesi** — menghentikan poll lalu menutup socket native.
 
 Loop memanggil native poll di `Dispatchers.IO` (timeout UDP 250 ms) dan memberi
@@ -132,5 +150,5 @@ memvalidasi lifecycle secara jujur tanpa mengklaim APK sudah playable.
 2. Capture/live validation untuk handshake spawn lengkap dan `OnFootSync` yang
    sudah punya encoder/rate gate.
 3. Player/vehicle/object state → native HUD + renderer/world bridge.
-4. Input touch/gamepad/keyboard/gyro → semantic action → loop sync OnFoot,
-   lalu vehicle sync.
+4. World/collision bridge + capture validation → controlled touch/gamepad/keyboard/gyro
+   OnFoot loop, lalu vehicle sync.

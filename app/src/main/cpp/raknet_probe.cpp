@@ -4,6 +4,8 @@
 #include "raknet_probe.h"
 #include "client_rpc.h"
 #include "client_sync.h"
+#include "input_state.h"
+#include "local_player_sync.h"
 #include "raknet_codec.h"
 #include "raknet_session.h"
 #include "raknet_session_policy.h"
@@ -196,8 +198,12 @@ struct LiveSession {
   int outboundOnFootPackets = 0;
   bool spawnConfirmationSent = false;
   bool spawnConfirmationAcked = false;
+  bool nativeControlsKnown = false;
+  bool onFootPreviewReady = false;
   bool localOnFootStateKnown = false;
   uint64_t lastOnFootSentMs = 0;
+  input::OnFootInputMapper controls;
+  sync::OnFootState onFootPreview;
   sync::OnFootState localOnFootState;
   std::chrono::steady_clock::time_point lastReliableSent = std::chrono::steady_clock::now();
   std::string rpcSummary;
@@ -392,6 +398,17 @@ bool sendSpawnConfirmation(LiveSession& session) {
   return true;
 }
 
+void rebuildLocalOnFootPreview(LiveSession& session) {
+  const state::LocalPlayer& local = session.world.localPlayer();
+  if (!session.controls.headingKnown() && local.facingKnown) {
+    session.controls.synchronizeHeading(local.angle);
+  }
+  const bridge::OnFootPreview preview =
+      bridge::buildOnFootPreview(local, session.controls.wireInput());
+  session.onFootPreviewReady = preview.ready();
+  if (preview.ready()) session.onFootPreview = preview.state;
+}
+
 void processSessionDatagram(LiveSession& session, const std::vector<uint8_t>& bytes) {
   const raknet::Datagram datagram = raknet::decodeDatagram(bytes);
   consumeRemoteAcks(session, datagram.receivedAckMessageNumbers);
@@ -425,6 +442,13 @@ void processSessionDatagram(LiveSession& session, const std::vector<uint8_t>& by
       state::RpcEvent event;
       if (session.world.applyRpc(packet.payload, event)) {
         appendBounded(session.stateSummary, event.summary, 240);
+        if (event.localFacingUpdated) {
+          session.controls.synchronizeHeading(session.world.localPlayer().angle);
+        }
+        if (event.kind == state::RpcEventKind::SpawnInfoChanged ||
+            event.kind == state::RpcEventKind::LocalPlayerChanged) {
+          rebuildLocalOnFootPreview(session);
+        }
         if (event.kind == state::RpcEventKind::SpawnResponse) {
           if (session.world.spawnAllowed()) {
             // PlayerRequestSpawn is only permission. The legacy protocol
@@ -460,6 +484,8 @@ SessionSnapshot snapshotFrom(const LiveSession* session) {
   snapshot.spawnConfirmationAcked = session->spawnConfirmationAcked;
   snapshot.localSpawnInfoKnown = session->world.localPlayer().spawnInfoKnown;
   snapshot.localPositionKnown = session->world.localPlayer().positionKnown;
+  snapshot.nativeControlsKnown = session->nativeControlsKnown;
+  snapshot.onFootPreviewReady = session->onFootPreviewReady;
   snapshot.checkpointActive = session->world.checkpoint().active;
   snapshot.raceCheckpointActive = session->world.raceCheckpoint().active;
   snapshot.playerId = snapshot.playerInit ? session->world.playerInit().playerId : 0;
@@ -470,6 +496,13 @@ SessionSnapshot snapshotFrom(const LiveSession* session) {
   snapshot.localY = local.positionKnown ? local.y : 0.0f;
   snapshot.localZ = local.positionKnown ? local.z : 0.0f;
   snapshot.localAngle = local.facingKnown ? local.angle : 0.0f;
+  const input::WireInput controls = session->controls.wireInput();
+  snapshot.controlMoveX = session->controls.intent().moveX;
+  snapshot.controlMoveY = session->controls.intent().moveY;
+  snapshot.controlHeading = controls.headingKnown ? controls.headingDegrees : 0.0f;
+  snapshot.controlLeftRight = controls.leftRight;
+  snapshot.controlUpDown = controls.upDown;
+  snapshot.controlKeys = controls.keys;
   snapshot.onFootSyncRateMs = snapshot.playerInit ? session->world.playerInit().onFootSyncRateMs : 0;
   snapshot.effectiveOnFootSyncRateMs =
       snapshot.playerInit ? syncpolicy::boundedOnFootRateMs(snapshot.onFootSyncRateMs) : 0;
@@ -839,6 +872,26 @@ SessionSnapshot raknet_session_request_spawn() {
     gLiveSession->spawnConfirmationAcked = false;
     appendBounded(gLiveSession->stateSummary, "PlayerRequestSpawn", 240);
   }
+  return snapshotFrom(gLiveSession.get());
+}
+
+SessionSnapshot raknet_session_update_controls(const input::TouchIntent& input) {
+  std::lock_guard<std::mutex> lock(gLiveSessionMutex);
+  if (!gLiveSession || !gLiveSession->net || gLiveSession->net->fd < 0) {
+    return snapshotFrom(nullptr);
+  }
+
+  if (!gLiveSession->controls.headingKnown() && gLiveSession->world.localPlayer().facingKnown) {
+    gLiveSession->controls.synchronizeHeading(gLiveSession->world.localPlayer().angle);
+  }
+  if (!gLiveSession->controls.update(input)) {
+    gLiveSession->error = "input touch native tidak valid";
+    return snapshotFrom(gLiveSession.get());
+  }
+
+  gLiveSession->nativeControlsKnown = true;
+  rebuildLocalOnFootPreview(*gLiveSession);
+  gLiveSession->error.clear();
   return snapshotFrom(gLiveSession.get());
 }
 

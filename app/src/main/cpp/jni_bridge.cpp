@@ -1,6 +1,7 @@
 // JNI bridge: mengekspos protokol SA-MP ke Kotlin.
 #include <jni.h>
 
+#include <cstdint>
 #include <sstream>
 #include <string>
 
@@ -36,6 +37,8 @@ std::string session_json(const samp::SessionSnapshot& s) {
     << ",\"spawnConfirmationAcked\":" << (s.spawnConfirmationAcked ? "true" : "false")
     << ",\"localSpawnInfoKnown\":" << (s.localSpawnInfoKnown ? "true" : "false")
     << ",\"localPositionKnown\":" << (s.localPositionKnown ? "true" : "false")
+    << ",\"nativeControlsKnown\":" << (s.nativeControlsKnown ? "true" : "false")
+    << ",\"onFootPreviewReady\":" << (s.onFootPreviewReady ? "true" : "false")
     << ",\"checkpointActive\":" << (s.checkpointActive ? "true" : "false")
     << ",\"raceCheckpointActive\":" << (s.raceCheckpointActive ? "true" : "false")
     << ",\"playerId\":" << s.playerId
@@ -45,6 +48,12 @@ std::string session_json(const samp::SessionSnapshot& s) {
     << ",\"localY\":" << s.localY
     << ",\"localZ\":" << s.localZ
     << ",\"localAngle\":" << s.localAngle
+    << ",\"controlMoveX\":" << s.controlMoveX
+    << ",\"controlMoveY\":" << s.controlMoveY
+    << ",\"controlHeading\":" << s.controlHeading
+    << ",\"controlLeftRight\":" << s.controlLeftRight
+    << ",\"controlUpDown\":" << s.controlUpDown
+    << ",\"controlKeys\":" << s.controlKeys
     << ",\"onFootSyncRateMs\":" << s.onFootSyncRateMs
     << ",\"effectiveOnFootSyncRateMs\":" << s.effectiveOnFootSyncRateMs
     << ",\"receivedPackets\":" << s.receivedPackets
@@ -70,7 +79,7 @@ extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeVersion(JNIEnv* env, jclass) {
-  return to_java(env, "0.13.0 / spawn-local-state");
+  return to_java(env, "0.14.0 / native-touch-preview");
 }
 
 JNIEXPORT jstring JNICALL
@@ -183,6 +192,24 @@ Java_com_xykal_sampdroid_NativeBridge_nativeSessionRequestClass(JNIEnv* env, jcl
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeSessionRequestSpawn(JNIEnv* env, jclass) {
   return to_java(env, session_json(samp::raknet_session_request_spawn()));
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_xykal_sampdroid_NativeBridge_nativeSessionUpdateControls(JNIEnv* env, jclass,
+                                                                  jfloat moveX, jfloat moveY,
+                                                                  jfloat lookDeltaDegrees,
+                                                                  jint heldActions) {
+  if (heldActions < 0 || heldActions > 0xFFFF) {
+    samp::SessionSnapshot invalid;
+    invalid.error = "mask input native di luar rentang u16";
+    return to_java(env, session_json(invalid));
+  }
+  samp::input::TouchIntent input;
+  input.moveX = moveX;
+  input.moveY = moveY;
+  input.lookDeltaDegrees = lookDeltaDegrees;
+  input.heldActions = static_cast<uint16_t>(heldActions);
+  return to_java(env, session_json(samp::raknet_session_update_controls(input)));
 }
 
 JNIEXPORT jstring JNICALL

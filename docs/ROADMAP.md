@@ -31,13 +31,17 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 - [x] Fondasi `OnFootSync` packet 207: vector regresi client→server,
   `UNRELIABLE_SEQUENCED` channel 1, ordering counter terpisah, rate gate dari
   `PlayerInit`, serta spawn/session gate.
+- [x] Touch semantic mapper bounded + local-player → OnFoot preview, tanpa packet
+  movement otomatis atau posisi/collision palsu.
 - [ ] Hubungkan encoder OnFoot ke world bridge + input native dan validasi capture/live
   sebelum mengaktifkan loop periodik gameplay.
 
 ## Milestone 0.8 — native Android controls + HUD
 
-- [ ] Runtime native input layout v1.
-- [ ] Touch joystick, camera swipe, buttons, aim/fire, vehicle control.
+- [x] Runtime touch pad v1: joystick, camera swipe, jump/run/fire/aim/use →
+  bounded semantic state + OnFoot preview.
+- [ ] Touch joystick, camera swipe, buttons, aim/fire, vehicle control dalam
+  renderer/world loop yang tervalidasi.
 - [ ] Gamepad / keyboard / gyro mapping.
 - [ ] Editor layout di perangkat + export JSON internal.
 - [ ] Accessibility: tombol besar, one-hand, high contrast.

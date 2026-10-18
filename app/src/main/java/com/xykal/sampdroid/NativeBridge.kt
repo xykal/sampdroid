@@ -47,6 +47,17 @@ object NativeBridge {
     /** Starts the explicit RequestSpawn → PlayerSpawn native handshake. */
     external fun nativeSessionRequestSpawn(): String
 
+    /**
+     * Updates bounded Android-native semantic touch/controller state and returns
+     * an OnFoot preview. This does not transmit movement to the server.
+     */
+    external fun nativeSessionUpdateControls(
+        moveX: Float,
+        moveY: Float,
+        lookDeltaDegrees: Float,
+        heldActions: Int
+    ): String
+
     /** Releases the retained UDP socket. Safe if no session is active. */
     external fun nativeSessionDisconnect(): String
 

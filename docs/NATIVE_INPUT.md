@@ -7,9 +7,11 @@ memerlukan file dari client Windows.
 Format berbasis koordinat relatif supaya controller native bisa nyaman dipakai
 di layar kecil ARMv7, ponsel modern, atau tablet.
 
-> **Status:** schema dan contoh siap dipakai pengembang. Runtime touch overlay
-> akan memakai format sama; belum aktif di APK karena HUD/input gameplay masih
-> milestone berikutnya.
+> **Status:** v0.14 memasang touch pad runtime pertama di detail sesi native.
+> Joystick, swipe look, dan tombol action sekarang diterjemahkan menjadi state
+> semantic native dan preview `OnFootSync` lokal. Ia **belum** mengirim movement
+> packet atau menggantikan renderer/world collision; itu sengaja ditahan sampai
+> posisi gameplay benar-benar dimiliki bridge dunia.
 
 ## File
 
@@ -56,6 +58,28 @@ dimuat melalui file ini.
 
 Action diterjemahkan oleh input mapper SampDroid menjadi state client Android,
 bukan keycode atau hook client PC.
+
+## Runtime touch pad v0.14
+
+Tombol **Kontrol touch** di detail sesi membuka pad multi-touch native. Pad
+v0.14 memakai default internal yang setara dengan layout landscape contoh; schema
+JSON tetap kontrak untuk editor/import berikutnya dan belum diload dinamis. Pad
+menghasilkan `moveX/moveY`, delta look relatif, serta action tahan `USE`,
+`DUCK`, `FIRE`, `RUN`, `JUMP`, dan `AIM`. State tersebut masuk ke C++ dengan
+batas finite/range lalu dipetakan ke field legacy berikut:
+
+| Intent native | Field PlayerFootSync | Aturan |
+|---|---|---|
+| joystick X | `LeftRight` signed raw | `-128..128`, dead zone 0.08 |
+| joystick Y | `UpDown` signed raw | forward menjadi `-128` sesuai `Key::UP` |
+| action tahan | `Keys` | bit SA-MP/open.mp audited (`ACTION`, `FIRE`, `SPRINT`, `JUMP`, `AIM`, dll.) |
+| swipe horizontal | quaternion W/X/Y/Z preview | heading diakumulasi dan dinormalisasi `0..360` |
+
+Local-player bridge hanya memakai posisi, vital, velocity, special action, dan
+facing authoritative yang sudah direduce dari RPC. Ia tidak mengarang collision,
+posisi langkah, senjata aktif, surfing, atau animation. Karena itu preview ini
+tidak secara otomatis memanggil `raknet_session_send_onfoot()` dan tidak bisa
+menjadi loop gameplay sebelum renderer/world bridge selesai.
 
 ## Aksesibilitas
 
