@@ -58,6 +58,9 @@ object NativeWorldDialog {
                 surfaceHeight
             ).apply { topMargin = (8f * density).toInt() }
         }
+        // Switching to the GPU scene closes this lightweight radar first so an
+        // ARMv7 device never keeps two renderer update loops alive at once.
+        var activeDialog: androidx.appcompat.app.AlertDialog? = null
         val controls = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = android.view.Gravity.CENTER
@@ -76,6 +79,10 @@ object NativeWorldDialog {
         addButton("− ZOOM") { surface.zoomBy(1.45f) }
         addButton("+ ZOOM") { surface.zoomBy(1f / 1.45f) }
         addButton("FOLLOW") { surface.followLocalPlayer() }
+        addButton("SCENE GPU") {
+            activeDialog?.dismiss()
+            activity.window.decorView.post { NativeWorldSceneDialog.show(activity) }
+        }
         addButton("KONTROL") { NativeControlsDialog.show(activity) }
 
         val status = TextView(activity).apply {
@@ -94,6 +101,7 @@ object NativeWorldDialog {
             .setView(root)
             .setNegativeButton("Tutup", null)
             .create()
+        activeDialog = dialog
         var renderJob: Job? = null
         dialog.setOnShowListener {
             dialog.window?.setLayout(
@@ -121,7 +129,7 @@ object NativeWorldDialog {
     }
 }
 
-private data class WorldActor(
+internal data class WorldActor(
     val id: Int,
     val rgba: Long,
     val model: Long,
@@ -135,7 +143,7 @@ private data class WorldActor(
     val name: String
 )
 
-private data class WorldMarker(
+internal data class WorldMarker(
     val active: Boolean = false,
     val x: Float = 0f,
     val y: Float = 0f,
@@ -143,7 +151,7 @@ private data class WorldMarker(
     val size: Float = 0f
 )
 
-private data class WorldFrame(
+internal data class WorldFrame(
     val active: Boolean = false,
     val localKnown: Boolean = false,
     val localFacingKnown: Boolean = false,

@@ -128,7 +128,7 @@ extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeVersion(JNIEnv* env, jclass) {
-  return to_java(env, "0.16.0 / native-world-radar");
+  return to_java(env, "0.17.0 / native-world-gpu-scene");
 }
 
 JNIEXPORT jstring JNICALL

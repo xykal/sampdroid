@@ -54,12 +54,18 @@ sekadar log, `WorldSnapshot` menyalin maksimal 64 actor + checkpoint ke JNI dan
 Canvas Android menggambar radar/peta top-down. Canvas ini hanya memvisualkan
 state authoritative yang sudah ada; drag/zoom mengubah kamera lokal saja.
 
+Di atas snapshot yang sama, scene GLES 2.0 Android menggambar grid perspektif,
+proxy kubus actor, marker checkpoint, serta kamera orbit/zoom. Renderer ini
+hanya memakai geometri buatan APK, tidak membaca socket atau asset game, sehingga
+menjadi backend GPU visual ringan untuk ARMv7/ARM64 — bukan map/model GTA,
+collision, atau simulasi permainan.
+
 Touch pad runtime sudah memetakan intent Android ke preview input/heading `OnFoot`
 lokal, tetapi tidak mengirim gameplay packet atau mengarang posisi sebelum
-world/collision bridge ada. Namun belum ada gameplay loop, reconnect/full
-congestion handling, atau world bridge. Transport keepalive bukan player sync.
-Karena itu session surface sekarang diberi label eksperimen dan tidak boleh
-dipasarkan sebagai renderer/playable client.
+world/collision bridge ada. Gameplay loop, reconnect/full congestion handling,
+map/asset bridge berbasis data milik pengguna, dan HUD penuh masih belum ada.
+Transport keepalive bukan player sync. Karena itu session surface sekarang diberi
+label eksperimen dan tidak boleh dipasarkan sebagai renderer/playable client.
 
 ## Batas layer
 

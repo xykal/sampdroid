@@ -53,12 +53,12 @@ Detail kontrak port: [docs/NATIVE_PORT_TARGET.md](docs/NATIVE_PORT_TARGET.md).
 | Persistent native session | 🧪 | auto-poll, peer filter, ACK/retry bounded, keepalive transport reliable + internal pong; reconnect belum |
 | OnFootSync core | 🧪 | encoder packet-207 client→server vector-tested, USeq channel-1, rate/spawn gate + native input→local preview; belum ada loop/gameplay packet otomatis |
 | Remote on-foot bridge | 🧪 | decoder broadcast packet-207 server→client + lifecycle StreamIn/Out → state entity native bounded |
-| Dunia/radar native | 🧪 | Canvas Android menampilkan local/remote actor + checkpoint dari snapshot native; bukan GTA renderer 3D/collision atau movement gameplay |
+| Dunia/radar + scene GPU native | 🧪 | Canvas radar dan scene GLES 2.0 Android menampilkan local/remote actor + checkpoint dari snapshot native; scene memakai grid/geometri buatan APK, bukan map/model GTA, collision, atau movement gameplay |
 | Class/spawn native | 🧪 | explicit `Class 0` + `Spawn`, response/ACK terlihat di diagnostic; belum gameplay/render |
 | Player/vehicle/object sync penuh | ⏳ | remote on-foot state baru fondasi; vehicle/object dan renderer belum |
 | HUD + textdraw/dialog native | ⏳ | belum |
 | Touch/gamepad/gyro native | 🧪 | touch pad runtime → semantic native action → OnFoot preview; gamepad/gyro dan world loop berikutnya |
-| World/game bridge Android | 🧪 | radar/entity surface ada; renderer GTA 3D, collision, map/asset bridge, dan gameplay loop belum |
+| World/game bridge Android | 🧪 | radar/entity surface dan scene GPU geometri tanpa asset sudah ada; renderer/map GTA berbasis data milik pengguna, collision, HUD penuh, dan gameplay loop belum |
 
 Saat ini tombol **Probe RakNet** di detail server membuktikan alur nyata:
 

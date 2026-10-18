@@ -70,7 +70,7 @@ object ServerDetailDialog {
         fun formatSession(o: JSONObject): String = buildString {
             append("=== SESI NATIVE (EKSPERIMEN) ===\n")
             append("Soket ini native Android, bukan Winlator/samp.exe.\n")
-            append("Spawn/local + sync remote native; Dunia native merender radar entity, gameplay GTA penuh belum.\n")
+            append("Spawn/local + sync remote native; Dunia native punya radar dan scene GPU geometri, gameplay GTA penuh belum.\n")
             append("Saat aktif, stream dipoll otomatis sampai sesi diputus/dialog ditutup.\n\n")
             append("aktif           : ").append(o.optBoolean("active")).append('\n')
             append("accepted        : ").append(o.optBoolean("accepted")).append('\n')

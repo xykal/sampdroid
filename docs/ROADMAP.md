@@ -54,10 +54,14 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 
 - [x] Bounded world snapshot → Canvas radar Android: local/remote player dan
   checkpoint terlihat tanpa Windows runtime; kamera drag/zoom lokal.
-- [ ] Android renderer 3D/world bridge interface tanpa Windows runtime.
+- [x] Scene GLES 2.0 Android tanpa asset: grid perspektif, proxy actor,
+  checkpoint beacon, orbit/zoom camera, dan update dari snapshot immutable.
+  Ini renderer geometri visual, bukan map/model GTA atau simulasi.
+- [ ] Android renderer 3D/world bridge interface untuk map/model data milik pengguna,
+  tanpa Windows runtime.
 - [ ] User-owned game data selector/check tanpa copy atau download asset.
-- [ ] World/entity bridge: remote player state/radar ada; model, vehicle, object,
-  weather, HUD penuh, collision, dan gameplay loop masih berikutnya.
+- [ ] World/entity bridge: remote player state/radar + proxy scene ada; model,
+  vehicle, object, weather, HUD penuh, collision, dan gameplay loop masih berikutnya.
 - [ ] ARMv7/ARM64 performance budget dan low-memory fallback.
 
 ## Milestone 1.0 — native client loop

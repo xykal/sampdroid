@@ -12,8 +12,8 @@ android {
         applicationId = "com.xykal.sampdroid"
         minSdk = 24
         targetSdk = 34
-        versionCode = 16
-        versionName = "0.16.0"
+        versionCode = 17
+        versionName = "0.17.0"
 
         // WAJIB: dua arsitektur sesuai permintaan
         ndk {
