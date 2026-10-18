@@ -77,6 +77,22 @@ struct Player {
   uint16_t animationFlags = 0;
 };
 
+// Bounded copy handed to a renderer/HUD boundary. It intentionally contains
+// no mutable map/socket state and is ordered by player ID when exported.
+struct RemotePlayerView {
+  uint16_t id = 0;
+  uint32_t rgba = 0;
+  uint32_t model = 0;
+  bool onFootKnown = false;
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  float angle = 0.0f;
+  float health = 100.0f;
+  float armour = 0.0f;
+  std::string name;
+};
+
 struct ChatLine {
   uint32_t rgba = 0;
   std::string text;
@@ -158,6 +174,8 @@ public:
   size_t playerCount() const { return players_.size(); }
   size_t streamedPlayerCount() const;
   size_t remoteOnFootCount() const;
+  // Copies at most `maxPlayers` visible remote actors for the renderer/HUD.
+  std::vector<RemotePlayerView> renderablePlayers(size_t maxPlayers = 64) const;
   const Player* findPlayer(uint16_t id) const;
   size_t chatCount() const { return chatLines_.size(); }
   const ChatLine* latestChat() const {

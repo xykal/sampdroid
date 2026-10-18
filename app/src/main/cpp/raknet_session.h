@@ -7,8 +7,51 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace samp {
+
+struct WorldActorSnapshot {
+  uint16_t id = 0;
+  uint32_t rgba = 0;
+  uint32_t model = 0;
+  bool onFootKnown = false;
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  float angle = 0.0f;
+  float health = 100.0f;
+  float armour = 0.0f;
+  std::string name;
+};
+
+// Read-only renderer/HUD hand-off. This is a small bounded view of authoritative
+// session state, not a simulation, collision system, or transmit command.
+struct WorldSnapshot {
+  bool active = false;
+  bool localPositionKnown = false;
+  bool localFacingKnown = false;
+  bool checkpointActive = false;
+  bool raceCheckpointActive = false;
+  uint16_t localPlayerId = 0;
+  float localX = 0.0f;
+  float localY = 0.0f;
+  float localZ = 0.0f;
+  float localAngle = 0.0f;
+  float checkpointX = 0.0f;
+  float checkpointY = 0.0f;
+  float checkpointZ = 0.0f;
+  float checkpointSize = 0.0f;
+  float raceCheckpointX = 0.0f;
+  float raceCheckpointY = 0.0f;
+  float raceCheckpointZ = 0.0f;
+  float raceCheckpointSize = 0.0f;
+  int streamedPlayers = 0;
+  int remoteOnFootPlayers = 0;
+  std::string serverName;
+  std::string error;
+  std::vector<WorldActorSnapshot> actors;
+};
 
 struct SessionSnapshot {
   bool active = false;
@@ -101,5 +144,9 @@ SessionSnapshot raknet_session_disconnect();
 
 // Returns the last retained session state without reading from the network.
 SessionSnapshot raknet_session_status();
+
+// Copies a renderer-neutral, bounded world/radar view without reading from the
+// network. Callers must poll the session separately to receive fresh packets.
+WorldSnapshot raknet_session_world_snapshot();
 
 }  // namespace samp

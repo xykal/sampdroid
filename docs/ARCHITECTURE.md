@@ -49,7 +49,10 @@ bit-packed quaternion/percent/velocity serta field surfing/animation opsional la
 mereduksinya ke state remote bounded. `PlayerStreamOut`, ID lokal, dan sync orphan
 diabaikan. Gate `UNRELIABLE_SEQUENCED` per channel juga membuang index stale
 (sekaligus menangani wrap 16-bit) sebelum state disentuh. Ini belum menghasilkan
-model, radar, collision, atau packet movement.
+model, collision, atau packet movement. Sebagai surface pertama yang tidak lagi
+sekadar log, `WorldSnapshot` menyalin maksimal 64 actor + checkpoint ke JNI dan
+Canvas Android menggambar radar/peta top-down. Canvas ini hanya memvisualkan
+state authoritative yang sudah ada; drag/zoom mengubah kamera lokal saja.
 
 Touch pad runtime sudah memetakan intent Android ke preview input/heading `OnFoot`
 lokal, tetapi tidak mengirim gameplay packet atau mengarang posisi sebelum

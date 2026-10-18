@@ -746,6 +746,9 @@ void testClientRpcBuilders() {
 void testSessionSafetyWithoutSocket() {
   const auto status = samp::raknet_session_status();
   expect(!status.active && !status.error.empty(), "idle session status must be safe");
+  const auto world = samp::raknet_session_world_snapshot();
+  expect(!world.active && !world.error.empty() && world.actors.empty(),
+         "idle world snapshot must be safe and bounded");
   const auto classRequest = samp::raknet_session_request_class(0);
   expect(!classRequest.active && !classRequest.error.empty(),
          "class request without session must be rejected");
@@ -760,6 +763,25 @@ void testSessionSafetyWithoutSocket() {
          "on-foot send without session must be rejected");
   const auto closed = samp::raknet_session_disconnect();
   expect(!closed.active && !closed.stateSummary.empty(), "idle session close must be safe");
+}
+
+void testRenderableWorldBoundary() {
+  samp::state::WorldState world;
+  samp::state::RpcEvent event;
+  expect(world.applyRpc(makePlayerInit(), event), "render boundary PlayerInit rejected");
+  for (uint16_t id = 1; id <= 80; ++id) {
+    if (id == 42) continue;  // reserved local PlayerInit ID in this vector
+    expect(world.applyRpc(makePlayerJoin(id, 0xA0B0C0FFu, false, "P"), event),
+           "render boundary PlayerJoin rejected");
+    expect(world.applyRpc(makePlayerStreamIn(id, 0, 7, static_cast<float>(id), 0.0f, 3.0f,
+                                              0.0f, 0xA0B0C0FFu, 0), event),
+           "render boundary PlayerStreamIn rejected");
+  }
+  const auto capped = world.renderablePlayers(1000);
+  expect(capped.size() == 64 && capped.front().id == 1 && capped.back().id == 65,
+         "world renderer actor cap/order changed");
+  expect(world.renderablePlayers(5).size() == 5 && world.renderablePlayers(0).empty(),
+         "world renderer requested cap changed");
 }
 
 void testWorldStateReducer() {
@@ -906,6 +928,11 @@ void testWorldStateReducer() {
          world.findPlayer(7)->remoteOnFootKnown && std::fabs(world.findPlayer(7)->x - 100.5f) < 0.001f &&
          std::fabs(world.findPlayer(7)->velocityY - 4.0f) < 0.01f,
          "remote PlayerFootSync actor state wrong");
+  const auto renderActors = world.renderablePlayers();
+  expect(renderActors.size() == 1 && renderActors[0].id == 7 &&
+         renderActors[0].name == "Darius" && renderActors[0].onFootKnown &&
+         std::fabs(renderActors[0].x - 100.5f) < 0.001f,
+         "bounded remote render snapshot changed");
   const auto validRemote = remote;
   remote.positionX = 20000.0f;
   expect(!world.applyRemoteOnFoot(remote, event) &&
@@ -948,6 +975,7 @@ int main() {
   testPlayerInitDecoder();
   testClientRpcBuilders();
   testSessionSafetyWithoutSocket();
+  testRenderableWorldBoundary();
   testWorldStateReducer();
   std::puts("raknet codec/state regression tests: OK");
   return 0;

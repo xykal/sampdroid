@@ -58,6 +58,12 @@ object NativeBridge {
         heldActions: Int
     ): String
 
+    /**
+     * Copies bounded local/remote actor and checkpoint state for the native
+     * world/radar surface. This does not read UDP or transmit gameplay data.
+     */
+    external fun nativeSessionWorldSnapshot(): String
+
     /** Releases the retained UDP socket. Safe if no session is active. */
     external fun nativeSessionDisconnect(): String
 

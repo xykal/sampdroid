@@ -37,6 +37,7 @@ object ServerDetailDialog {
         val btnClassZero: Button = view.findViewById(R.id.btnClassZero)
         val btnSpawn: Button = view.findViewById(R.id.btnSpawn)
         val btnControls: Button = view.findViewById(R.id.btnControls)
+        val btnWorld: Button = view.findViewById(R.id.btnWorld)
         val btnSessionDisconnect: Button = view.findViewById(R.id.btnSessionDisconnect)
 
         log.movementMethod = ScrollingMovementMethod()
@@ -69,7 +70,7 @@ object ServerDetailDialog {
         fun formatSession(o: JSONObject): String = buildString {
             append("=== SESI NATIVE (EKSPERIMEN) ===\n")
             append("Soket ini native Android, bukan Winlator/samp.exe.\n")
-            append("Spawn/local + sync remote diuji native; renderer/gameplay penuh belum ada.\n")
+            append("Spawn/local + sync remote native; Dunia native merender radar entity, gameplay GTA penuh belum.\n")
             append("Saat aktif, stream dipoll otomatis sampai sesi diputus/dialog ditutup.\n\n")
             append("aktif           : ").append(o.optBoolean("active")).append('\n')
             append("accepted        : ").append(o.optBoolean("accepted")).append('\n')
@@ -313,6 +314,24 @@ object ServerDetailDialog {
                     }
                 } catch (t: Throwable) {
                     log.text = "Gagal membuka kontrol touch: ${t.message}"
+                }
+            }
+        }
+
+        btnWorld.setOnClickListener {
+            activity.lifecycleScope.launch {
+                try {
+                    val snapshot = withContext(Dispatchers.IO) {
+                        JSONObject(NativeBridge.nativeSessionStatus())
+                    }
+                    if (!snapshot.optBoolean("active")) {
+                        log.text = "Buka Sesi native dulu sebelum membuka Dunia native."
+                    } else {
+                        startSessionPolling()
+                        NativeWorldDialog.show(activity)
+                    }
+                } catch (t: Throwable) {
+                    log.text = "Gagal membuka Dunia native: ${t.message}"
                 }
             }
         }

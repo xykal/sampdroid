@@ -3,6 +3,7 @@
 
 #include "raknet_codec.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <utility>
@@ -129,6 +130,32 @@ size_t WorldState::remoteOnFootCount() const {
     if (player.streamedIn && player.remoteOnFootKnown) ++count;
   }
   return count;
+}
+
+std::vector<RemotePlayerView> WorldState::renderablePlayers(size_t maxPlayers) const {
+  constexpr size_t kHardRenderEntityLimit = 64;
+  const size_t limit = std::min(maxPlayers, kHardRenderEntityLimit);
+  std::vector<RemotePlayerView> out;
+  out.reserve(std::min(limit, players_.size()));
+  // players_ is a std::map, so the renderer receives stable ascending player
+  // IDs rather than arbitrary hash-map iteration order.
+  for (const auto& [id, player] : players_) {
+    if (!player.streamedIn || !player.positionKnown || out.size() >= limit) continue;
+    RemotePlayerView view;
+    view.id = id;
+    view.rgba = player.rgba;
+    view.model = player.model;
+    view.onFootKnown = player.remoteOnFootKnown;
+    view.x = player.x;
+    view.y = player.y;
+    view.z = player.z;
+    view.angle = player.angle;
+    view.health = player.health;
+    view.armour = player.armour;
+    view.name = player.name;
+    out.push_back(std::move(view));
+  }
+  return out;
 }
 
 bool WorldState::applyRemoteOnFoot(const syncdecode::RemoteOnFootSync& sync, RpcEvent& event) {

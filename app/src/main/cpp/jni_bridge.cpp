@@ -1,6 +1,7 @@
 // JNI bridge: mengekspos protokol SA-MP ke Kotlin.
 #include <jni.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <sstream>
 #include <string>
@@ -21,6 +22,50 @@ std::string to_std(JNIEnv* env, jstring s) {
 
 jstring to_java(JNIEnv* env, const std::string& s) {
   return env->NewStringUTF(s.c_str());
+}
+
+std::string world_json(const samp::WorldSnapshot& world) {
+  std::ostringstream o;
+  o << "{\"active\":" << (world.active ? "true" : "false")
+    << ",\"local\":{\"known\":" << (world.localPositionKnown ? "true" : "false")
+    << ",\"facingKnown\":" << (world.localFacingKnown ? "true" : "false")
+    << ",\"id\":" << world.localPlayerId
+    << ",\"x\":" << world.localX
+    << ",\"y\":" << world.localY
+    << ",\"z\":" << world.localZ
+    << ",\"angle\":" << world.localAngle << "}"
+    << ",\"checkpoint\":{\"active\":" << (world.checkpointActive ? "true" : "false")
+    << ",\"x\":" << world.checkpointX
+    << ",\"y\":" << world.checkpointY
+    << ",\"z\":" << world.checkpointZ
+    << ",\"size\":" << world.checkpointSize << "}"
+    << ",\"raceCheckpoint\":{\"active\":" << (world.raceCheckpointActive ? "true" : "false")
+    << ",\"x\":" << world.raceCheckpointX
+    << ",\"y\":" << world.raceCheckpointY
+    << ",\"z\":" << world.raceCheckpointZ
+    << ",\"size\":" << world.raceCheckpointSize << "}"
+    << ",\"streamedPlayers\":" << world.streamedPlayers
+    << ",\"remoteOnFootPlayers\":" << world.remoteOnFootPlayers
+    << ",\"serverName\":\"" << samp::json_escape(world.serverName) << "\""
+    << ",\"error\":\"" << samp::json_escape(world.error) << "\""
+    << ",\"actors\":[";
+  for (size_t i = 0; i < world.actors.size(); ++i) {
+    const samp::WorldActorSnapshot& actor = world.actors[i];
+    if (i) o << ",";
+    o << "{\"id\":" << actor.id
+      << ",\"rgba\":" << actor.rgba
+      << ",\"model\":" << actor.model
+      << ",\"onFootKnown\":" << (actor.onFootKnown ? "true" : "false")
+      << ",\"x\":" << actor.x
+      << ",\"y\":" << actor.y
+      << ",\"z\":" << actor.z
+      << ",\"angle\":" << actor.angle
+      << ",\"health\":" << actor.health
+      << ",\"armour\":" << actor.armour
+      << ",\"name\":\"" << samp::json_escape(actor.name) << "\"}";
+  }
+  o << "]}";
+  return o.str();
 }
 
 std::string session_json(const samp::SessionSnapshot& s) {
@@ -83,7 +128,7 @@ extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeVersion(JNIEnv* env, jclass) {
-  return to_java(env, "0.15.0 / remote-onfoot-bridge");
+  return to_java(env, "0.16.0 / native-world-radar");
 }
 
 JNIEXPORT jstring JNICALL
@@ -214,6 +259,11 @@ Java_com_xykal_sampdroid_NativeBridge_nativeSessionUpdateControls(JNIEnv* env, j
   input.lookDeltaDegrees = lookDeltaDegrees;
   input.heldActions = static_cast<uint16_t>(heldActions);
   return to_java(env, session_json(samp::raknet_session_update_controls(input)));
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_xykal_sampdroid_NativeBridge_nativeSessionWorldSnapshot(JNIEnv* env, jclass) {
+  return to_java(env, world_json(samp::raknet_session_world_snapshot()));
 }
 
 JNIEXPORT jstring JNICALL

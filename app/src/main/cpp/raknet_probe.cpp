@@ -549,6 +549,65 @@ SessionSnapshot snapshotFrom(const LiveSession* session) {
   return snapshot;
 }
 
+WorldSnapshot worldSnapshotFrom(const LiveSession* session) {
+  WorldSnapshot snapshot;
+  if (!session) {
+    snapshot.error = "tidak ada sesi native aktif";
+    return snapshot;
+  }
+
+  snapshot.active = session->net && session->net->fd >= 0;
+  snapshot.streamedPlayers = static_cast<int>(session->world.streamedPlayerCount());
+  snapshot.remoteOnFootPlayers = static_cast<int>(session->world.remoteOnFootCount());
+  snapshot.serverName = session->world.initialized() ? session->world.playerInit().serverName : "";
+  snapshot.error = session->error;
+
+  const state::LocalPlayer& local = session->world.localPlayer();
+  snapshot.localPositionKnown = local.positionKnown;
+  snapshot.localFacingKnown = local.facingKnown;
+  snapshot.localPlayerId = session->world.initialized() ? session->world.playerInit().playerId : 0;
+  if (local.positionKnown) {
+    snapshot.localX = local.x;
+    snapshot.localY = local.y;
+    snapshot.localZ = local.z;
+  }
+  if (local.facingKnown) snapshot.localAngle = local.angle;
+
+  const state::Checkpoint& checkpoint = session->world.checkpoint();
+  snapshot.checkpointActive = checkpoint.active;
+  if (checkpoint.active) {
+    snapshot.checkpointX = checkpoint.x;
+    snapshot.checkpointY = checkpoint.y;
+    snapshot.checkpointZ = checkpoint.z;
+    snapshot.checkpointSize = checkpoint.size;
+  }
+  const state::RaceCheckpoint& race = session->world.raceCheckpoint();
+  snapshot.raceCheckpointActive = race.active;
+  if (race.active) {
+    snapshot.raceCheckpointX = race.x;
+    snapshot.raceCheckpointY = race.y;
+    snapshot.raceCheckpointZ = race.z;
+    snapshot.raceCheckpointSize = race.size;
+  }
+
+  for (const state::RemotePlayerView& player : session->world.renderablePlayers()) {
+    WorldActorSnapshot actor;
+    actor.id = player.id;
+    actor.rgba = player.rgba;
+    actor.model = player.model;
+    actor.onFootKnown = player.onFootKnown;
+    actor.x = player.x;
+    actor.y = player.y;
+    actor.z = player.z;
+    actor.angle = player.angle;
+    actor.health = player.health;
+    actor.armour = player.armour;
+    actor.name = player.name;
+    snapshot.actors.push_back(std::move(actor));
+  }
+  return snapshot;
+}
+
 }  // namespace
 
 static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int timeoutMs,
@@ -988,6 +1047,11 @@ SessionSnapshot raknet_session_disconnect() {
 SessionSnapshot raknet_session_status() {
   std::lock_guard<std::mutex> lock(gLiveSessionMutex);
   return snapshotFrom(gLiveSession.get());
+}
+
+WorldSnapshot raknet_session_world_snapshot() {
+  std::lock_guard<std::mutex> lock(gLiveSessionMutex);
+  return worldSnapshotFrom(gLiveSession.get());
 }
 
 }  // namespace samp
