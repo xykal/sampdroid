@@ -34,6 +34,7 @@ object ServerDetailDialog {
         val btnProbe: Button = view.findViewById(R.id.btnProbe)
         val btnSession: Button = view.findViewById(R.id.btnSession)
         val btnClassZero: Button = view.findViewById(R.id.btnClassZero)
+        val btnSpawn: Button = view.findViewById(R.id.btnSpawn)
         val btnSessionDisconnect: Button = view.findViewById(R.id.btnSessionDisconnect)
 
         log.movementMethod = ScrollingMovementMethod()
@@ -66,7 +67,7 @@ object ServerDetailDialog {
         fun formatSession(o: JSONObject): String = buildString {
             append("=== SESI NATIVE (EKSPERIMEN) ===\n")
             append("Soket ini native Android, bukan Winlator/samp.exe.\n")
-            append("Belum ada renderer/gameplay; pakai hanya untuk validasi lifecycle.\n")
+            append("Spawn protocol + state lokal diuji native; renderer/kontrol gameplay belum ada.\n")
             append("Saat aktif, stream dipoll otomatis sampai sesi diputus/dialog ditutup.\n\n")
             append("aktif           : ").append(o.optBoolean("active")).append('\n')
             append("accepted        : ").append(o.optBoolean("accepted")).append('\n')
@@ -85,6 +86,23 @@ object ServerDetailDialog {
                         (if (o.optBoolean("classSelectable")) "selectable" else "ditolak")
                 } else {
                     "belum ada balasan"
+                }).append('\n')
+            append("spawn protocol  : ")
+                .append(when {
+                    !o.optBoolean("spawnResponseKnown") -> "belum ada balasan"
+                    !o.optBoolean("spawnAllowed") -> "ditolak server"
+                    o.optBoolean("spawnConfirmationAcked") -> "PlayerSpawn di-ACK"
+                    o.optBoolean("spawnConfirmationSent") -> "PlayerSpawn menunggu ACK"
+                    else -> "diizinkan, menyiapkan PlayerSpawn"
+                }).append('\n')
+            append("local spawn     : ")
+                .append(if (o.optBoolean("localSpawnInfoKnown")) {
+                    "skin ${o.optInt("localModel")} @ %.2f, %.2f, %.2f / %.1f°".format(
+                        o.optDouble("localX"), o.optDouble("localY"),
+                        o.optDouble("localZ"), o.optDouble("localAngle")
+                    )
+                } else {
+                    "belum ada SetSpawnInfo"
                 }).append('\n')
             append("checkpoint      : ")
                 .append(if (o.optBoolean("checkpointActive")) "aktif" else "tidak aktif")
@@ -237,6 +255,21 @@ object ServerDetailDialog {
                     if (snapshot.optBoolean("active")) startSessionPolling()
                 } catch (t: Throwable) {
                     log.text = "Gagal meminta class: ${t.message}"
+                }
+            }
+        }
+
+        btnSpawn.setOnClickListener {
+            activity.lifecycleScope.launch {
+                try {
+                    val raw = withContext(Dispatchers.IO) {
+                        NativeBridge.nativeSessionRequestSpawn()
+                    }
+                    val snapshot = JSONObject(raw)
+                    log.text = formatSession(snapshot)
+                    if (snapshot.optBoolean("active")) startSessionPolling()
+                } catch (t: Throwable) {
+                    log.text = "Gagal meminta spawn: ${t.message}"
                 }
             }
         }

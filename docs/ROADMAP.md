@@ -9,8 +9,9 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 - [x] ACK reliable, multi-packet datagram, split reassembly.
 - [x] `PlayerInit`, PlayerJoin/Quit/Name/Color state reducer.
 - [x] Host regression tests untuk wire vector dan lifecycle player state.
-- [x] Client `PlayerRequestClass` / `PlayerRequestSpawn` builder + decoder state balasan.
-- [x] Retain socket setelah ClientJoin dan kirim `PlayerRequestClass` lewat session native.
+- [x] Client `PlayerRequestClass` / `PlayerRequestSpawn` / `PlayerSpawn` builder,
+  response decoder dual legacy/open.mp, dan transport-ACK gate.
+- [x] Retain socket setelah ClientJoin dan kirim class/spawn flow lewat session native.
 - [ ] Live interoperability capture untuk class/spawn di beberapa server nyata.
 - [ ] Decode player stream, vehicle/object/pickup state.
 - [ ] Sanitized capture replay test dari server nyata.
@@ -20,7 +21,7 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 - [x] Explicit connect/disconnect dan clean UDP teardown dari Android shell.
 - [x] Socket retained setelah ClientJoin; peer IP/port filter dan bounded state.
 - [x] `RELIABLE_ORDERED` channel-2 class request, ACK consumption, bounded retry queue.
-- [x] Class selection + spawn response state reducer.
+- [x] Class selection, SetSpawnInfo, local-player spawn/position/vitals, dan spawn response state reducer.
 - [x] Lifecycle-aware automatic poll saat detail session terlihat.
 - [x] Transport keepalive reliable 5 detik + reply internal ping.
 - [ ] Full ACK-range behavior, reconnect, ping/timeout metrics, dan resend window.

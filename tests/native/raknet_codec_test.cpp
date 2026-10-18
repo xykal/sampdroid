@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -146,12 +147,55 @@ std::vector<uint8_t> makeClassSelection(bool selectable, uint8_t team, uint32_t 
   return writer.buffer;
 }
 
-std::vector<uint8_t> makeSpawnResponse(bool allowed) {
+std::vector<uint8_t> makeSpawnResponse(bool allowed, bool legacyByte = false) {
   samp::raknet::BitWriter writer;
   const uint8_t header[] = {20, 129};
   writer.writeBytes(header, sizeof(header));
-  writer.writeBits(allowed ? 1u : 0u, 32);
+  writer.writeBits(allowed ? 1u : 0u, legacyByte ? 8 : 32);
   return writer.buffer;
+}
+
+std::vector<uint8_t> makeSetSpawnInfo(uint8_t team, uint32_t model, float x, float y, float z,
+                                      float angle) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 68};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(team, 8);
+  writer.writeBits(model, 32);
+  writer.writeBits(7, 8);  // Unknown1
+  writeFloat(writer, x);
+  writeFloat(writer, y);
+  writeFloat(writer, z);
+  writeFloat(writer, angle);
+  writer.writeBits(24, 32);
+  writer.writeBits(25, 32);
+  writer.writeBits(0, 32);
+  writer.writeBits(100, 32);
+  writer.writeBits(50, 32);
+  writer.writeBits(0, 32);
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makeVec3Rpc(uint8_t rpcId, float x, float y, float z) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, rpcId};
+  writer.writeBytes(header, sizeof(header));
+  writeFloat(writer, x);
+  writeFloat(writer, y);
+  writeFloat(writer, z);
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makeFloatRpc(uint8_t rpcId, float value) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, rpcId};
+  writer.writeBytes(header, sizeof(header));
+  writeFloat(writer, value);
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makeByteRpc(uint8_t rpcId, uint8_t value) {
+  return {20, rpcId, value};
 }
 
 std::vector<uint8_t> makeCheckpoint(float x, float y, float z, float size) {
@@ -362,6 +406,13 @@ void testPlayerFootSyncBuilder() {
          samp::syncpolicy::onFootSendDue(130, 100, 30) &&
          !samp::syncpolicy::onFootSendDue(99, 100, 30),
          "on-foot rate gate changed");
+  expect(samp::syncpolicy::onFootSessionReady(true, true, true, true, true) &&
+         !samp::syncpolicy::onFootSessionReady(false, true, true, true, true) &&
+         !samp::syncpolicy::onFootSessionReady(true, false, true, true, true) &&
+         !samp::syncpolicy::onFootSessionReady(true, true, false, true, true) &&
+         !samp::syncpolicy::onFootSessionReady(true, true, true, false, true) &&
+         !samp::syncpolicy::onFootSessionReady(true, true, true, true, false),
+         "on-foot spawn/ACK gate changed");
 }
 
 void testCompressedU32() {
@@ -423,6 +474,8 @@ void testClientRpcBuilders() {
          "request class payload changed");
   expect(samp::clientrpc::buildRequestSpawn() == std::vector<uint8_t>({20, 129}),
          "request spawn payload changed");
+  expect(samp::clientrpc::buildPlayerSpawn() == std::vector<uint8_t>({20, 52}),
+         "player spawn confirmation payload changed");
 }
 
 void testSessionSafetyWithoutSocket() {
@@ -431,6 +484,9 @@ void testSessionSafetyWithoutSocket() {
   const auto classRequest = samp::raknet_session_request_class(0);
   expect(!classRequest.active && !classRequest.error.empty(),
          "class request without session must be rejected");
+  const auto spawnRequest = samp::raknet_session_request_spawn();
+  expect(!spawnRequest.active && !spawnRequest.error.empty(),
+         "spawn request without session must be rejected");
   const auto onFoot = samp::raknet_session_send_onfoot(samp::sync::OnFootState{});
   expect(!onFoot.active && !onFoot.error.empty(),
          "on-foot send without session must be rejected");
@@ -446,6 +502,49 @@ void testWorldStateReducer() {
   expect(world.initialized() && world.playerInit().playerId == 42,
          "WorldState did not retain PlayerInit");
 
+  expect(world.applyRpc(makeSetSpawnInfo(4, 411, 100.0f, -25.5f, 8.0f, -90.0f), event),
+         "WorldState rejected SetSpawnInfo");
+  const auto& localSpawn = world.localPlayer();
+  expect(event.kind == samp::state::RpcEventKind::SpawnInfoChanged &&
+         localSpawn.spawnInfoKnown && localSpawn.positionKnown && localSpawn.facingKnown &&
+         localSpawn.team == 4 && localSpawn.model == 411 &&
+         std::fabs(localSpawn.x - 100.0f) < 0.001f &&
+         std::fabs(localSpawn.y + 25.5f) < 0.001f &&
+         std::fabs(localSpawn.z - 8.0f) < 0.001f &&
+         std::fabs(localSpawn.angle - 270.0f) < 0.001f &&
+         localSpawn.spawnWeapons[0] == 24 && localSpawn.spawnAmmo[1] == 50,
+         "SetSpawnInfo local state wrong");
+
+  expect(world.applyRpc(makeVec3Rpc(12, 1.0f, 2.0f, 3.0f), event) &&
+         event.kind == samp::state::RpcEventKind::LocalPlayerChanged &&
+         world.localPlayer().positionKnown && !world.localPlayer().positionFindZ &&
+         std::fabs(world.localPlayer().x - 1.0f) < 0.001f,
+         "SetPlayerPosition local state wrong");
+  expect(world.applyRpc(makeVec3Rpc(13, 4.0f, 5.0f, 6.0f), event) &&
+         world.localPlayer().positionFindZ && std::fabs(world.localPlayer().z - 6.0f) < 0.001f,
+         "SetPlayerPositionFindZ local state wrong");
+  expect(world.applyRpc(makeFloatRpc(19, 450.0f), event) && world.localPlayer().facingKnown &&
+         std::fabs(world.localPlayer().angle - 90.0f) < 0.001f,
+         "SetPlayerFacingAngle local state wrong");
+  expect(world.applyRpc(makeFloatRpc(14, 87.5f), event) && world.localPlayer().healthKnown &&
+         std::fabs(world.localPlayer().health - 87.5f) < 0.001f,
+         "SetPlayerHealth local state wrong");
+  expect(world.applyRpc(makeFloatRpc(66, 25.0f), event) && world.localPlayer().armourKnown &&
+         std::fabs(world.localPlayer().armour - 25.0f) < 0.001f,
+         "SetPlayerArmour local state wrong");
+  expect(world.applyRpc(makeByteRpc(88, 3), event) && world.localPlayer().specialActionKnown &&
+         world.localPlayer().specialAction == 3,
+         "SetPlayerSpecialAction local state wrong");
+  expect(world.applyRpc(makeVec3Rpc(90, 3.0f, 4.0f, 0.0f), event) &&
+         world.localPlayer().velocityKnown && std::fabs(world.localPlayer().velocityY - 4.0f) < 0.001f,
+         "SetPlayerVelocity local state wrong");
+  expect(!world.applyRpc(makeVec3Rpc(12, 20000.0f, 0.0f, 0.0f), event) &&
+         event.kind == samp::state::RpcEventKind::Malformed,
+         "out-of-range local position must be rejected");
+  expect(!world.applyRpc(makeFloatRpc(14, std::numeric_limits<float>::quiet_NaN()), event) &&
+         event.kind == samp::state::RpcEventKind::Malformed,
+         "non-finite local health must be rejected");
+
   expect(world.applyRpc(makeClassSelection(true, 3, 7), event),
          "WorldState rejected class selection");
   expect(event.kind == samp::state::RpcEventKind::ClassSelection,
@@ -455,11 +554,20 @@ void testWorldStateReducer() {
          std::fabs(world.classSelection().angle - 180.0f) < 0.001f,
          "class selection state wrong");
 
-  expect(world.applyRpc(makeSpawnResponse(true), event),
-         "WorldState rejected spawn response");
+  world.beginSpawnRequest();
+  expect(!world.spawnResponseKnown() && !world.spawnAllowed(),
+         "new spawn request must clear stale permission");
+  expect(world.applyRpc(makeSpawnResponse(true, true), event),
+         "WorldState rejected legacy-byte spawn response");
   expect(event.kind == samp::state::RpcEventKind::SpawnResponse &&
          world.spawnResponseKnown() && world.spawnAllowed(),
-         "spawn response state wrong");
+         "legacy-byte spawn response state wrong");
+  world.beginSpawnRequest();
+  expect(world.applyRpc(makeSpawnResponse(true), event),
+         "WorldState rejected u32 spawn response");
+  expect(event.kind == samp::state::RpcEventKind::SpawnResponse &&
+         world.spawnResponseKnown() && world.spawnAllowed(),
+         "u32 spawn response state wrong");
 
   expect(world.applyRpc(makeCheckpoint(100.0f, -25.5f, 8.0f, 3.0f), event),
          "WorldState rejected SetCheckpoint");

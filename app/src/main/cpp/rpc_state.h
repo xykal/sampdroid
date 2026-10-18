@@ -22,7 +22,9 @@ enum class RpcEventKind : uint8_t {
   PlayerColorChanged,
   ChatMessage,
   ClassSelection,
+  SpawnInfoChanged,
   SpawnResponse,
+  LocalPlayerChanged,
   CheckpointChanged,
   RaceCheckpointChanged,
   Malformed,
@@ -79,6 +81,37 @@ struct ClassSelection {
   std::array<uint32_t, 3> ammo{};
 };
 
+// Bounded local-player facts supplied by authoritative server RPCs. This is
+// intentionally renderer-neutral: the Android world/input bridge consumes it
+// later, while the network reducer owns validation and lifetime.
+struct LocalPlayer {
+  bool spawnInfoKnown = false;
+  bool positionKnown = false;
+  bool positionFindZ = false;
+  bool facingKnown = false;
+  bool healthKnown = false;
+  bool armourKnown = false;
+  bool velocityKnown = false;
+  bool specialActionKnown = false;
+
+  uint8_t team = 0;
+  uint32_t model = 0;
+  uint8_t spawnUnknown = 0;
+  std::array<uint32_t, 3> spawnWeapons{};
+  std::array<uint32_t, 3> spawnAmmo{};
+
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  float angle = 0.0f;
+  float health = 100.0f;
+  float armour = 0.0f;
+  uint8_t specialAction = 0;
+  float velocityX = 0.0f;
+  float velocityY = 0.0f;
+  float velocityZ = 0.0f;
+};
+
 // This has no rendering or socket responsibility. It is the stable boundary
 // between untrusted network bytes and a future HUD/world renderer.
 class WorldState {
@@ -94,10 +127,15 @@ public:
     return chatLines_.empty() ? nullptr : &chatLines_.back();
   }
   const ClassSelection& classSelection() const { return classSelection_; }
+  const LocalPlayer& localPlayer() const { return localPlayer_; }
   const Checkpoint& checkpoint() const { return checkpoint_; }
   const RaceCheckpoint& raceCheckpoint() const { return raceCheckpoint_; }
   bool spawnResponseKnown() const { return spawnResponseKnown_; }
   bool spawnAllowed() const { return spawnAllowed_; }
+
+  // Called only after an outbound PlayerRequestSpawn is queued successfully;
+  // stale permission from a prior attempt must not unlock local movement.
+  void beginSpawnRequest();
 
 private:
   // SA-MP/open.mp player IDs are small in normal use; bound state regardless
@@ -107,6 +145,7 @@ private:
   bool initialized_ = false;
   rpc::PlayerInitData playerInit_;
   ClassSelection classSelection_;
+  LocalPlayer localPlayer_;
   Checkpoint checkpoint_;
   RaceCheckpoint raceCheckpoint_;
   bool spawnResponseKnown_ = false;

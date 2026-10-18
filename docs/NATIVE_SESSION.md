@@ -13,13 +13,14 @@ user pilih server
   → socket + message counters + split reassembler TETAP hidup
   → poll datagram / ACK reliable / reply internal ping / reduce RPC world state
   → reliable transport keepalive otomatis saat idle
-  → user dapat minta class secara eksplisit
+  → user memilih class lalu meminta spawn secara eksplisit
+  → respons spawn nonzero → core kirim RPC PlayerSpawn (52) → tunggu ACK
+  → state spawn/posisi lokal direduce dari RPC server
   → core dapat mengirim satu OnFootSync yang sudah digate (belum loop otomatis)
 ```
 
-`PlayerRequestSpawn` sudah punya builder/guard di native core, tetapi belum
-ditampilkan sebagai kontrol gameplay. Jangan meminta spawn otomatis sebelum world
-bridge dan renderer siap.
+Tombol **Spawn** sekarang menjalankan handshake native eksplisit, bukan spawn
+otomatis saat connect. Ia tetap bukan kontrol gameplay atau renderer.
 
 ## Fondasi outbound OnFootSync
 
@@ -29,7 +30,8 @@ pergerakan sendiri. Ia hanya boleh mengirim setelah semua syarat berikut terpenu
 
 1. UDP session aktif dan `CONNECTION_REQUEST_ACCEPTED` sudah diterima;
 2. `PlayerInit` valid sudah diterima;
-3. server sudah mengirim respons spawn yang mengizinkan;
+3. server sudah mengirim respons spawn nonzero, client sudah mengirim RPC
+   `PlayerSpawn` (52), **dan** transport sudah menerima ACK-nya;
 4. posisi, quaternion, velocity, dan surfing offset lolos batas finite/world
    yang sama dengan reader server;
 5. interval `OnFootRate` dari `PlayerInit` sudah jatuh tempo.
@@ -45,6 +47,28 @@ server→recipient. Encoder mengikuti reader `PlayerFootSync` server: body fixed
 health/armour raw, weapon/action, velocity, surfing data, animation). Ia sengaja
 **tidak** memakai writer broadcast yang berisi player ID, field conditional, dan
 kompresi berbeda. Vector regresi host mengunci kedua layout transport dan payload.
+
+## Handshake spawn dan state lokal
+
+Setelah user menekan **Spawn**, urutan yang dipakai adalah:
+
+```text
+client → PlayerRequestSpawn (RPC 129, RELIABLE_ORDERED channel 2)
+server → RequestSpawn response (legacy u8 atau open.mp u32, nilai nonzero)
+client → PlayerSpawn (RPC 52 kosong, RELIABLE_ORDERED channel 2)
+server → transport ACK untuk RPC 52
+client → eligible untuk OnFootSync channel 1
+```
+
+Nilai respons `2` juga diperlakukan sebagai izin spawn, sehingga jalur
+`SpawnPlayer` server tetap mengikuti konfirmasi `PlayerSpawn` yang sama. Pending
+RPC 52 diberi purpose terpisah; ACK lama tidak boleh membuka request spawn baru.
+
+`WorldState` juga mereduksi data local-player yang aman untuk bridge berikutnya:
+`SetSpawnInfo` (team, skin, spawn, weapon/ammo), `SetPlayerPosition`/FindZ,
+facing angle, health, armour, special action, dan velocity. Semua float finite,
+posisi dunia, dan velocity dibatasi sebelum masuk state renderer/input. Ini state
+native saja — belum menggambar ped atau mengemulasi fisika GTA.
 
 ## Ownership dan keamanan
 
@@ -87,6 +111,8 @@ Di detail server terdapat:
 - **Sesi native** — membuka socket dan memulai poll lifecycle-aware otomatis
   selama dialog masih terlihat;
 - **Class 0** — mengirim `PlayerRequestClass(0)` hanya bila socket aktif;
+- **Spawn** — user-triggered `PlayerRequestSpawn`; respons izin memicu
+  `PlayerSpawn` native dan diagnostic menunggu ACK-nya;
 - **Putus sesi** — menghentikan poll lalu menutup socket native.
 
 Loop memanggil native poll di `Dispatchers.IO` (timeout UDP 250 ms) dan memberi
@@ -103,8 +129,8 @@ memvalidasi lifecycle secara jujur tanpa mengklaim APK sudah playable.
 
 1. Full ACK range behavior, reconnect, ping/timeout metrics, dan resend window
    yang benar di atas keepalive transport yang sudah ada.
-2. Class chooser native + spawn flow, lalu capture/live validation untuk
-   `OnFootSync` yang sudah punya encoder/rate gate.
+2. Capture/live validation untuk handshake spawn lengkap dan `OnFootSync` yang
+   sudah punya encoder/rate gate.
 3. Player/vehicle/object state → native HUD + renderer/world bridge.
 4. Input touch/gamepad/keyboard/gyro → semantic action → loop sync OnFoot,
    lalu vehicle sync.

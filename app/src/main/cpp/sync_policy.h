@@ -27,6 +27,14 @@ struct OrderingCounters {
   uint16_t takeSync() { return nextSync++; }
 };
 
+// Channel 1 sync must never outrun the channel-2 spawn transition. A
+// transport ACK for the PlayerSpawn confirmation is the bounded local signal
+// that the server received that transition.
+inline bool onFootSessionReady(bool accepted, bool playerInit, bool spawnResponseKnown,
+                               bool spawnAllowed, bool playerSpawnAcked) {
+  return accepted && playerInit && spawnResponseKnown && spawnAllowed && playerSpawnAcked;
+}
+
 inline uint32_t boundedOnFootRateMs(uint32_t serverRateMs) {
   if (serverRateMs == 0) return kDefaultOnFootRateMs;
   return std::clamp(serverRateMs, kMinOnFootRateMs, kMaxOnFootRateMs);

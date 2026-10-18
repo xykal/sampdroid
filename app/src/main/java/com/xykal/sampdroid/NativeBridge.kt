@@ -44,6 +44,9 @@ object NativeBridge {
     /** Sends PlayerRequestClass on reliable ordered channel 2. */
     external fun nativeSessionRequestClass(classId: Int): String
 
+    /** Starts the explicit RequestSpawn → PlayerSpawn native handshake. */
+    external fun nativeSessionRequestSpawn(): String
+
     /** Releases the retained UDP socket. Safe if no session is active. */
     external fun nativeSessionDisconnect(): String
 

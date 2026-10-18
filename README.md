@@ -46,13 +46,13 @@ Detail kontrak port: [docs/NATIVE_PORT_TARGET.md](docs/NATIVE_PORT_TARGET.md).
 | `CONNECTION_REQUEST_ACCEPTED` + ClientJoin | ✅ | server memproses lalu stream balik |
 | ACK reliable + multi-packet datagram | ✅ | retransmisi tidak menumpuk |
 | Split reassembly | ✅ | fragment disusun sebelum RPC didecode |
-| State pemain dasar | ✅ | `PlayerInit`, Join/Quit/Name/Color → model native |
+| State pemain dasar | ✅ | `PlayerInit`, Join/Quit/Name/Color + local spawn/posisi/vitals → model native |
 | Native chat state | ✅ | `SendClientMessage` bounded 100 line; HUD chat masih berikutnya |
 | Checkpoint state | ✅ | normal + race checkpoint reducer; marker renderer masih berikutnya |
-| Class/spawn packet core | ✅ | request builder + response state native |
+| Class/spawn packet core | ✅ | Class → RequestSpawn → PlayerSpawn confirmation + ACK gate native |
 | Persistent native session | 🧪 | auto-poll, peer filter, ACK/retry bounded, keepalive transport reliable + internal pong; reconnect belum |
 | OnFootSync core | 🧪 | packet-207 client→server vector-tested, USeq channel-1, rate/spawn gate; belum dihubungkan ke input, renderer, atau loop gameplay |
-| Class selection native | 🧪 | explicit `Class 0` request dari detail server; belum gameplay/render |
+| Class/spawn native | 🧪 | explicit `Class 0` + `Spawn`, response/ACK terlihat di diagnostic; belum gameplay/render |
 | Player/vehicle/object sync penuh | ⏳ | belum |
 | HUD + textdraw/dialog native | ⏳ | belum |
 | Touch/gamepad/gyro native | ⏳ | input layout sudah didefinisikan |

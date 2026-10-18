@@ -32,10 +32,19 @@ std::string session_json(const samp::SessionSnapshot& s) {
     << ",\"classSelectable\":" << (s.classSelectable ? "true" : "false")
     << ",\"spawnResponseKnown\":" << (s.spawnResponseKnown ? "true" : "false")
     << ",\"spawnAllowed\":" << (s.spawnAllowed ? "true" : "false")
+    << ",\"spawnConfirmationSent\":" << (s.spawnConfirmationSent ? "true" : "false")
+    << ",\"spawnConfirmationAcked\":" << (s.spawnConfirmationAcked ? "true" : "false")
+    << ",\"localSpawnInfoKnown\":" << (s.localSpawnInfoKnown ? "true" : "false")
+    << ",\"localPositionKnown\":" << (s.localPositionKnown ? "true" : "false")
     << ",\"checkpointActive\":" << (s.checkpointActive ? "true" : "false")
     << ",\"raceCheckpointActive\":" << (s.raceCheckpointActive ? "true" : "false")
     << ",\"playerId\":" << s.playerId
     << ",\"classModel\":" << s.classModel
+    << ",\"localModel\":" << s.localModel
+    << ",\"localX\":" << s.localX
+    << ",\"localY\":" << s.localY
+    << ",\"localZ\":" << s.localZ
+    << ",\"localAngle\":" << s.localAngle
     << ",\"onFootSyncRateMs\":" << s.onFootSyncRateMs
     << ",\"effectiveOnFootSyncRateMs\":" << s.effectiveOnFootSyncRateMs
     << ",\"receivedPackets\":" << s.receivedPackets
@@ -61,7 +70,7 @@ extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeVersion(JNIEnv* env, jclass) {
-  return to_java(env, "0.12.0 / onfoot-sync-foundation");
+  return to_java(env, "0.13.0 / spawn-local-state");
 }
 
 JNIEXPORT jstring JNICALL
@@ -169,6 +178,11 @@ Java_com_xykal_sampdroid_NativeBridge_nativeSessionRequestClass(JNIEnv* env, jcl
   }
   return to_java(env, session_json(
                           samp::raknet_session_request_class(static_cast<uint16_t>(classId))));
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_xykal_sampdroid_NativeBridge_nativeSessionRequestSpawn(JNIEnv* env, jclass) {
+  return to_java(env, session_json(samp::raknet_session_request_spawn()));
 }
 
 JNIEXPORT jstring JNICALL

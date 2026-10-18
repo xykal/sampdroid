@@ -9,5 +9,8 @@ namespace samp::clientrpc {
 
 std::vector<uint8_t> buildRequestClass(uint16_t classId);
 std::vector<uint8_t> buildRequestSpawn();
+// Final empty RPC in the class-selection spawn handshake. It is emitted only
+// after a server-approved RequestSpawn response arrives.
+std::vector<uint8_t> buildPlayerSpawn();
 
 }  // namespace samp::clientrpc

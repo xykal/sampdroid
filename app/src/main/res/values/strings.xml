@@ -11,5 +11,6 @@
     <string name="btn_probe">Probe RakNet</string>
     <string name="btn_session">Sesi native</string>
     <string name="btn_class_zero">Class 0</string>
+    <string name="btn_spawn">Spawn</string>
     <string name="btn_session_disconnect">Putus sesi</string>
 </resources>

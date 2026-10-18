@@ -18,10 +18,19 @@ struct SessionSnapshot {
   bool classSelectable = false;
   bool spawnResponseKnown = false;
   bool spawnAllowed = false;
+  bool spawnConfirmationSent = false;
+  bool spawnConfirmationAcked = false;
+  bool localSpawnInfoKnown = false;
+  bool localPositionKnown = false;
   bool checkpointActive = false;
   bool raceCheckpointActive = false;
   uint16_t playerId = 0;
   uint32_t classModel = 0;
+  uint32_t localModel = 0;
+  float localX = 0.0f;
+  float localY = 0.0f;
+  float localZ = 0.0f;
+  float localAngle = 0.0f;
   // Raw OnFootRate retained from PlayerInit, plus the safe client-side
   // interval after malformed-rate bounds are applied.
   uint32_t onFootSyncRateMs = 0;
@@ -55,12 +64,15 @@ SessionSnapshot raknet_session_poll(int timeoutMs = 200);
 // subsequently poll for the server reply before reading classSelectionKnown.
 SessionSnapshot raknet_session_request_class(uint16_t classId);
 
-// Prepared for the next lifecycle step; it only sends after an explicit caller action.
+// Starts the explicit spawn handshake. A nonzero server response automatically
+// queues the required empty PlayerSpawn RPC; movement remains locked until its
+// reliable transport ACK arrives.
 SessionSnapshot raknet_session_request_spawn();
 
 // Emits exactly one source-validated client PlayerFootSync packet only after
-// the active session has PlayerInit and a server-approved spawn response. It
-// uses UNRELIABLE_SEQUENCED/channel 1, its own ordering counter, and the
+// the active session has PlayerInit, a server-approved spawn response, and a
+// transport-ACKed PlayerSpawn confirmation. It uses UNRELIABLE_SEQUENCED/
+// channel 1, its own ordering counter, and the
 // server-advertised OnFootRate. Callers decide when to invoke it; this API does
 // not start an automatic movement loop.
 SessionSnapshot raknet_session_send_onfoot(const sync::OnFootState& state);

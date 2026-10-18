@@ -43,13 +43,21 @@ std::string readDynString8(raknet::BitReader& reader) {
 const char* name(uint8_t rpcId) {
   switch (rpcId) {
     case 11: return "SetPlayerName";
+    case 12: return "SetPlayerPosition";
+    case 13: return "SetPlayerPositionFindZ";
+    case 14: return "SetPlayerHealth";
+    case 19: return "SetPlayerFacingAngle";
     case 25: return "PlayerConnect";
     case 37: return "DisableCheckpoint";
     case 38: return "SetRaceCheckpoint";
     case 39: return "DisableRaceCheckpoint";
+    case 52: return "PlayerSpawn";
     case 60: return "SendGameTimeUpdate";
+    case 66: return "SetPlayerArmour";
     case 68: return "SetSpawnInfo";
     case 72: return "SetPlayerColor";
+    case 88: return "SetPlayerSpecialAction";
+    case 90: return "SetPlayerVelocity";
     case 93: return "SendClientMessage";
     case 99: return "MoveObject";
     case 107: return "SetCheckpoint";

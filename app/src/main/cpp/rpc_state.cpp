@@ -12,10 +12,18 @@ namespace {
 
 constexpr uint8_t kIdRpc = 20;
 constexpr uint8_t kSetPlayerName = 11;
+constexpr uint8_t kSetPlayerPosition = 12;
+constexpr uint8_t kSetPlayerPositionFindZ = 13;
+constexpr uint8_t kSetPlayerHealth = 14;
+constexpr uint8_t kSetPlayerFacingAngle = 19;
 constexpr uint8_t kDisableCheckpoint = 37;
 constexpr uint8_t kSetRaceCheckpoint = 38;
 constexpr uint8_t kDisableRaceCheckpoint = 39;
+constexpr uint8_t kSetPlayerArmour = 66;
+constexpr uint8_t kSetSpawnInfo = 68;
 constexpr uint8_t kSetPlayerColor = 72;
+constexpr uint8_t kSetPlayerSpecialAction = 88;
+constexpr uint8_t kSetPlayerVelocity = 90;
 constexpr uint8_t kSendClientMessage = 93;
 constexpr uint8_t kSetCheckpoint = 107;
 constexpr uint8_t kPlayerJoin = 137;
@@ -50,6 +58,33 @@ float readFloat(raknet::BitReader& reader, bool& finite) {
   return value;
 }
 
+bool validWorldPosition(float x, float y, float z) {
+  // Match the safety envelope used by the compatible server's inbound
+  // PlayerFootSync reader. It also bounds renderer/input-facing local state.
+  return std::isfinite(x) && std::isfinite(y) && std::isfinite(z) &&
+         x > -20000.0f && x < 20000.0f && y > -20000.0f && y < 20000.0f &&
+         z > -1000.0f && z < 200000.0f;
+}
+
+bool validVelocity(float x, float y, float z) {
+  if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return false;
+  const double lengthSquared = static_cast<double>(x) * x + static_cast<double>(y) * y +
+                               static_cast<double>(z) * z;
+  return std::isfinite(lengthSquared) && lengthSquared <= 100.0 * 100.0;
+}
+
+bool validVital(float value) {
+  // The native game can receive scripted health/armour changes. Keep a broad,
+  // finite cap for a safe HUD/state bridge rather than assuming only 0..100.
+  return std::isfinite(value) && value >= 0.0f && value <= 1000.0f;
+}
+
+float normalizedAngle(float angle) {
+  float result = std::fmod(angle, 360.0f);
+  if (result < 0.0f) result += 360.0f;
+  return result;
+}
+
 void setEvent(RpcEvent& event, RpcEventKind kind, uint16_t playerId, const char* action) {
   event.kind = kind;
   event.playerId = playerId;
@@ -76,6 +111,11 @@ const Player* WorldState::findPlayer(uint16_t id) const {
   return it == players_.end() ? nullptr : &it->second;
 }
 
+void WorldState::beginSpawnRequest() {
+  spawnResponseKnown_ = false;
+  spawnAllowed_ = false;
+}
+
 bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& event) {
   event = {};
   if (rpcPayload.size() < 2 || rpcPayload[0] != kIdRpc) return false;
@@ -96,6 +136,107 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
 
   raknet::BitReader reader(rpcPayload.data() + 2, rpcPayload.size() - 2);
   switch (rpcId) {
+    // Non-DL SetSpawnInfo is the authoritative local respawn template. This
+    // client does not advertise/download custom models, so the optional DL
+    // CustomModelID field is intentionally absent from this reader.
+    case kSetSpawnInfo: {
+      LocalPlayer next = localPlayer_;
+      next.team = static_cast<uint8_t>(reader.readBits(8));
+      next.model = reader.readBits(32);
+      next.spawnUnknown = static_cast<uint8_t>(reader.readBits(8));
+      bool finite = true;
+      const float x = readFloat(reader, finite);
+      const float y = readFloat(reader, finite);
+      const float z = readFloat(reader, finite);
+      const float angle = readFloat(reader, finite);
+      for (uint32_t& weapon : next.spawnWeapons) weapon = reader.readBits(32);
+      for (uint32_t& ammo : next.spawnAmmo) ammo = reader.readBits(32);
+      if (!reader.ok() || !finite || !validWorldPosition(x, y, z)) break;
+
+      next.spawnInfoKnown = true;
+      next.positionKnown = true;
+      next.positionFindZ = false;
+      next.facingKnown = true;
+      next.x = x;
+      next.y = y;
+      next.z = z;
+      next.angle = normalizedAngle(angle);
+      localPlayer_ = next;
+      setEvent(event, RpcEventKind::SpawnInfoChanged,
+               initialized_ ? playerInit_.playerId : 0, "SetSpawnInfo");
+      return true;
+    }
+
+    case kSetPlayerPosition:
+    case kSetPlayerPositionFindZ: {
+      bool finite = true;
+      const float x = readFloat(reader, finite);
+      const float y = readFloat(reader, finite);
+      const float z = readFloat(reader, finite);
+      if (!reader.ok() || !finite || !validWorldPosition(x, y, z)) break;
+      localPlayer_.x = x;
+      localPlayer_.y = y;
+      localPlayer_.z = z;
+      localPlayer_.positionKnown = true;
+      localPlayer_.positionFindZ = rpcId == kSetPlayerPositionFindZ;
+      setEvent(event, RpcEventKind::LocalPlayerChanged,
+               initialized_ ? playerInit_.playerId : 0,
+               rpcId == kSetPlayerPosition ? "SetPlayerPosition" : "SetPlayerPositionFindZ");
+      return true;
+    }
+
+    case kSetPlayerFacingAngle: {
+      bool finite = true;
+      const float angle = readFloat(reader, finite);
+      if (!reader.ok() || !finite) break;
+      localPlayer_.angle = normalizedAngle(angle);
+      localPlayer_.facingKnown = true;
+      setEvent(event, RpcEventKind::LocalPlayerChanged,
+               initialized_ ? playerInit_.playerId : 0, "SetPlayerFacingAngle");
+      return true;
+    }
+
+    case kSetPlayerHealth:
+    case kSetPlayerArmour: {
+      bool finite = true;
+      const float value = readFloat(reader, finite);
+      if (!reader.ok() || !finite || !validVital(value)) break;
+      if (rpcId == kSetPlayerHealth) {
+        localPlayer_.health = value;
+        localPlayer_.healthKnown = true;
+      } else {
+        localPlayer_.armour = value;
+        localPlayer_.armourKnown = true;
+      }
+      setEvent(event, RpcEventKind::LocalPlayerChanged,
+               initialized_ ? playerInit_.playerId : 0,
+               rpcId == kSetPlayerHealth ? "SetPlayerHealth" : "SetPlayerArmour");
+      return true;
+    }
+
+    case kSetPlayerSpecialAction:
+      localPlayer_.specialAction = static_cast<uint8_t>(reader.readBits(8));
+      if (!reader.ok()) break;
+      localPlayer_.specialActionKnown = true;
+      setEvent(event, RpcEventKind::LocalPlayerChanged,
+               initialized_ ? playerInit_.playerId : 0, "SetPlayerSpecialAction");
+      return true;
+
+    case kSetPlayerVelocity: {
+      bool finite = true;
+      const float x = readFloat(reader, finite);
+      const float y = readFloat(reader, finite);
+      const float z = readFloat(reader, finite);
+      if (!reader.ok() || !finite || !validVelocity(x, y, z)) break;
+      localPlayer_.velocityX = x;
+      localPlayer_.velocityY = y;
+      localPlayer_.velocityZ = z;
+      localPlayer_.velocityKnown = true;
+      setEvent(event, RpcEventKind::LocalPlayerChanged,
+               initialized_ ? playerInit_.playerId : 0, "SetPlayerVelocity");
+      return true;
+    }
+
     case kPlayerJoin: {
       const uint16_t id = static_cast<uint16_t>(reader.readBits(16));
       const uint32_t rgba = reader.readBits(32);
@@ -232,9 +373,18 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       return true;
     }
 
-    // Server reply to PlayerRequestSpawn: uint32 Allow.
+    // SA-MP legacy sends one-byte Allow; open.mp's compatible writer sends a
+    // u32. Both nonzero values permit the required follow-up PlayerSpawn RPC.
     case kPlayerRequestSpawn: {
-      const uint32_t allow = reader.readBits(32);
+      uint32_t allow = 0;
+      const size_t bodyBytes = rpcPayload.size() - 2;
+      if (bodyBytes == 1) {
+        allow = reader.readBits(8);
+      } else if (bodyBytes == 4) {
+        allow = reader.readBits(32);
+      } else {
+        break;
+      }
       if (!reader.ok()) break;
       spawnResponseKnown_ = true;
       spawnAllowed_ = allow != 0;

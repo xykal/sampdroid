@@ -161,8 +161,14 @@ struct Net {
   ~Net() { close(); }
 };
 
+enum class ReliablePurpose : uint8_t {
+  Generic,
+  SpawnConfirmation,
+};
+
 struct PendingReliable {
   uint16_t messageNumber = 0;
+  ReliablePurpose purpose = ReliablePurpose::Generic;
   std::vector<uint8_t> wrappedPacket;
   std::chrono::steady_clock::time_point lastSent;
   uint8_t retries = 0;
@@ -188,6 +194,8 @@ struct LiveSession {
   int reliableKeepalives = 0;
   int connectedPongs = 0;
   int outboundOnFootPackets = 0;
+  bool spawnConfirmationSent = false;
+  bool spawnConfirmationAcked = false;
   bool localOnFootStateKnown = false;
   uint64_t lastOnFootSentMs = 0;
   sync::OnFootState localOnFootState;
@@ -254,7 +262,8 @@ void appendBounded(std::string& target, const std::string& value, size_t maxByte
 }
 
 bool sendSessionReliable(LiveSession& session, const std::vector<uint8_t>& packet,
-                         uint16_t messageNumber) {
+                         uint16_t messageNumber,
+                         ReliablePurpose purpose = ReliablePurpose::Generic) {
   constexpr size_t kMaxPendingReliable = 32;
   if (session.pendingReliable.size() >= kMaxPendingReliable) {
     session.error = "antrian reliable penuh";
@@ -263,6 +272,7 @@ bool sendSessionReliable(LiveSession& session, const std::vector<uint8_t>& packe
 
   PendingReliable pending;
   pending.messageNumber = messageNumber;
+  pending.purpose = purpose;
   pending.wrappedPacket = wrap_packet(packet, session.port);
   pending.lastSent = std::chrono::steady_clock::now();
   if (!session.net->send(pending.wrappedPacket)) {
@@ -276,13 +286,21 @@ bool sendSessionReliable(LiveSession& session, const std::vector<uint8_t>& packe
 
 void consumeRemoteAcks(LiveSession& session, const std::vector<uint16_t>& messageNumbers) {
   if (messageNumbers.empty() || session.pendingReliable.empty()) return;
-  session.pendingReliable.erase(
-      std::remove_if(session.pendingReliable.begin(), session.pendingReliable.end(),
-                     [&messageNumbers](const PendingReliable& pending) {
-                       return std::find(messageNumbers.begin(), messageNumbers.end(),
-                                        pending.messageNumber) != messageNumbers.end();
-                     }),
-      session.pendingReliable.end());
+  for (auto it = session.pendingReliable.begin(); it != session.pendingReliable.end();) {
+    const bool acknowledged = std::find(messageNumbers.begin(), messageNumbers.end(),
+                                        it->messageNumber) != messageNumbers.end();
+    if (!acknowledged) {
+      ++it;
+      continue;
+    }
+    if (it->purpose == ReliablePurpose::SpawnConfirmation) {
+      // The server has transport-ACKed RPC PlayerSpawn, so channel-1 movement
+      // can no longer race in ahead of the server's spawned-state transition.
+      session.spawnConfirmationAcked = true;
+      appendBounded(session.stateSummary, "PlayerSpawn ACK", 240);
+    }
+    it = session.pendingReliable.erase(it);
+  }
 }
 
 void resendDueReliable(LiveSession& session) {
@@ -355,6 +373,25 @@ void sendDueReliableKeepalive(LiveSession& session) {
   }
 }
 
+bool sendSpawnConfirmation(LiveSession& session) {
+  if (session.spawnConfirmationSent) return true;
+  if (!session.net || session.net->fd < 0 || !session.world.spawnAllowed()) return false;
+
+  const uint16_t messageNumber = session.nextMessageNumber++;
+  const uint16_t orderingIndex = session.orderingCounters.takeRpc();
+  const auto packet = raknet::buildReliableOrdered(
+      messageNumber, 2, orderingIndex, clientrpc::buildPlayerSpawn());
+  if (!sendSessionReliable(session, packet, messageNumber, ReliablePurpose::SpawnConfirmation)) {
+    session.error = "gagal mengirim PlayerSpawn";
+    return false;
+  }
+
+  session.spawnConfirmationSent = true;
+  session.spawnConfirmationAcked = false;
+  appendBounded(session.stateSummary, "PlayerSpawn dikirim", 240);
+  return true;
+}
+
 void processSessionDatagram(LiveSession& session, const std::vector<uint8_t>& bytes) {
   const raknet::Datagram datagram = raknet::decodeDatagram(bytes);
   consumeRemoteAcks(session, datagram.receivedAckMessageNumbers);
@@ -388,6 +425,16 @@ void processSessionDatagram(LiveSession& session, const std::vector<uint8_t>& by
       state::RpcEvent event;
       if (session.world.applyRpc(packet.payload, event)) {
         appendBounded(session.stateSummary, event.summary, 240);
+        if (event.kind == state::RpcEventKind::SpawnResponse) {
+          if (session.world.spawnAllowed()) {
+            // PlayerRequestSpawn is only permission. The legacy protocol
+            // requires the client to follow it with empty RPC PlayerSpawn (52).
+            sendSpawnConfirmation(session);
+          } else {
+            session.spawnConfirmationSent = false;
+            session.spawnConfirmationAcked = false;
+          }
+        }
       }
     }
   }
@@ -409,10 +456,20 @@ SessionSnapshot snapshotFrom(const LiveSession* session) {
   snapshot.classSelectable = session->world.classSelection().selectable;
   snapshot.spawnResponseKnown = session->world.spawnResponseKnown();
   snapshot.spawnAllowed = session->world.spawnAllowed();
+  snapshot.spawnConfirmationSent = session->spawnConfirmationSent;
+  snapshot.spawnConfirmationAcked = session->spawnConfirmationAcked;
+  snapshot.localSpawnInfoKnown = session->world.localPlayer().spawnInfoKnown;
+  snapshot.localPositionKnown = session->world.localPlayer().positionKnown;
   snapshot.checkpointActive = session->world.checkpoint().active;
   snapshot.raceCheckpointActive = session->world.raceCheckpoint().active;
   snapshot.playerId = snapshot.playerInit ? session->world.playerInit().playerId : 0;
   snapshot.classModel = snapshot.classSelectionKnown ? session->world.classSelection().model : 0;
+  const state::LocalPlayer& local = session->world.localPlayer();
+  snapshot.localModel = local.spawnInfoKnown ? local.model : 0;
+  snapshot.localX = local.positionKnown ? local.x : 0.0f;
+  snapshot.localY = local.positionKnown ? local.y : 0.0f;
+  snapshot.localZ = local.positionKnown ? local.z : 0.0f;
+  snapshot.localAngle = local.facingKnown ? local.angle : 0.0f;
   snapshot.onFootSyncRateMs = snapshot.playerInit ? session->world.playerInit().onFootSyncRateMs : 0;
   snapshot.effectiveOnFootSyncRateMs =
       snapshot.playerInit ? syncpolicy::boundedOnFootRateMs(snapshot.onFootSyncRateMs) : 0;
@@ -765,6 +822,10 @@ SessionSnapshot raknet_session_request_spawn() {
     gLiveSession->error = "class belum dipilih atau ditolak server";
     return snapshotFrom(gLiveSession.get());
   }
+  if (gLiveSession->spawnConfirmationSent && !gLiveSession->spawnConfirmationAcked) {
+    gLiveSession->error = "PlayerSpawn sebelumnya masih menunggu ACK server";
+    return snapshotFrom(gLiveSession.get());
+  }
 
   const auto rpc = clientrpc::buildRequestSpawn();
   const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
@@ -773,6 +834,9 @@ SessionSnapshot raknet_session_request_spawn() {
   if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
     gLiveSession->error = "gagal mengirim PlayerRequestSpawn";
   } else {
+    gLiveSession->world.beginSpawnRequest();
+    gLiveSession->spawnConfirmationSent = false;
+    gLiveSession->spawnConfirmationAcked = false;
     appendBounded(gLiveSession->stateSummary, "PlayerRequestSpawn", 240);
   }
   return snapshotFrom(gLiveSession.get());
@@ -786,9 +850,11 @@ SessionSnapshot raknet_session_send_onfoot(const sync::OnFootState& state) {
 
   // Movement is never emitted merely because a socket exists. The server must
   // have initialized this player and explicitly accepted a spawn request.
-  if (!gLiveSession->accepted || !gLiveSession->world.initialized() ||
-      !gLiveSession->world.spawnResponseKnown() || !gLiveSession->world.spawnAllowed()) {
-    gLiveSession->error = "OnFootSync menunggu PlayerInit dan spawn yang diizinkan server";
+  if (!syncpolicy::onFootSessionReady(
+          gLiveSession->accepted, gLiveSession->world.initialized(),
+          gLiveSession->world.spawnResponseKnown(), gLiveSession->world.spawnAllowed(),
+          gLiveSession->spawnConfirmationAcked)) {
+    gLiveSession->error = "OnFootSync menunggu PlayerInit, PlayerSpawn, dan ACK server";
     return snapshotFrom(gLiveSession.get());
   }
 
