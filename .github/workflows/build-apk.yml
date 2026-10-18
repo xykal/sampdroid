@@ -33,6 +33,7 @@ jobs:
             app/src/main/cpp/raknet_codec.cpp \
             app/src/main/cpp/rpc_decoder.cpp \
             app/src/main/cpp/rpc_state.cpp \
+            app/src/main/cpp/raknet_probe.cpp \
             tests/native/raknet_codec_test.cpp \
             -o .ci-native/raknet-codec-test
           .ci-native/raknet-codec-test

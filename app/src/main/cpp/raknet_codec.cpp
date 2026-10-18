@@ -206,10 +206,29 @@ Datagram decodeDatagram(const std::vector<uint8_t>& datagram) {
   if (hasAcks) {
     const uint16_t count = reader.readCompressedU16();
     if (count > 64 || !reader.ok()) return out;
+    constexpr uint16_t kMaxAckRange = 512;
+    constexpr size_t kMaxReceivedAckNumbers = 1024;
     for (uint16_t i = 0; i < count && reader.ok(); ++i) {
       const bool isSingle = reader.readBit();
-      reader.readBits(16);
-      if (!isSingle) reader.readBits(16);
+      const uint16_t first = static_cast<uint16_t>(reader.readBits(16));
+      if (isSingle) {
+        if (out.receivedAckMessageNumbers.size() < kMaxReceivedAckNumbers) {
+          out.receivedAckMessageNumbers.push_back(first);
+        }
+        continue;
+      }
+
+      const uint16_t second = static_cast<uint16_t>(reader.readBits(16));
+      const uint16_t low = std::min(first, second);
+      const uint16_t high = std::max(first, second);
+      // A malicious range must not make a phone allocate/iterate all 65k
+      // message IDs. Large or wrapping ranges are ignored safely.
+      if (static_cast<uint32_t>(high) - low >= kMaxAckRange) continue;
+      for (uint32_t message = low;
+           message <= high && out.receivedAckMessageNumbers.size() < kMaxReceivedAckNumbers;
+           ++message) {
+        out.receivedAckMessageNumbers.push_back(static_cast<uint16_t>(message));
+      }
     }
   }
 

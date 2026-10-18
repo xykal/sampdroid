@@ -1,12 +1,10 @@
 package com.xykal.sampdroid.ui
 
-import android.content.Context
 import android.text.method.ScrollingMovementMethod
 import android.view.LayoutInflater
 import android.view.View
 import android.widget.Button
 import android.widget.TextView
-import androidx.lifecycle.LifecycleCoroutineScope
 import androidx.lifecycle.lifecycleScope
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
@@ -31,6 +29,9 @@ object ServerDetailDialog {
         val btnPlayers: Button = view.findViewById(R.id.btnPlayers)
         val btnPing: Button = view.findViewById(R.id.btnPing)
         val btnProbe: Button = view.findViewById(R.id.btnProbe)
+        val btnSession: Button = view.findViewById(R.id.btnSession)
+        val btnClassZero: Button = view.findViewById(R.id.btnClassZero)
+        val btnSessionDisconnect: Button = view.findViewById(R.id.btnSessionDisconnect)
 
         log.movementMethod = ScrollingMovementMethod()
 
@@ -56,6 +57,37 @@ object ServerDetailDialog {
                 }
                 log.text = out
             }
+        }
+
+        fun formatSession(o: JSONObject): String = buildString {
+            append("=== SESI NATIVE (EKSPERIMEN) ===\n")
+            append("Soket ini native Android, bukan Winlator/samp.exe.\n")
+            append("Belum ada renderer/gameplay; pakai hanya untuk validasi lifecycle.\n")
+            append("Tap Sesi native lagi untuk poll stream.\n\n")
+            append("aktif           : ").append(o.optBoolean("active")).append('\n')
+            append("accepted        : ").append(o.optBoolean("accepted")).append('\n')
+            append("ClientJoin stream: ").append(o.optBoolean("joined")).append('\n')
+            append("PlayerInit       : ").append(o.optBoolean("playerInit")).append('\n')
+            if (o.optBoolean("playerInit")) {
+                append("player ID       : ").append(o.optInt("playerId")).append('\n')
+                append("nama server     : ").append(o.optString("serverName")).append('\n')
+            }
+            append("class state      : ")
+                .append(if (o.optBoolean("classSelectionKnown")) {
+                    "model ${o.optInt("classModel")} / " +
+                        (if (o.optBoolean("classSelectable")) "selectable" else "ditolak")
+                } else {
+                    "belum ada balasan"
+                }).append('\n')
+            append("stream          : ").append(o.optInt("receivedPackets"))
+                .append(" packet / ").append(o.optInt("receivedRpcs")).append(" RPC\n")
+            append("fragment        : ").append(o.optInt("splitFragments"))
+                .append(" split / ").append(o.optInt("reassembledPackets")).append(" tersusun\n")
+            append("state pemain     : ").append(o.optInt("trackedPlayers"))
+                .append(" terlacak\n")
+            append("RPC terlihat     : ").append(o.optString("rpcSummary").ifBlank { "-" }).append('\n')
+            append("event            : ").append(o.optString("stateSummary").ifBlank { "-" }).append('\n')
+            append("status           : ").append(o.optString("error").ifBlank { "ok" })
         }
 
         btnInfo.setOnClickListener {
@@ -121,6 +153,36 @@ object ServerDetailDialog {
             }
         }
 
+        btnSession.setOnClickListener {
+            run {
+                val prior = JSONObject(NativeBridge.nativeSessionStatus())
+                val result = if (prior.optBoolean("active")) {
+                    NativeBridge.nativeSessionPoll(500)
+                } else {
+                    NativeBridge.nativeSessionConnect(server.ip, server.port, 1000)
+                }
+                formatSession(JSONObject(result))
+            }
+        }
+
+        btnClassZero.setOnClickListener {
+            run {
+                val sent = JSONObject(NativeBridge.nativeSessionRequestClass(0))
+                val result = if (sent.optBoolean("active") && sent.optString("error").isBlank()) {
+                    NativeBridge.nativeSessionPoll(800)
+                } else {
+                    sent.toString()
+                }
+                formatSession(JSONObject(result))
+            }
+        }
+
+        btnSessionDisconnect.setOnClickListener {
+            run {
+                formatSession(JSONObject(NativeBridge.nativeSessionDisconnect()))
+            }
+        }
+
         btnProbe.setOnClickListener {
             run {
                 val o = JSONObject(NativeBridge.nativeRaknetProbe(server.ip, server.port, 1500))
@@ -150,6 +212,14 @@ object ServerDetailDialog {
             }
         }
 
+        // A retained UDP socket belongs to this explicit detail/session view.
+        // Closing the dialog releases it instead of leaving an invisible player
+        // connection behind while a renderer/sync loop is still under development.
+        dialog.setOnDismissListener {
+            activity.lifecycleScope.launch(Dispatchers.IO) {
+                runCatching { NativeBridge.nativeSessionDisconnect() }
+            }
+        }
         dialog.show()
     }
 }

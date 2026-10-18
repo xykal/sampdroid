@@ -3,7 +3,8 @@ package com.xykal.sampdroid
 /**
  * Jembatan ke native library (C++):
  *  - query protocol SA-MP (i / r / c / d / p)
- *  - RakNet 2.x connect probe (handshake + obfuscation layer)
+ *  - RakNet 2.x probe and explicit retained native session
+ *    (handshake + obfuscation + bounded protocol state)
  */
 object NativeBridge {
 
@@ -30,4 +31,22 @@ object NativeBridge {
      * reassembly, RPC summary, and PlayerInit data when the server sends it.
      */
     external fun nativeRaknetProbe(ip: String, port: Int, timeoutMs: Int): String
+
+    /**
+     * Explicit user-initiated persistent native session. Calls must run on
+     * Dispatchers.IO; this owns a UDP socket until nativeSessionDisconnect().
+     */
+    external fun nativeSessionConnect(ip: String, port: Int, timeoutMs: Int): String
+
+    /** Receives one datagram, ACKs reliable traffic, and returns reduced state JSON. */
+    external fun nativeSessionPoll(timeoutMs: Int): String
+
+    /** Sends PlayerRequestClass on reliable ordered channel 2. */
+    external fun nativeSessionRequestClass(classId: Int): String
+
+    /** Releases the retained UDP socket. Safe if no session is active. */
+    external fun nativeSessionDisconnect(): String
+
+    /** Returns native session state without doing network IO. */
+    external fun nativeSessionStatus(): String
 }

@@ -1,5 +1,6 @@
 #include "client_rpc.h"
 #include "raknet_codec.h"
+#include "raknet_session.h"
 #include "rpc_decoder.h"
 #include "rpc_state.h"
 
@@ -156,6 +157,20 @@ void testReliableAndAck() {
 
   const auto ack = samp::raknet::buildAck({1});
   expect(ack == std::vector<uint8_t>({0xE3, 0x01, 0x00}), "ACK wire vector changed");
+  const auto decodedAck = samp::raknet::decodeDatagram(ack);
+  expect(decodedAck.receivedAckMessageNumbers == std::vector<uint16_t>({1}),
+         "remote ACK message number missing");
+
+  samp::raknet::BitWriter ackRangeWriter;
+  ackRangeWriter.writeBit(true);  // hasAcks
+  ackRangeWriter.writeCompressedU16(1);
+  ackRangeWriter.writeBit(false); // range rather than singleton
+  ackRangeWriter.writeBits(10, 16);
+  ackRangeWriter.writeBits(12, 16);
+  ackRangeWriter.align();
+  const auto decodedRange = samp::raknet::decodeDatagram(ackRangeWriter.buffer);
+  expect(decodedRange.receivedAckMessageNumbers == std::vector<uint16_t>({10, 11, 12}),
+         "remote ACK range changed");
 
   const auto ordered = samp::raknet::buildReliableOrdered(2, 2, 17, {20, 128, 3, 0});
   const auto orderedDecoded = samp::raknet::decodeDatagram(ordered);
@@ -226,6 +241,16 @@ void testClientRpcBuilders() {
          "request spawn payload changed");
 }
 
+void testSessionSafetyWithoutSocket() {
+  const auto status = samp::raknet_session_status();
+  expect(!status.active && !status.error.empty(), "idle session status must be safe");
+  const auto classRequest = samp::raknet_session_request_class(0);
+  expect(!classRequest.active && !classRequest.error.empty(),
+         "class request without session must be rejected");
+  const auto closed = samp::raknet_session_disconnect();
+  expect(!closed.active && !closed.stateSummary.empty(), "idle session close must be safe");
+}
+
 void testWorldStateReducer() {
   samp::state::WorldState world;
   samp::state::RpcEvent event;
@@ -279,6 +304,7 @@ int main() {
   testSplitReassembly();
   testPlayerInitDecoder();
   testClientRpcBuilders();
+  testSessionSafetyWithoutSocket();
   testWorldStateReducer();
   std::puts("raknet codec/state regression tests: OK");
   return 0;

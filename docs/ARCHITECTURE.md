@@ -28,6 +28,17 @@ Native Android renderer backend (future)
 - Renderer/world bridge menerima state native dan data milik pengguna; APK tidak
   membundel asset atau binary game.
 
+## Session yang sudah ada di `main`
+
+`raknet_session` mempertahankan satu socket UDP yang dipilih pengguna setelah
+`ClientJoin`, membawa message/order counter, split reassembler, `WorldState`, ACK
+inbound, ACK outbound, dan retry queue bounded. Android shell memanggil JNI ini
+dari Kotlin IO coroutine; dialog server menutup socket saat ditutup.
+
+Belum ada loop gameplay otomatis, heartbeat/full congestion handling, atau sync
+encoder. Karena itu session surface sekarang diberi label eksperimen dan tidak
+boleh dipasarkan sebagai renderer/playable client.
+
 ## Batas layer
 
 | Layer | Boleh | Tidak boleh |

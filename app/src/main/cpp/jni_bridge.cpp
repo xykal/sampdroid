@@ -5,6 +5,7 @@
 #include <string>
 
 #include "raknet_probe.h"
+#include "raknet_session.h"
 #include "samp_query.h"
 
 namespace {
@@ -21,13 +22,37 @@ jstring to_java(JNIEnv* env, const std::string& s) {
   return env->NewStringUTF(s.c_str());
 }
 
+std::string session_json(const samp::SessionSnapshot& s) {
+  std::ostringstream o;
+  o << "{\"active\":" << (s.active ? "true" : "false")
+    << ",\"accepted\":" << (s.accepted ? "true" : "false")
+    << ",\"joined\":" << (s.joined ? "true" : "false")
+    << ",\"playerInit\":" << (s.playerInit ? "true" : "false")
+    << ",\"classSelectionKnown\":" << (s.classSelectionKnown ? "true" : "false")
+    << ",\"classSelectable\":" << (s.classSelectable ? "true" : "false")
+    << ",\"spawnResponseKnown\":" << (s.spawnResponseKnown ? "true" : "false")
+    << ",\"spawnAllowed\":" << (s.spawnAllowed ? "true" : "false")
+    << ",\"playerId\":" << s.playerId
+    << ",\"classModel\":" << s.classModel
+    << ",\"receivedPackets\":" << s.receivedPackets
+    << ",\"receivedRpcs\":" << s.receivedRpcs
+    << ",\"splitFragments\":" << s.splitFragments
+    << ",\"reassembledPackets\":" << s.reassembledPackets
+    << ",\"trackedPlayers\":" << s.trackedPlayers
+    << ",\"serverName\":\"" << samp::json_escape(s.serverName) << "\""
+    << ",\"rpcSummary\":\"" << samp::json_escape(s.rpcSummary) << "\""
+    << ",\"stateSummary\":\"" << samp::json_escape(s.stateSummary) << "\""
+    << ",\"error\":\"" << samp::json_escape(s.error) << "\"}";
+  return o.str();
+}
+
 }  // namespace
 
 extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeVersion(JNIEnv* env, jclass) {
-  return to_java(env, "sampdroid-native 0.6.0 / native-port-track");
+  return to_java(env, "0.7.0 / retained-native-session");
 }
 
 JNIEXPORT jstring JNICALL
@@ -111,6 +136,40 @@ Java_com_xykal_sampdroid_NativeBridge_nativeRaknetProbe(JNIEnv* env, jclass, jst
     << ",\"error\":\"" << samp::json_escape(r.error) << "\""
     << ",\"log\":\"" << samp::json_escape(r.log) << "\"}";
   return to_java(env, o.str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_xykal_sampdroid_NativeBridge_nativeSessionConnect(JNIEnv* env, jclass, jstring ip,
+                                                           jint port, jint timeoutMs) {
+  return to_java(env, session_json(samp::raknet_session_connect(
+                          to_std(env, ip), static_cast<uint16_t>(port), timeoutMs)));
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_xykal_sampdroid_NativeBridge_nativeSessionPoll(JNIEnv* env, jclass, jint timeoutMs) {
+  return to_java(env, session_json(samp::raknet_session_poll(timeoutMs)));
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_xykal_sampdroid_NativeBridge_nativeSessionRequestClass(JNIEnv* env, jclass,
+                                                                 jint classId) {
+  if (classId < 0 || classId > 65535) {
+    samp::SessionSnapshot invalid;
+    invalid.error = "class ID di luar rentang u16";
+    return to_java(env, session_json(invalid));
+  }
+  return to_java(env, session_json(
+                          samp::raknet_session_request_class(static_cast<uint16_t>(classId))));
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_xykal_sampdroid_NativeBridge_nativeSessionDisconnect(JNIEnv* env, jclass) {
+  return to_java(env, session_json(samp::raknet_session_disconnect()));
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_xykal_sampdroid_NativeBridge_nativeSessionStatus(JNIEnv* env, jclass) {
+  return to_java(env, session_json(samp::raknet_session_status()));
 }
 
 }  // extern "C"

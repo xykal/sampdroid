@@ -1,8 +1,10 @@
-// RakNet 2.x (SA-MP) connect probe — written from scratch.
-// Handshake + obfuscation + reliability datagram encoder.
-// Dipakai app untuk mendiagnosis kemampuan connect ke server tertentu.
+// RakNet 2.x (SA-MP) native transport/session — written from scratch.
+// Handshake + obfuscation + reliability datagram encoder + retained session.
+// Probe tetap dipakai diagnostik; session eksplisit dipakai lifecycle Android native.
 #include "raknet_probe.h"
+#include "client_rpc.h"
 #include "raknet_codec.h"
+#include "raknet_session.h"
 #include "rpc_decoder.h"
 #include "rpc_state.h"
 
@@ -11,8 +13,13 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <mutex>
+#include <utility>
 #include <vector>
 
 namespace samp {
@@ -88,32 +95,94 @@ struct Net {
   int fd = -1;
   sockaddr_in to{};
 
+  Net() = default;
+  Net(const Net&) = delete;
+  Net& operator=(const Net&) = delete;
+
   bool open(const std::string& ip, uint16_t port, int timeoutMs) {
+    close();
     fd = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (fd < 0) return false;
     to.sin_family = AF_INET;
     to.sin_port = htons(port);
-    if (::inet_pton(AF_INET, ip.c_str(), &to.sin_addr) != 1) return false;
+    if (::inet_pton(AF_INET, ip.c_str(), &to.sin_addr) != 1) {
+      close();
+      return false;
+    }
+    return setTimeout(timeoutMs);
+  }
+
+  bool setTimeout(int timeoutMs) {
+    if (fd < 0 || timeoutMs < 1) return false;
     timeval tv{timeoutMs / 1000, (timeoutMs % 1000) * 1000};
-    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    return true;
+    return ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
   }
-  bool send(const std::vector<uint8_t>& p) {
-    return ::sendto(fd, p.data(), p.size(), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to)) >= 0;
+
+  bool send(const std::vector<uint8_t>& p) const {
+    return fd >= 0 && !p.empty() &&
+           ::sendto(fd, p.data(), p.size(), 0, reinterpret_cast<const sockaddr*>(&to), sizeof(to)) >= 0;
   }
-  int recv(std::vector<uint8_t>& out) {
+
+  int recv(std::vector<uint8_t>& out) const {
     out.assign(2048, 0);
-    int n = static_cast<int>(::recv(fd, out.data(), out.size(), 0));
-    if (n > 0)
-      out.resize(static_cast<size_t>(n));
-    else
+    sockaddr_in from{};
+    socklen_t fromLength = sizeof(from);
+    const int n = static_cast<int>(::recvfrom(fd, out.data(), out.size(), 0,
+                                               reinterpret_cast<sockaddr*>(&from), &fromLength));
+    if (n <= 0) {
       out.clear();
+      return n;
+    }
+    // A socket can receive arbitrary UDP traffic. Only accept packets from the
+    // endpoint chosen explicitly by the user; ignore off-path injections.
+    if (from.sin_family != AF_INET || from.sin_port != to.sin_port ||
+        from.sin_addr.s_addr != to.sin_addr.s_addr) {
+      out.clear();
+      return 0;
+    }
+    out.resize(static_cast<size_t>(n));
     return n;
   }
-  ~Net() {
+
+  void close() {
     if (fd >= 0) ::close(fd);
+    fd = -1;
   }
+
+  ~Net() { close(); }
 };
+
+struct PendingReliable {
+  uint16_t messageNumber = 0;
+  std::vector<uint8_t> wrappedPacket;
+  std::chrono::steady_clock::time_point lastSent;
+  uint8_t retries = 0;
+};
+
+// One explicit session is retained for the Android shell. It intentionally
+// contains only network/state ownership: rendering and input live above this
+// boundary, and a new connection replaces the old one atomically under mutex.
+struct LiveSession {
+  std::unique_ptr<Net> net;
+  uint16_t port = 0;
+  uint16_t nextMessageNumber = 0;
+  uint16_t nextOrderingIndex = 0;
+  bool accepted = false;
+  bool joined = false;
+  int receivedPackets = 0;
+  int receivedRpcs = 0;
+  int splitFragments = 0;
+  int reassembledPackets = 0;
+  std::string rpcSummary;
+  std::string stateSummary;
+  std::string error;
+  std::vector<PendingReliable> pendingReliable;
+  raknet::SplitReassembler reassembler;
+  state::WorldState world;
+};
+
+std::unique_ptr<LiveSession> gLiveSession;
+std::mutex gLiveSessionMutex;
 
 // Payload ID_CONNECTION_REQUEST_ACCEPTED: [id][ip x4][port u16][idx u16][token u32]
 bool parse_accepted(const std::vector<uint8_t>& payload, uint32_t& token) {
@@ -159,11 +228,134 @@ void logln(ProbeResult& r, const std::string& line) {
   r.log += "\n";
 }
 
+void appendBounded(std::string& target, const std::string& value, size_t maxBytes) {
+  if (value.empty() || target.size() + value.size() + 2 >= maxBytes) return;
+  if (!target.empty()) target += ", ";
+  target += value;
+}
+
+bool sendSessionReliable(LiveSession& session, const std::vector<uint8_t>& packet,
+                         uint16_t messageNumber) {
+  constexpr size_t kMaxPendingReliable = 32;
+  if (session.pendingReliable.size() >= kMaxPendingReliable) {
+    session.error = "antrian reliable penuh";
+    return false;
+  }
+
+  PendingReliable pending;
+  pending.messageNumber = messageNumber;
+  pending.wrappedPacket = wrap_packet(packet, session.port);
+  pending.lastSent = std::chrono::steady_clock::now();
+  if (!session.net->send(pending.wrappedPacket)) {
+    session.error = "gagal mengirim packet reliable";
+    return false;
+  }
+  session.pendingReliable.push_back(std::move(pending));
+  return true;
+}
+
+void consumeRemoteAcks(LiveSession& session, const std::vector<uint16_t>& messageNumbers) {
+  if (messageNumbers.empty() || session.pendingReliable.empty()) return;
+  session.pendingReliable.erase(
+      std::remove_if(session.pendingReliable.begin(), session.pendingReliable.end(),
+                     [&messageNumbers](const PendingReliable& pending) {
+                       return std::find(messageNumbers.begin(), messageNumbers.end(),
+                                        pending.messageNumber) != messageNumbers.end();
+                     }),
+      session.pendingReliable.end());
+}
+
+void resendDueReliable(LiveSession& session) {
+  if (!session.net || session.net->fd < 0) return;
+  constexpr auto kResendAfter = std::chrono::milliseconds(750);
+  constexpr uint8_t kMaxRetries = 5;
+  const auto now = std::chrono::steady_clock::now();
+  for (PendingReliable& pending : session.pendingReliable) {
+    if (now - pending.lastSent < kResendAfter) continue;
+    if (pending.retries >= kMaxRetries) {
+      session.error = "reliable packet tidak di-ACK server";
+      session.net->close();
+      return;
+    }
+    if (!session.net->send(pending.wrappedPacket)) {
+      session.error = "gagal mengirim ulang packet reliable";
+      session.net->close();
+      return;
+    }
+    pending.lastSent = now;
+    ++pending.retries;
+  }
+}
+
+void processSessionDatagram(LiveSession& session, const std::vector<uint8_t>& bytes) {
+  const raknet::Datagram datagram = raknet::decodeDatagram(bytes);
+  consumeRemoteAcks(session, datagram.receivedAckMessageNumbers);
+  if (!datagram.ackMessageNumbers.empty()) {
+    session.net->send(wrap_packet(raknet::buildAck(datagram.ackMessageNumbers), session.port));
+  }
+
+  for (const auto& raw : datagram.packets) {
+    if (raw.split) ++session.splitFragments;
+    for (const auto& packet : session.reassembler.push(raw)) {
+      if (packet.payload.empty()) continue;
+      ++session.receivedPackets;
+      if (packet.reassembled) ++session.reassembledPackets;
+
+      const uint8_t id = packet.payload[0];
+      if (id == ID_DISCONNECTION_NOTIFICATION) {
+        session.error = "server memutus sesi";
+        session.net->close();
+        return;
+      }
+      if (id != 20 || packet.payload.size() < 2) continue;
+
+      ++session.receivedRpcs;
+      appendBounded(session.rpcSummary, rpc::summarize(packet.payload), 320);
+      state::RpcEvent event;
+      if (session.world.applyRpc(packet.payload, event)) {
+        appendBounded(session.stateSummary, event.summary, 240);
+      }
+    }
+  }
+  session.joined = session.receivedPackets > 0;
+}
+
+SessionSnapshot snapshotFrom(const LiveSession* session) {
+  SessionSnapshot snapshot;
+  if (!session) {
+    snapshot.error = "tidak ada sesi native aktif";
+    return snapshot;
+  }
+
+  snapshot.active = session->net && session->net->fd >= 0;
+  snapshot.accepted = session->accepted;
+  snapshot.joined = session->joined;
+  snapshot.playerInit = session->world.initialized();
+  snapshot.classSelectionKnown = session->world.classSelection().valid;
+  snapshot.classSelectable = session->world.classSelection().selectable;
+  snapshot.spawnResponseKnown = session->world.spawnResponseKnown();
+  snapshot.spawnAllowed = session->world.spawnAllowed();
+  snapshot.playerId = snapshot.playerInit ? session->world.playerInit().playerId : 0;
+  snapshot.classModel = snapshot.classSelectionKnown ? session->world.classSelection().model : 0;
+  snapshot.receivedPackets = session->receivedPackets;
+  snapshot.receivedRpcs = session->receivedRpcs;
+  snapshot.splitFragments = session->splitFragments;
+  snapshot.reassembledPackets = session->reassembledPackets;
+  snapshot.trackedPlayers = static_cast<int>(session->world.playerCount());
+  snapshot.serverName = snapshot.playerInit ? session->world.playerInit().serverName : "";
+  snapshot.rpcSummary = session->rpcSummary;
+  snapshot.stateSummary = session->stateSummary;
+  snapshot.error = session->error;
+  return snapshot;
+}
+
 }  // namespace
 
-ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs) {
+static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int timeoutMs,
+                                       bool retainSession) {
   ProbeResult res;
-  Net net;
+  auto ownedNet = std::make_unique<Net>();
+  Net& net = *ownedNet;
   if (!net.open(ip, port, timeoutMs)) {
     res.error = "socket error / invalid ip";
     return res;
@@ -385,7 +577,135 @@ ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs) {
     logln(res, "");
     logln(res, "STATUS: tersambung sebagai peer, ClientJoin belum dibalas");
   }
+
+  if (retainSession) {
+    // raknet_session_connect holds gLiveSessionMutex across this implementation.
+    // Move the opened UDP socket and all decoder state, rather than reopening
+    // a second connection or losing ordering/message counters after ClientJoin.
+    auto live = std::make_unique<LiveSession>();
+    live->net = std::move(ownedNet);
+    live->port = port;
+    live->nextMessageNumber = msgNo;
+    live->nextOrderingIndex = 0;
+    live->accepted = res.accepted;
+    live->joined = res.joined;
+    live->receivedPackets = rxPackets;
+    live->receivedRpcs = rpcCount;
+    live->splitFragments = splitFragments;
+    live->reassembledPackets = reassembledPackets;
+    live->rpcSummary = std::move(rpcSummary);
+    live->stateSummary = std::move(stateSummary);
+    live->reassembler = std::move(reassembler);
+    live->world = std::move(world);
+    gLiveSession = std::move(live);
+  }
   return res;
+}
+
+ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs) {
+  return raknet_connect_impl(ip, port, timeoutMs, false);
+}
+
+SessionSnapshot raknet_session_connect(const std::string& ip, uint16_t port, int timeoutMs) {
+  std::lock_guard<std::mutex> lock(gLiveSessionMutex);
+  gLiveSession.reset();
+
+  const ProbeResult result = raknet_connect_impl(ip, port, timeoutMs, true);
+  if (!gLiveSession) {
+    SessionSnapshot snapshot;
+    snapshot.accepted = result.accepted;
+    snapshot.joined = result.joined;
+    snapshot.playerInit = result.playerInit;
+    snapshot.playerId = result.playerId;
+    snapshot.serverName = result.serverName;
+    snapshot.receivedPackets = result.receivedPackets;
+    snapshot.receivedRpcs = result.receivedRpcs;
+    snapshot.splitFragments = result.splitFragments;
+    snapshot.reassembledPackets = result.reassembledPackets;
+    snapshot.trackedPlayers = result.trackedPlayers;
+    snapshot.rpcSummary = result.rpcSummary;
+    snapshot.stateSummary = result.stateSummary;
+    snapshot.error = result.error.empty() ? "gagal membuat sesi native" : result.error;
+    return snapshot;
+  }
+  return snapshotFrom(gLiveSession.get());
+}
+
+SessionSnapshot raknet_session_poll(int timeoutMs) {
+  std::lock_guard<std::mutex> lock(gLiveSessionMutex);
+  if (!gLiveSession) return snapshotFrom(nullptr);
+  if (!gLiveSession->net || gLiveSession->net->fd < 0) return snapshotFrom(gLiveSession.get());
+  if (!gLiveSession->net->setTimeout(timeoutMs)) {
+    gLiveSession->error = "gagal mengatur timeout sesi";
+    return snapshotFrom(gLiveSession.get());
+  }
+
+  std::vector<uint8_t> packet;
+  if (gLiveSession->net->recv(packet) > 0) {
+    processSessionDatagram(*gLiveSession, packet);
+  }
+  resendDueReliable(*gLiveSession);
+  return snapshotFrom(gLiveSession.get());
+}
+
+SessionSnapshot raknet_session_request_class(uint16_t classId) {
+  std::lock_guard<std::mutex> lock(gLiveSessionMutex);
+  if (!gLiveSession || !gLiveSession->net || gLiveSession->net->fd < 0) {
+    return snapshotFrom(nullptr);
+  }
+
+  const auto rpc = clientrpc::buildRequestClass(classId);
+  const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
+  const uint16_t orderingIndex = gLiveSession->nextOrderingIndex++;
+  const auto packet = raknet::buildReliableOrdered(messageNumber, 2, orderingIndex, rpc);
+  if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
+    gLiveSession->error = "gagal mengirim PlayerRequestClass";
+  } else {
+    appendBounded(gLiveSession->stateSummary,
+                  "PlayerRequestClass #" + std::to_string(classId), 240);
+  }
+  return snapshotFrom(gLiveSession.get());
+}
+
+SessionSnapshot raknet_session_request_spawn() {
+  std::lock_guard<std::mutex> lock(gLiveSessionMutex);
+  if (!gLiveSession || !gLiveSession->net || gLiveSession->net->fd < 0) {
+    return snapshotFrom(nullptr);
+  }
+  if (!gLiveSession->world.classSelection().valid ||
+      !gLiveSession->world.classSelection().selectable) {
+    gLiveSession->error = "class belum dipilih atau ditolak server";
+    return snapshotFrom(gLiveSession.get());
+  }
+
+  const auto rpc = clientrpc::buildRequestSpawn();
+  const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
+  const uint16_t orderingIndex = gLiveSession->nextOrderingIndex++;
+  const auto packet = raknet::buildReliableOrdered(messageNumber, 2, orderingIndex, rpc);
+  if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
+    gLiveSession->error = "gagal mengirim PlayerRequestSpawn";
+  } else {
+    appendBounded(gLiveSession->stateSummary, "PlayerRequestSpawn", 240);
+  }
+  return snapshotFrom(gLiveSession.get());
+}
+
+SessionSnapshot raknet_session_disconnect() {
+  std::lock_guard<std::mutex> lock(gLiveSessionMutex);
+  SessionSnapshot snapshot;
+  if (gLiveSession && gLiveSession->net && gLiveSession->net->fd >= 0) {
+    const auto goodbye = raknet::buildReliable(gLiveSession->nextMessageNumber++,
+                                               {ID_DISCONNECTION_NOTIFICATION});
+    gLiveSession->net->send(wrap_packet(goodbye, gLiveSession->port));
+  }
+  gLiveSession.reset();
+  snapshot.stateSummary = "sesi native ditutup";
+  return snapshot;
+}
+
+SessionSnapshot raknet_session_status() {
+  std::lock_guard<std::mutex> lock(gLiveSessionMutex);
+  return snapshotFrom(gLiveSession.get());
 }
 
 }  // namespace samp

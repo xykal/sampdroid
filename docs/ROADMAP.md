@@ -10,15 +10,18 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 - [x] `PlayerInit`, PlayerJoin/Quit/Name/Color state reducer.
 - [x] Host regression tests untuk wire vector dan lifecycle player state.
 - [x] Client `PlayerRequestClass` / `PlayerRequestSpawn` builder + decoder state balasan.
-- [ ] Send class/spawn melalui persistent session ke server nyata.
+- [x] Retain socket setelah ClientJoin dan kirim `PlayerRequestClass` lewat session native.
+- [ ] Live interoperability capture untuk class/spawn di beberapa server nyata.
 - [ ] Decode player stream, vehicle/object/pickup state.
 - [ ] Sanitized capture replay test dari server nyata.
 
 ## Milestone 0.7 — persistent native session
 
-- [ ] Connect/disconnect/retry/timeout/clean teardown.
-- [ ] Ordered RPC queue dan resend window.
-- [ ] Class selection + spawn state.
+- [x] Explicit connect/disconnect dan clean UDP teardown dari Android shell.
+- [x] Socket retained setelah ClientJoin; peer IP/port filter dan bounded state.
+- [x] `RELIABLE_ORDERED` channel-2 class request, ACK consumption, bounded retry queue.
+- [x] Class selection + spawn response state reducer.
+- [ ] Lifecycle-aware poll loop/heartbeat, full ACK-range behavior, reconnect, dan resend window.
 - [ ] Chat/dialog/checkpoint/textdraw native state.
 - [ ] Player sync encoder dengan rate limiter dan test vector.
 

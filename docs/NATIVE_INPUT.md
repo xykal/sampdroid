@@ -8,7 +8,8 @@ Format berbasis koordinat relatif supaya controller native bisa nyaman dipakai
 di layar kecil ARMv7, ponsel modern, atau tablet.
 
 > **Status:** schema dan contoh siap dipakai pengembang. Runtime touch overlay
-> akan memakai format sama; belum aktif di APK v0.6.0.
+> akan memakai format sama; belum aktif di APK karena HUD/input gameplay masih
+> milestone berikutnya.
 
 ## File
 

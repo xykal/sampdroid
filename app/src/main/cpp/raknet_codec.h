@@ -72,7 +72,10 @@ struct IncomingPacket {
 
 struct Datagram {
   bool ok = false;
+  // Reliable packets decoded from this datagram; caller must acknowledge these.
   std::vector<uint16_t> ackMessageNumbers;
+  // ACK records carried by the remote peer for our own reliable message numbers.
+  std::vector<uint16_t> receivedAckMessageNumbers;
   std::vector<IncomingPacket> packets;
 };
 

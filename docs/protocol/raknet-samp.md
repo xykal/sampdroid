@@ -165,7 +165,8 @@ Contoh nyata — `ID_CONNECTION_REQUEST` reliable, messageNumber=1, payload `0B`
 | ACK reliable | ✅ setiap fragment reliable di-ACK |
 | Multi-paket datagram + split reassembly | ✅ sebelum RPC diserahkan ke decoder |
 | PlayerInit RPC 139 | ✅ decoder wire format + test vector; observability di UI |
-| Persistent game session / sync | ⏳ belum |
+| Retained native session | 🧪 socket/session state + class request di `main`; live capture multi-server masih pending |
+| Persistent game sync | ⏳ belum |
 
 ### Bug yang ditemukan (dan diperbaiki)
 
@@ -214,9 +215,8 @@ di tabel — perlu tabel dari `samp.dll` (lihat `samp-re`).
 
 ### Yang berikutnya
 
-1. **Persistent session + RPC state** — jangan lagi berhenti setelah probe;
-   simpan PlayerInit, player/class/spawn/chat/object/vehicle state dengan queue
-   ordered dan timeout/retry yang benar.
+1. **Session loop yang benar** — lifecycle-aware poll/heartbeat, full ACK range,
+   reconnect, resend window, lalu capture sanitasi terhadap beberapa server.
 2. **PlayerSync (207)** — encode posisi dari semantic input dengan rate limiter;
    jangan membuat server/pemain lain kena flood.
 3. **Renderer adapter** — interface asset-agnostic yang membaca data milik

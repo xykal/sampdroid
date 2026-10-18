@@ -77,6 +77,33 @@
                 android:layout_marginStart="6dp"
                 android:text="@string/btn_probe"
                 android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btnSession"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:text="@string/btn_session"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btnClassZero"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:text="@string/btn_class_zero"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btnSessionDisconnect"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:text="@string/btn_session_disconnect"
+                android:textSize="12sp" />
         </LinearLayout>
     </HorizontalScrollView>
 

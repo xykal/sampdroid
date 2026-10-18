@@ -47,7 +47,8 @@ Detail kontrak port: [docs/NATIVE_PORT_TARGET.md](docs/NATIVE_PORT_TARGET.md).
 | Split reassembly | ✅ | fragment disusun sebelum RPC didecode |
 | State pemain dasar | ✅ | `PlayerInit`, Join/Quit/Name/Color → model native |
 | Class/spawn packet core | ✅ | request builder + response state native |
-| Persistent session + kirim class/spawn | ⏳ | implementasi berikutnya |
+| Persistent native session | 🧪 | socket retained after ClientJoin, peer filter, inbound ACK, bounded reliable retry |
+| Class selection native | 🧪 | explicit `Class 0` request dari detail server; belum gameplay/render |
 | Player/vehicle/object sync penuh | ⏳ | belum |
 | HUD + textdraw/dialog native | ⏳ | belum |
 | Touch/gamepad/gyro native | ⏳ | input layout sudah didefinisikan |
@@ -109,7 +110,8 @@ Kotlin Android shell
             └─ Android game/world bridge
 ```
 
-Detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) dan
+[native session lifecycle](docs/NATIVE_SESSION.md).
 
 Dokumentasi protocol:
 
