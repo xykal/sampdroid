@@ -119,8 +119,10 @@ struct Net {
   }
 
   bool send(const std::vector<uint8_t>& p) const {
-    return fd >= 0 && !p.empty() &&
-           ::sendto(fd, p.data(), p.size(), 0, reinterpret_cast<const sockaddr*>(&to), sizeof(to)) >= 0;
+    if (fd < 0 || p.empty()) return false;
+    const ssize_t sent = ::sendto(fd, p.data(), p.size(), 0,
+                                  reinterpret_cast<const sockaddr*>(&to), sizeof(to));
+    return sent == static_cast<ssize_t>(p.size());
   }
 
   int recv(std::vector<uint8_t>& out) const {
