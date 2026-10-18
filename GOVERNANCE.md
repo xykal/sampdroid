@@ -45,8 +45,9 @@ review substantif bila memungkinkan.
 
 ## Release
 
-APK resmi dibuat GitHub Actions pada repo publik `xykal/sampdroid`. Artifact harus
-berisi:
+APK resmi dibuat GitHub Actions pada repo publik `xykal/sampdroid`. Push tag
+membuat **draft release** dulu; maintainer mereview APK/notes lalu memilih publish
+manual bila memang siap public. Artifact draft harus berisi:
 
 ```text
 lib/armeabi-v7a/libsampdroid.so

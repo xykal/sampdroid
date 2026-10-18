@@ -15,7 +15,8 @@ menjadikan modpack PC sebagai syarat client.
 > native dengan protocol, session, sync, HUD, input, dan world bridge yang setara
 > dari sisi pemain.
 
-**APK terbaru:** [GitHub Releases](https://github.com/xykal/sampdroid/releases)
+**Distribusi APK:** setiap tag dibuild GitHub Actions sebagai **draft release**
+lebih dulu. Draft direview maintainer sebelum dipublikasikan.
 
 ---
 
@@ -123,7 +124,8 @@ Dokumentasi protocol:
 Semua APK resmi di-compile oleh **GitHub Actions** dari repo publik, bukan build
 lokal maintainer. Setiap push/PR menjalankan regression test C++ lalu build APK
 untuk `armeabi-v7a` + `arm64-v8a`, kemudian memverifikasi kedua `.so` ada di APK.
-Push tag `v*` otomatis menerbitkan release.
+Push tag `v*` membuat **draft release** beserta APK; maintainer harus mempublishnya
+secara manual setelah review.
 
 ## Roadmap
 
