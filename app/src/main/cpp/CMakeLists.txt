@@ -8,6 +8,7 @@ add_library(sampdroid SHARED
         jni_bridge.cpp
         samp_query.cpp
         client_rpc.cpp
+        client_sync.cpp
         raknet_codec.cpp
         rpc_decoder.cpp
         rpc_state.cpp

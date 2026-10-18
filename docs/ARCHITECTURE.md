@@ -39,9 +39,12 @@ unreliable `ID_CONNECTED_PONG`. Android shell memanggil JNI ini dari Kotlin IO
 coroutine; selama detail server terbuka, poll UDP berjalan otomatis dan
 berhenti/disconnect saat dialog ditutup.
 
-Belum ada gameplay loop, reconnect/full congestion handling, atau sync encoder.
-Transport keepalive bukan player sync. Karena itu session surface sekarang diberi
-label eksperimen dan tidak boleh dipasarkan sebagai renderer/playable client.
+Fondasi encoder `OnFootSync` sudah ada: payload client→server yang diuji,
+`UNRELIABLE_SEQUENCED` channel 1, rate gate `PlayerInit`, dan spawn/session
+safety gate. Namun belum ada gameplay loop, reconnect/full congestion handling,
+world bridge, atau input yang memanggilnya secara periodik. Transport keepalive
+bukan player sync. Karena itu session surface sekarang diberi label eksperimen
+dan tidak boleh dipasarkan sebagai renderer/playable client.
 
 ## Batas layer
 

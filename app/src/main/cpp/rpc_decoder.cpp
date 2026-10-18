@@ -93,11 +93,14 @@ bool decodePlayerInit(const std::vector<uint8_t>& rpcPayload, PlayerInitData& ou
   reader.readBit(); // LanMode
   reader.readBits(32); // SetDeathDropAmount
   reader.readBit(); // Instagib
-  reader.readBits(32); // OnFootRate
-  reader.readBits(32); // InCarRate
-  reader.readBits(32); // WeaponRate
-  reader.readBits(32); // Multiplier
-  reader.readBits(32); // LagCompensation
+  // PlayerInit's cadence fields are milliseconds (the compatible server
+  // default for OnFootRate is 30). Preserve them instead of silently
+  // discarding the values so outbound local sync can honor server policy.
+  out.onFootSyncRateMs = reader.readBits(32);
+  out.inCarSyncRateMs = reader.readBits(32);
+  out.weaponSyncRateMs = reader.readBits(32);
+  out.syncMultiplier = reader.readBits(32);
+  out.lagCompensation = reader.readBits(32);
   out.serverName = readDynString8(reader);
   reader.readBytes(212); // VehicleModels
   reader.readBits(32);   // EnableVehicleFriendlyFire
@@ -120,7 +123,8 @@ std::string summarize(const std::vector<uint8_t>& rpcPayload) {
           << " classes=" << init.spawnClassCount
           << " server=\"" << init.serverName << "\""
           << " time=" << static_cast<unsigned>(init.worldTime)
-          << " weather=" << static_cast<unsigned>(init.weather);
+          << " weather=" << static_cast<unsigned>(init.weather)
+          << " onfoot=" << init.onFootSyncRateMs << "ms";
     } else {
       out << " [invalid/incomplete]";
     }

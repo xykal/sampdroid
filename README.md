@@ -50,7 +50,8 @@ Detail kontrak port: [docs/NATIVE_PORT_TARGET.md](docs/NATIVE_PORT_TARGET.md).
 | Native chat state | ✅ | `SendClientMessage` bounded 100 line; HUD chat masih berikutnya |
 | Checkpoint state | ✅ | normal + race checkpoint reducer; marker renderer masih berikutnya |
 | Class/spawn packet core | ✅ | request builder + response state native |
-| Persistent native session | 🧪 | auto-poll, peer filter, ACK/retry bounded, keepalive transport reliable + internal pong; belum player sync/reconnect |
+| Persistent native session | 🧪 | auto-poll, peer filter, ACK/retry bounded, keepalive transport reliable + internal pong; reconnect belum |
+| OnFootSync core | 🧪 | packet-207 client→server vector-tested, USeq channel-1, rate/spawn gate; belum dihubungkan ke input, renderer, atau loop gameplay |
 | Class selection native | 🧪 | explicit `Class 0` request dari detail server; belum gameplay/render |
 | Player/vehicle/object sync penuh | ⏳ | belum |
 | HUD + textdraw/dialog native | ⏳ | belum |

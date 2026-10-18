@@ -2,6 +2,8 @@
 // This owns no renderer and never executes a Windows/x86 client.
 #pragma once
 
+#include "client_sync.h"
+
 #include <cstdint>
 #include <string>
 
@@ -20,6 +22,10 @@ struct SessionSnapshot {
   bool raceCheckpointActive = false;
   uint16_t playerId = 0;
   uint32_t classModel = 0;
+  // Raw OnFootRate retained from PlayerInit, plus the safe client-side
+  // interval after malformed-rate bounds are applied.
+  uint32_t onFootSyncRateMs = 0;
+  uint32_t effectiveOnFootSyncRateMs = 0;
   int receivedPackets = 0;
   int receivedRpcs = 0;
   int splitFragments = 0;
@@ -28,6 +34,8 @@ struct SessionSnapshot {
   int chatMessages = 0;
   int reliableKeepalives = 0;
   int connectedPongs = 0;
+  int outboundOnFootPackets = 0;
+  bool localOnFootStateKnown = false;
   std::string serverName;
   std::string rpcSummary;
   std::string stateSummary;
@@ -49,6 +57,13 @@ SessionSnapshot raknet_session_request_class(uint16_t classId);
 
 // Prepared for the next lifecycle step; it only sends after an explicit caller action.
 SessionSnapshot raknet_session_request_spawn();
+
+// Emits exactly one source-validated client PlayerFootSync packet only after
+// the active session has PlayerInit and a server-approved spawn response. It
+// uses UNRELIABLE_SEQUENCED/channel 1, its own ordering counter, and the
+// server-advertised OnFootRate. Callers decide when to invoke it; this API does
+// not start an automatic movement loop.
+SessionSnapshot raknet_session_send_onfoot(const sync::OnFootState& state);
 
 // Sends a best-effort disconnect notification and releases the UDP socket.
 SessionSnapshot raknet_session_disconnect();

@@ -14,11 +14,37 @@ user pilih server
   → poll datagram / ACK reliable / reply internal ping / reduce RPC world state
   → reliable transport keepalive otomatis saat idle
   → user dapat minta class secara eksplisit
+  → core dapat mengirim satu OnFootSync yang sudah digate (belum loop otomatis)
 ```
 
 `PlayerRequestSpawn` sudah punya builder/guard di native core, tetapi belum
-ditampilkan sebagai kontrol gameplay. Jangan meminta spawn otomatis sebelum player
-sync, world bridge, dan renderer siap.
+ditampilkan sebagai kontrol gameplay. Jangan meminta spawn otomatis sebelum world
+bridge dan renderer siap.
+
+## Fondasi outbound OnFootSync
+
+Core sekarang mempunyai `raknet_session_send_onfoot()` untuk **satu** state lokal
+tervalidasi. API ini belum dipanggil dari UI diagnostik dan tidak membuat loop
+pergerakan sendiri. Ia hanya boleh mengirim setelah semua syarat berikut terpenuhi:
+
+1. UDP session aktif dan `CONNECTION_REQUEST_ACCEPTED` sudah diterima;
+2. `PlayerInit` valid sudah diterima;
+3. server sudah mengirim respons spawn yang mengizinkan;
+4. posisi, quaternion, velocity, dan surfing offset lolos batas finite/world
+   yang sama dengan reader server;
+5. interval `OnFootRate` dari `PlayerInit` sudah jatuh tempo.
+
+Packet memakai `UNRELIABLE_SEQUENCED` (reliability `7`), ordering channel `1`,
+dan counter ordering channel-1 yang **terpisah** dari RPC reliable-ordered
+channel-2. Nilai rate `0`/abnormal dibatasi client ke 20–1000 ms (default 30 ms)
+agar server malformed tidak dapat membuat client mem-flood atau freeze terlalu lama.
+
+Penting: layout client→server packet `207` berbeda dari layout broadcast
+server→recipient. Encoder mengikuti reader `PlayerFootSync` server: body fixed
+69 byte (ID + left/right/up/down/keys raw, position, quaternion WXYZ raw,
+health/armour raw, weapon/action, velocity, surfing data, animation). Ia sengaja
+**tidak** memakai writer broadcast yang berisi player ID, field conditional, dan
+kompresi berbeda. Vector regresi host mengunci kedua layout transport dan payload.
 
 ## Ownership dan keamanan
 
@@ -66,8 +92,9 @@ Di detail server terdapat:
 Loop memanggil native poll di `Dispatchers.IO` (timeout UDP 250 ms) dan memberi
 main thread jeda kecil antartick. Saat dialog ditutup, coroutine dibatalkan dan
 disconnect best-effort dikirim. Poll juga menjalankan keepalive transport reliable
-dan reply internal ping, tetapi belum ada player sync/gameplay; server yang
-membutuhkan sync gameplay tetap bisa timeout, dan itu tidak boleh disamarkan.
+dan reply internal ping. Encoder OnFoot yang digate sudah ada di core, tetapi
+belum dihubungkan ke renderer/input atau loop periodik; server yang membutuhkan
+sync gameplay tetap bisa timeout, dan itu tidak boleh disamarkan.
 
 Surface ini sengaja menulis **eksperimen** dan **belum renderer/gameplay**. Ini
 memvalidasi lifecycle secara jujur tanpa mengklaim APK sudah playable.
@@ -76,6 +103,8 @@ memvalidasi lifecycle secara jujur tanpa mengklaim APK sudah playable.
 
 1. Full ACK range behavior, reconnect, ping/timeout metrics, dan resend window
    yang benar di atas keepalive transport yang sudah ada.
-2. Class chooser native, spawn flow, lalu `OnFootSync` dengan rate limiter.
+2. Class chooser native + spawn flow, lalu capture/live validation untuk
+   `OnFootSync` yang sudah punya encoder/rate gate.
 3. Player/vehicle/object state → native HUD + renderer/world bridge.
-4. Input touch/gamepad/keyboard/gyro → semantic action → sync encoder.
+4. Input touch/gamepad/keyboard/gyro → semantic action → loop sync OnFoot,
+   lalu vehicle sync.

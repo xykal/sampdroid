@@ -14,6 +14,13 @@ struct PlayerInitData {
   uint8_t worldTime = 0;
   uint8_t weather = 0;
   float gravity = 0.0f;
+  // Server-advertised sync cadence values in milliseconds. PlayerInit carries
+  // these as raw u32 fields; retain them for future local-player transmit gating.
+  uint32_t onFootSyncRateMs = 0;
+  uint32_t inCarSyncRateMs = 0;
+  uint32_t weaponSyncRateMs = 0;
+  uint32_t syncMultiplier = 0;
+  uint32_t lagCompensation = 0;
   std::string serverName;
 };
 

@@ -36,6 +36,8 @@ std::string session_json(const samp::SessionSnapshot& s) {
     << ",\"raceCheckpointActive\":" << (s.raceCheckpointActive ? "true" : "false")
     << ",\"playerId\":" << s.playerId
     << ",\"classModel\":" << s.classModel
+    << ",\"onFootSyncRateMs\":" << s.onFootSyncRateMs
+    << ",\"effectiveOnFootSyncRateMs\":" << s.effectiveOnFootSyncRateMs
     << ",\"receivedPackets\":" << s.receivedPackets
     << ",\"receivedRpcs\":" << s.receivedRpcs
     << ",\"splitFragments\":" << s.splitFragments
@@ -44,6 +46,8 @@ std::string session_json(const samp::SessionSnapshot& s) {
     << ",\"chatMessages\":" << s.chatMessages
     << ",\"reliableKeepalives\":" << s.reliableKeepalives
     << ",\"connectedPongs\":" << s.connectedPongs
+    << ",\"outboundOnFootPackets\":" << s.outboundOnFootPackets
+    << ",\"localOnFootStateKnown\":" << (s.localOnFootStateKnown ? "true" : "false")
     << ",\"serverName\":\"" << samp::json_escape(s.serverName) << "\""
     << ",\"rpcSummary\":\"" << samp::json_escape(s.rpcSummary) << "\""
     << ",\"stateSummary\":\"" << samp::json_escape(s.stateSummary) << "\""
@@ -57,7 +61,7 @@ extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeVersion(JNIEnv* env, jclass) {
-  return to_java(env, "0.11.0 / checkpoint-state");
+  return to_java(env, "0.12.0 / onfoot-sync-foundation");
 }
 
 JNIEXPORT jstring JNICALL

@@ -75,6 +75,9 @@ object ServerDetailDialog {
             if (o.optBoolean("playerInit")) {
                 append("player ID       : ").append(o.optInt("playerId")).append('\n')
                 append("nama server     : ").append(o.optString("serverName")).append('\n')
+                append("sync on-foot    : ").append(o.optInt("onFootSyncRateMs"))
+                    .append(" ms (efektif ").append(o.optInt("effectiveOnFootSyncRateMs"))
+                    .append(" ms)\n")
             }
             append("class state      : ")
                 .append(if (o.optBoolean("classSelectionKnown")) {
@@ -93,6 +96,10 @@ object ServerDetailDialog {
             append("transport       : ").append(o.optInt("reliableKeepalives"))
                 .append(" keepalive reliable / ").append(o.optInt("connectedPongs"))
                 .append(" pong\n")
+            append("on-foot keluar : ").append(o.optInt("outboundOnFootPackets"))
+                .append(" packet / state lokal ")
+                .append(if (o.optBoolean("localOnFootStateKnown")) "siap" else "belum ada")
+                .append('\n')
             append("fragment        : ").append(o.optInt("splitFragments"))
                 .append(" split / ").append(o.optInt("reassembledPackets")).append(" tersusun\n")
             append("state pemain     : ").append(o.optInt("trackedPlayers"))

@@ -27,7 +27,11 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 - [x] Bounded `SendClientMessage` chat state.
 - [x] Normal + race checkpoint native state.
 - [ ] Dialog/textdraw native state.
-- [ ] Player sync encoder dengan rate limiter dan test vector.
+- [x] Fondasi `OnFootSync` packet 207: vector regresi client→server,
+  `UNRELIABLE_SEQUENCED` channel 1, ordering counter terpisah, rate gate dari
+  `PlayerInit`, serta spawn/session gate.
+- [ ] Hubungkan encoder OnFoot ke world bridge + input native dan validasi capture/live
+  sebelum mengaktifkan loop periodik gameplay.
 
 ## Milestone 0.8 — native Android controls + HUD
 

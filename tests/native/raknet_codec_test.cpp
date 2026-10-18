@@ -1,7 +1,9 @@
 #include "client_rpc.h"
+#include "client_sync.h"
 #include "raknet_codec.h"
 #include "raknet_session.h"
 #include "raknet_session_policy.h"
+#include "sync_policy.h"
 #include "rpc_decoder.h"
 #include "rpc_state.h"
 
@@ -252,6 +254,116 @@ void testReliableAndAck() {
          "ordered payload changed");
 }
 
+void testUnreliableSequencedTransport() {
+  // This vector has a deliberately non-byte-aligned five-bit payload. It
+  // locks the packet bit length, channel-1 header, and alignment before the
+  // payload; a byte-length-only builder would silently encode it differently.
+  const auto sequenced = samp::raknet::buildUnreliableSequenced(
+      0x1234, 1, 0x00A5, {0xA8}, 5);
+  const std::vector<uint8_t> expected = {0x1A, 0x09, 0x38, 0x69, 0x40, 0x1A, 0x80, 0xA8};
+  expect(sequenced == expected, "unreliable sequenced wire vector changed");
+
+  samp::raknet::BitReader header(sequenced.data(), sequenced.size());
+  expect(!header.readBit(), "sequenced packet unexpectedly has ACKs");
+  expect(header.readBits(16) == 0x1234, "sequenced message number changed");
+  expect(header.readBits(4) == samp::raknet::kReliabilityUnreliableSequenced,
+         "sequenced reliability changed");
+  expect(header.readBits(5) == 1 && header.readBits(16) == 0x00A5,
+         "sequenced channel/index changed");
+  expect(!header.readBit() && header.readCompressedU16() == 5,
+         "sequenced payload bit length changed");
+  expect(header.readAlignedBytes(1) == std::vector<uint8_t>({0xA8}) && header.ok(),
+         "sequenced payload alignment changed");
+
+  const auto decoded = samp::raknet::decodeDatagram(sequenced);
+  expect(decoded.ok && decoded.ackMessageNumbers.empty() && decoded.packets.size() == 1,
+         "unreliable sequenced packet decode/ACK behavior changed");
+  expect(decoded.packets[0].reliability == samp::raknet::kReliabilityUnreliableSequenced &&
+         decoded.packets[0].orderingChannel == 1 && decoded.packets[0].orderingIndex == 0x00A5 &&
+         decoded.packets[0].payload == std::vector<uint8_t>({0xA8}),
+         "unreliable sequenced semantics changed");
+
+  expect(samp::raknet::buildUnreliableSequenced(1, 1, 0, {0x00}, 0).empty(),
+         "zero-bit sequenced packet must be rejected");
+  expect(samp::raknet::buildUnreliableSequenced(1, 1, 0, {0x00}, 9).empty(),
+         "oversized sequenced bit length must be rejected");
+}
+
+void testPlayerFootSyncBuilder() {
+  samp::sync::OnFootState idle;
+  const auto idlePayload = samp::sync::buildPlayerFootSync(idle);
+  expect(idlePayload.valid() && idlePayload.bitLength == 552 && idlePayload.bytes.size() == 69,
+         "idle PlayerFootSync fixed layout changed");
+
+  std::vector<uint8_t> expectedIdle(69, 0);
+  expectedIdle[0] = 207;
+  // Raw W component of the legacy quaternion is one; this distinguishes the
+  // client-to-server reader layout from the compressed broadcast writer.
+  expectedIdle[21] = 0x80;
+  expectedIdle[22] = 0x3F;
+  expectedIdle[35] = 100;
+  expect(idlePayload.bytes == expectedIdle, "idle PlayerFootSync wire vector changed");
+
+  samp::sync::OnFootState state;
+  state.leftRight = 0xFFFF;
+  state.upDown = 7;
+  state.keys = 0x1234;
+  state.positionX = 1.5f;
+  state.positionY = -2.25f;
+  state.positionZ = 3.75f;
+  state.quaternionW = -0.5f;
+  state.quaternionX = 0.5f;
+  state.quaternionY = -0.5f;
+  state.quaternionZ = 0.5f;
+  state.health = 99;
+  state.armour = 50;
+  state.weaponAdditionalKey = 0x98;
+  state.specialAction = 3;
+  state.velocityX = 3.0f;
+  state.velocityY = 4.0f;
+  state.velocityZ = 0.0f;
+  state.surfingOffsetX = 8.0f;
+  state.surfingOffsetY = -9.0f;
+  state.surfingOffsetZ = 10.0f;
+  state.surfingId = 123;
+  state.animationId = 456;
+  state.animationFlags = 789;
+  const auto payload = samp::sync::buildPlayerFootSync(state);
+  const std::vector<uint8_t> expected = {
+      0xCF, 0xFF, 0xFF, 0x07, 0x00, 0x34, 0x12, 0x00, 0x00, 0xC0, 0x3F,
+      0x00, 0x00, 0x10, 0xC0, 0x00, 0x00, 0x70, 0x40, 0x00, 0x00, 0x00,
+      0xBF, 0x00, 0x00, 0x00, 0x3F, 0x00, 0x00, 0x00, 0xBF, 0x00, 0x00,
+      0x00, 0x3F, 0x63, 0x32, 0x98, 0x03, 0x00, 0x00, 0x40, 0x40, 0x00,
+      0x00, 0x80, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x41,
+      0x00, 0x00, 0x10, 0xC1, 0x00, 0x00, 0x20, 0x41, 0x7B, 0x00, 0xC8,
+      0x01, 0x15, 0x03};
+  expect(payload.valid() && payload.bytes == expected,
+         "PlayerFootSync client reader-order vector changed");
+
+  state.positionX = 20000.0f;
+  expect(!samp::sync::isValidOnFootState(state) && !samp::sync::buildPlayerFootSync(state).valid(),
+         "out-of-range PlayerFootSync position must be rejected");
+  state.positionX = 1.5f;
+  state.velocityX = 101.0f;
+  expect(!samp::sync::isValidOnFootState(state),
+         "out-of-range PlayerFootSync velocity must be rejected");
+
+  samp::syncpolicy::OrderingCounters ordering;
+  expect(ordering.takeRpc() == 0 && ordering.takeRpc() == 1 && ordering.takeSync() == 0 &&
+         ordering.takeRpc() == 2 && ordering.takeSync() == 1,
+         "RPC and sync ordering counters must remain independent");
+
+  expect(samp::syncpolicy::boundedOnFootRateMs(0) == 30 &&
+         samp::syncpolicy::boundedOnFootRateMs(1) == 20 &&
+         samp::syncpolicy::boundedOnFootRateMs(5000) == 1000,
+         "on-foot rate bounds changed");
+  expect(samp::syncpolicy::onFootSendDue(100, 0, 30) &&
+         !samp::syncpolicy::onFootSendDue(129, 100, 30) &&
+         samp::syncpolicy::onFootSendDue(130, 100, 30) &&
+         !samp::syncpolicy::onFootSendDue(99, 100, 30),
+         "on-foot rate gate changed");
+}
+
 void testCompressedU32() {
   samp::raknet::BitWriter writer;
   const std::vector<uint32_t> values = {0, 15, 16, 255, 256, 65535, 65536, 0x12345678u};
@@ -297,6 +409,11 @@ void testPlayerInitDecoder() {
   expect(init.worldTime == 12 && init.weather == 7, "PlayerInit time/weather wrong");
   expect(init.serverName == "SampDroid Test", "PlayerInit server name wrong");
   expect(std::fabs(init.gravity - 0.008f) < 0.00001f, "PlayerInit gravity wrong");
+  expect(init.onFootSyncRateMs == 30 && init.inCarSyncRateMs == 30 &&
+         init.weaponSyncRateMs == 30 && init.syncMultiplier == 1 && init.lagCompensation == 1,
+         "PlayerInit sync rates were not retained");
+  expect(samp::rpc::summarize(payload).find("onfoot=30ms") != std::string::npos,
+         "PlayerInit on-foot rate missing from summary");
   expect(samp::rpc::summarize(payload).find("PlayerInit") != std::string::npos,
          "PlayerInit summary has no RPC name");
 }
@@ -314,6 +431,9 @@ void testSessionSafetyWithoutSocket() {
   const auto classRequest = samp::raknet_session_request_class(0);
   expect(!classRequest.active && !classRequest.error.empty(),
          "class request without session must be rejected");
+  const auto onFoot = samp::raknet_session_send_onfoot(samp::sync::OnFootState{});
+  expect(!onFoot.active && !onFoot.error.empty(),
+         "on-foot send without session must be rejected");
   const auto closed = samp::raknet_session_disconnect();
   expect(!closed.active && !closed.stateSummary.empty(), "idle session close must be safe");
 }
@@ -408,6 +528,8 @@ void testWorldStateReducer() {
 
 int main() {
   testReliableAndAck();
+  testUnreliableSequencedTransport();
+  testPlayerFootSyncBuilder();
   testCompressedU32();
   testSplitReassembly();
   testPlayerInitDecoder();

@@ -3,9 +3,11 @@
 // Probe tetap dipakai diagnostik; session eksplisit dipakai lifecycle Android native.
 #include "raknet_probe.h"
 #include "client_rpc.h"
+#include "client_sync.h"
 #include "raknet_codec.h"
 #include "raknet_session.h"
 #include "raknet_session_policy.h"
+#include "sync_policy.h"
 #include "rpc_decoder.h"
 #include "rpc_state.h"
 
@@ -173,7 +175,10 @@ struct LiveSession {
   std::unique_ptr<Net> net;
   uint16_t port = 0;
   uint16_t nextMessageNumber = 0;
-  uint16_t nextOrderingIndex = 0;
+  // RakNet ordering counters are independent per ordering channel. RPC traffic
+  // stays on channel 2; movement sync uses channel 1 and must never consume the
+  // RPC stream's index.
+  syncpolicy::OrderingCounters orderingCounters;
   bool accepted = false;
   bool joined = false;
   int receivedPackets = 0;
@@ -182,6 +187,10 @@ struct LiveSession {
   int reassembledPackets = 0;
   int reliableKeepalives = 0;
   int connectedPongs = 0;
+  int outboundOnFootPackets = 0;
+  bool localOnFootStateKnown = false;
+  uint64_t lastOnFootSentMs = 0;
+  sync::OnFootState localOnFootState;
   std::chrono::steady_clock::time_point lastReliableSent = std::chrono::steady_clock::now();
   std::string rpcSummary;
   std::string stateSummary;
@@ -299,10 +308,14 @@ void resendDueReliable(LiveSession& session) {
   }
 }
 
-uint32_t monotonicMilliseconds32() {
+uint64_t monotonicMilliseconds64() {
   const auto elapsed = std::chrono::steady_clock::now().time_since_epoch();
-  const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
-  return static_cast<uint32_t>(milliseconds);
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+}
+
+uint32_t monotonicMilliseconds32() {
+  return static_cast<uint32_t>(monotonicMilliseconds64());
 }
 
 void replyToInternalPing(LiveSession& session, const std::vector<uint8_t>& payload) {
@@ -400,6 +413,9 @@ SessionSnapshot snapshotFrom(const LiveSession* session) {
   snapshot.raceCheckpointActive = session->world.raceCheckpoint().active;
   snapshot.playerId = snapshot.playerInit ? session->world.playerInit().playerId : 0;
   snapshot.classModel = snapshot.classSelectionKnown ? session->world.classSelection().model : 0;
+  snapshot.onFootSyncRateMs = snapshot.playerInit ? session->world.playerInit().onFootSyncRateMs : 0;
+  snapshot.effectiveOnFootSyncRateMs =
+      snapshot.playerInit ? syncpolicy::boundedOnFootRateMs(snapshot.onFootSyncRateMs) : 0;
   snapshot.receivedPackets = session->receivedPackets;
   snapshot.receivedRpcs = session->receivedRpcs;
   snapshot.splitFragments = session->splitFragments;
@@ -408,6 +424,8 @@ SessionSnapshot snapshotFrom(const LiveSession* session) {
   snapshot.chatMessages = static_cast<int>(session->world.chatCount());
   snapshot.reliableKeepalives = session->reliableKeepalives;
   snapshot.connectedPongs = session->connectedPongs;
+  snapshot.outboundOnFootPackets = session->outboundOnFootPackets;
+  snapshot.localOnFootStateKnown = session->localOnFootStateKnown;
   snapshot.serverName = snapshot.playerInit ? session->world.playerInit().serverName : "";
   snapshot.rpcSummary = session->rpcSummary;
   snapshot.stateSummary = session->stateSummary;
@@ -652,7 +670,7 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     live->net = std::move(ownedNet);
     live->port = port;
     live->nextMessageNumber = msgNo;
-    live->nextOrderingIndex = 0;
+    live->orderingCounters = {};
     // ClientJoin was the most recent reliable handshake send; start the
     // steady-state transport keepalive interval from hand-off to the session.
     live->lastReliableSent = std::chrono::steady_clock::now();
@@ -726,7 +744,7 @@ SessionSnapshot raknet_session_request_class(uint16_t classId) {
 
   const auto rpc = clientrpc::buildRequestClass(classId);
   const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
-  const uint16_t orderingIndex = gLiveSession->nextOrderingIndex++;
+  const uint16_t orderingIndex = gLiveSession->orderingCounters.takeRpc();
   const auto packet = raknet::buildReliableOrdered(messageNumber, 2, orderingIndex, rpc);
   if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
     gLiveSession->error = "gagal mengirim PlayerRequestClass";
@@ -750,13 +768,62 @@ SessionSnapshot raknet_session_request_spawn() {
 
   const auto rpc = clientrpc::buildRequestSpawn();
   const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
-  const uint16_t orderingIndex = gLiveSession->nextOrderingIndex++;
+  const uint16_t orderingIndex = gLiveSession->orderingCounters.takeRpc();
   const auto packet = raknet::buildReliableOrdered(messageNumber, 2, orderingIndex, rpc);
   if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
     gLiveSession->error = "gagal mengirim PlayerRequestSpawn";
   } else {
     appendBounded(gLiveSession->stateSummary, "PlayerRequestSpawn", 240);
   }
+  return snapshotFrom(gLiveSession.get());
+}
+
+SessionSnapshot raknet_session_send_onfoot(const sync::OnFootState& state) {
+  std::lock_guard<std::mutex> lock(gLiveSessionMutex);
+  if (!gLiveSession || !gLiveSession->net || gLiveSession->net->fd < 0) {
+    return snapshotFrom(nullptr);
+  }
+
+  // Movement is never emitted merely because a socket exists. The server must
+  // have initialized this player and explicitly accepted a spawn request.
+  if (!gLiveSession->accepted || !gLiveSession->world.initialized() ||
+      !gLiveSession->world.spawnResponseKnown() || !gLiveSession->world.spawnAllowed()) {
+    gLiveSession->error = "OnFootSync menunggu PlayerInit dan spawn yang diizinkan server";
+    return snapshotFrom(gLiveSession.get());
+  }
+
+  const sync::EncodedPayload payload = sync::buildPlayerFootSync(state);
+  if (!payload.valid()) {
+    gLiveSession->error = "OnFootSync lokal tidak valid atau di luar batas server";
+    return snapshotFrom(gLiveSession.get());
+  }
+
+  const uint64_t nowMs = monotonicMilliseconds64();
+  const uint32_t serverRateMs = gLiveSession->world.playerInit().onFootSyncRateMs;
+  if (!syncpolicy::onFootSendDue(nowMs, gLiveSession->lastOnFootSentMs, serverRateMs)) {
+    // This is expected in an input/render loop; do not turn normal rate
+    // limiting into a sticky session error.
+    return snapshotFrom(gLiveSession.get());
+  }
+
+  const uint16_t messageNumber = gLiveSession->nextMessageNumber;
+  const uint16_t orderingIndex = gLiveSession->orderingCounters.currentSync();
+  const auto packet = raknet::buildUnreliableSequenced(
+      messageNumber, sync::kSyncOrderingChannel, orderingIndex, payload.bytes, payload.bitLength);
+  if (packet.empty() || !gLiveSession->net->send(wrap_packet(packet, gLiveSession->port))) {
+    gLiveSession->error = "gagal mengirim OnFootSync";
+    return snapshotFrom(gLiveSession.get());
+  }
+
+  ++gLiveSession->nextMessageNumber;
+  (void)gLiveSession->orderingCounters.takeSync();
+  gLiveSession->error.clear();
+  gLiveSession->lastOnFootSentMs = nowMs;
+  gLiveSession->localOnFootState = state;
+  gLiveSession->localOnFootStateKnown = true;
+  ++gLiveSession->outboundOnFootPackets;
+  appendBounded(gLiveSession->stateSummary,
+                "OnFootSync #" + std::to_string(gLiveSession->outboundOnFootPackets), 240);
   return snapshotFrom(gLiveSession.get());
 }
 
