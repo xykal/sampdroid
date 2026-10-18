@@ -44,14 +44,31 @@ u32   (opsional) IsUsingOfficialClient / OmpVersion
 | ID | Nama | Layout |
 |----|------|--------|
 | 11 | SetPlayerName | |
+| 37 | DisableCheckpoint | payload kosong |
+| 38 | SetRaceCheckpoint | u8 type, VEC3 pos, VEC3 next pos, float size |
+| 39 | DisableRaceCheckpoint | payload kosong |
 | 72 | SetPlayerColor | u16 PlayerID, u32 Color |
 | 93 | SendClientMessage | u32 color, u32 len, char[] — reducer caps 144 bytes / 100 lines |
 | 99 | MoveObject | u16 ObjectID, VEC3 pos, VEC3 target, float speed, VEC3 rot |
+| 107 | SetCheckpoint | VEC3 pos, float size |
 | 128 | PlayerRequestClassResponse | selectable, team, model, spawn, angle, 3 weapon/ammo slots |
 | 129 | PlayerRequestSpawnResponse | u32 Allow |
 | 137 | PlayerJoin | |
 | 138 | PlayerQuit | u16 PlayerID, u8 Reason |
 | 139 | **PlayerInit** | ~212 byte (lihat bawah) |
+
+### Checkpoint / race checkpoint
+
+```text
+SetCheckpoint (107):      float X | float Y | float Z | float Size
+SetRaceCheckpoint (38):   u8 Type | VEC3 Position | VEC3 NextPosition | float Size
+DisableCheckpoint (37):   empty
+DisableRaceCheckpoint(39): empty
+```
+
+Reducer menolak float non-finite dan ukuran negatif, menyimpan marker aktif
+terakhir, lalu meng-clear flag saat RPC disable datang. Ini state native untuk
+HUD/world bridge berikutnya; belum ada marker yang dirender ke layar.
 
 ### Class selection / spawn response
 

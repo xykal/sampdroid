@@ -152,6 +152,37 @@ std::vector<uint8_t> makeSpawnResponse(bool allowed) {
   return writer.buffer;
 }
 
+std::vector<uint8_t> makeCheckpoint(float x, float y, float z, float size) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 107};
+  writer.writeBytes(header, sizeof(header));
+  writeFloat(writer, x);
+  writeFloat(writer, y);
+  writeFloat(writer, z);
+  writeFloat(writer, size);
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makeRaceCheckpoint(uint8_t type, float x, float y, float z,
+                                        float nextX, float nextY, float nextZ, float size) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 38};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(type, 8);
+  writeFloat(writer, x);
+  writeFloat(writer, y);
+  writeFloat(writer, z);
+  writeFloat(writer, nextX);
+  writeFloat(writer, nextY);
+  writeFloat(writer, nextZ);
+  writeFloat(writer, size);
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makeEmptyRpc(uint8_t rpcId) {
+  return {20, rpcId};
+}
+
 void testReliableAndAck() {
   const auto reliable = samp::raknet::buildReliable(1, {0x0B});
   const std::vector<uint8_t> expectedReliable = {0x00, 0x80, 0x43, 0x80, 0x0B};
@@ -309,6 +340,30 @@ void testWorldStateReducer() {
   expect(event.kind == samp::state::RpcEventKind::SpawnResponse &&
          world.spawnResponseKnown() && world.spawnAllowed(),
          "spawn response state wrong");
+
+  expect(world.applyRpc(makeCheckpoint(100.0f, -25.5f, 8.0f, 3.0f), event),
+         "WorldState rejected SetCheckpoint");
+  expect(event.kind == samp::state::RpcEventKind::CheckpointChanged &&
+         world.checkpoint().active && std::fabs(world.checkpoint().x - 100.0f) < 0.001f &&
+         std::fabs(world.checkpoint().y + 25.5f) < 0.001f &&
+         std::fabs(world.checkpoint().size - 3.0f) < 0.001f,
+         "checkpoint state wrong");
+  expect(world.applyRpc(makeEmptyRpc(37), event) && !world.checkpoint().active,
+         "DisableCheckpoint state wrong");
+  expect(!world.applyRpc(makeCheckpoint(0.0f, 0.0f, 0.0f, -1.0f), event) &&
+         event.kind == samp::state::RpcEventKind::Malformed,
+         "negative checkpoint size must be rejected");
+
+  expect(world.applyRpc(makeRaceCheckpoint(2, 1.0f, 2.0f, 3.0f,
+                                            4.0f, 5.0f, 6.0f, 7.5f), event),
+         "WorldState rejected SetRaceCheckpoint");
+  expect(event.kind == samp::state::RpcEventKind::RaceCheckpointChanged &&
+         world.raceCheckpoint().active && world.raceCheckpoint().type == 2 &&
+         std::fabs(world.raceCheckpoint().nextZ - 6.0f) < 0.001f &&
+         std::fabs(world.raceCheckpoint().size - 7.5f) < 0.001f,
+         "race checkpoint state wrong");
+  expect(world.applyRpc(makeEmptyRpc(39), event) && !world.raceCheckpoint().active,
+         "DisableRaceCheckpoint state wrong");
 
   expect(world.applyRpc(makeChatMessage(0x33CCFFFFu, "Selamat datang"), event),
          "WorldState rejected SendClientMessage");

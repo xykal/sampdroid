@@ -32,6 +32,8 @@ std::string session_json(const samp::SessionSnapshot& s) {
     << ",\"classSelectable\":" << (s.classSelectable ? "true" : "false")
     << ",\"spawnResponseKnown\":" << (s.spawnResponseKnown ? "true" : "false")
     << ",\"spawnAllowed\":" << (s.spawnAllowed ? "true" : "false")
+    << ",\"checkpointActive\":" << (s.checkpointActive ? "true" : "false")
+    << ",\"raceCheckpointActive\":" << (s.raceCheckpointActive ? "true" : "false")
     << ",\"playerId\":" << s.playerId
     << ",\"classModel\":" << s.classModel
     << ",\"receivedPackets\":" << s.receivedPackets
@@ -55,7 +57,7 @@ extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeVersion(JNIEnv* env, jclass) {
-  return to_java(env, "0.10.0 / transport-keepalive");
+  return to_java(env, "0.11.0 / checkpoint-state");
 }
 
 JNIEXPORT jstring JNICALL

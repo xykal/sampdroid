@@ -44,11 +44,15 @@ const char* name(uint8_t rpcId) {
   switch (rpcId) {
     case 11: return "SetPlayerName";
     case 25: return "PlayerConnect";
+    case 37: return "DisableCheckpoint";
+    case 38: return "SetRaceCheckpoint";
+    case 39: return "DisableRaceCheckpoint";
     case 60: return "SendGameTimeUpdate";
     case 68: return "SetSpawnInfo";
     case 72: return "SetPlayerColor";
     case 93: return "SendClientMessage";
     case 99: return "MoveObject";
+    case 107: return "SetCheckpoint";
     case 128: return "PlayerRequestClass";
     case 129: return "PlayerRequestSpawn";
     case 137: return "PlayerJoin";

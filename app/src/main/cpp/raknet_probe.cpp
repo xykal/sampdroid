@@ -396,6 +396,8 @@ SessionSnapshot snapshotFrom(const LiveSession* session) {
   snapshot.classSelectable = session->world.classSelection().selectable;
   snapshot.spawnResponseKnown = session->world.spawnResponseKnown();
   snapshot.spawnAllowed = session->world.spawnAllowed();
+  snapshot.checkpointActive = session->world.checkpoint().active;
+  snapshot.raceCheckpointActive = session->world.raceCheckpoint().active;
   snapshot.playerId = snapshot.playerInit ? session->world.playerInit().playerId : 0;
   snapshot.classModel = snapshot.classSelectionKnown ? session->world.classSelection().model : 0;
   snapshot.receivedPackets = session->receivedPackets;

@@ -1,4 +1,4 @@
-// Small, renderer-independent state reducer for decoded player/chat server RPCs.
+// Small, renderer-independent state reducer for decoded player/chat/marker server RPCs.
 #pragma once
 
 #include "rpc_decoder.h"
@@ -23,6 +23,8 @@ enum class RpcEventKind : uint8_t {
   ChatMessage,
   ClassSelection,
   SpawnResponse,
+  CheckpointChanged,
+  RaceCheckpointChanged,
   Malformed,
 };
 
@@ -42,6 +44,26 @@ struct Player {
 struct ChatLine {
   uint32_t rgba = 0;
   std::string text;
+};
+
+struct Checkpoint {
+  bool active = false;
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  float size = 0.0f;
+};
+
+struct RaceCheckpoint {
+  bool active = false;
+  uint8_t type = 0;
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  float nextX = 0.0f;
+  float nextY = 0.0f;
+  float nextZ = 0.0f;
+  float size = 0.0f;
 };
 
 struct ClassSelection {
@@ -72,6 +94,8 @@ public:
     return chatLines_.empty() ? nullptr : &chatLines_.back();
   }
   const ClassSelection& classSelection() const { return classSelection_; }
+  const Checkpoint& checkpoint() const { return checkpoint_; }
+  const RaceCheckpoint& raceCheckpoint() const { return raceCheckpoint_; }
   bool spawnResponseKnown() const { return spawnResponseKnown_; }
   bool spawnAllowed() const { return spawnAllowed_; }
 
@@ -83,6 +107,8 @@ private:
   bool initialized_ = false;
   rpc::PlayerInitData playerInit_;
   ClassSelection classSelection_;
+  Checkpoint checkpoint_;
+  RaceCheckpoint raceCheckpoint_;
   bool spawnResponseKnown_ = false;
   bool spawnAllowed_ = false;
   std::map<uint16_t, Player> players_;

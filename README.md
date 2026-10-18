@@ -48,6 +48,7 @@ Detail kontrak port: [docs/NATIVE_PORT_TARGET.md](docs/NATIVE_PORT_TARGET.md).
 | Split reassembly | ✅ | fragment disusun sebelum RPC didecode |
 | State pemain dasar | ✅ | `PlayerInit`, Join/Quit/Name/Color → model native |
 | Native chat state | ✅ | `SendClientMessage` bounded 100 line; HUD chat masih berikutnya |
+| Checkpoint state | ✅ | normal + race checkpoint reducer; marker renderer masih berikutnya |
 | Class/spawn packet core | ✅ | request builder + response state native |
 | Persistent native session | 🧪 | auto-poll, peer filter, ACK/retry bounded, keepalive transport reliable + internal pong; belum player sync/reconnect |
 | Class selection native | 🧪 | explicit `Class 0` request dari detail server; belum gameplay/render |

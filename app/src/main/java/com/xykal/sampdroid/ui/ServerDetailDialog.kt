@@ -83,6 +83,11 @@ object ServerDetailDialog {
                 } else {
                     "belum ada balasan"
                 }).append('\n')
+            append("checkpoint      : ")
+                .append(if (o.optBoolean("checkpointActive")) "aktif" else "tidak aktif")
+                .append(" / race ")
+                .append(if (o.optBoolean("raceCheckpointActive")) "aktif" else "tidak aktif")
+                .append('\n')
             append("stream          : ").append(o.optInt("receivedPackets"))
                 .append(" packet / ").append(o.optInt("receivedRpcs")).append(" RPC\n")
             append("transport       : ").append(o.optInt("reliableKeepalives"))

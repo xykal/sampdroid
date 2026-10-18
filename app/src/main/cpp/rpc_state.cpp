@@ -1,4 +1,4 @@
-// Renderer-independent state reducer for player, class/spawn, and chat RPCs.
+// Renderer-independent state reducer for player, class/spawn, chat, and marker RPCs.
 #include "rpc_state.h"
 
 #include "raknet_codec.h"
@@ -12,8 +12,12 @@ namespace {
 
 constexpr uint8_t kIdRpc = 20;
 constexpr uint8_t kSetPlayerName = 11;
+constexpr uint8_t kDisableCheckpoint = 37;
+constexpr uint8_t kSetRaceCheckpoint = 38;
+constexpr uint8_t kDisableRaceCheckpoint = 39;
 constexpr uint8_t kSetPlayerColor = 72;
 constexpr uint8_t kSendClientMessage = 93;
+constexpr uint8_t kSetCheckpoint = 107;
 constexpr uint8_t kPlayerJoin = 137;
 constexpr uint8_t kPlayerQuit = 138;
 constexpr uint8_t kPlayerRequestClass = 128;
@@ -155,6 +159,54 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       event.summary = "SendClientMessage";
       return true;
     }
+
+    // Server checkpoint state is renderer-independent: retain a finite,
+    // bounded-by-type world marker for a future Android HUD/world bridge.
+    case kSetCheckpoint: {
+      Checkpoint checkpoint;
+      bool finite = true;
+      checkpoint.x = readFloat(reader, finite);
+      checkpoint.y = readFloat(reader, finite);
+      checkpoint.z = readFloat(reader, finite);
+      checkpoint.size = readFloat(reader, finite);
+      if (!reader.ok() || !finite || checkpoint.size < 0.0f) break;
+      checkpoint.active = true;
+      checkpoint_ = checkpoint;
+      event.kind = RpcEventKind::CheckpointChanged;
+      event.summary = "SetCheckpoint";
+      return true;
+    }
+
+    case kDisableCheckpoint:
+      checkpoint_.active = false;
+      event.kind = RpcEventKind::CheckpointChanged;
+      event.summary = "DisableCheckpoint";
+      return true;
+
+    case kSetRaceCheckpoint: {
+      RaceCheckpoint checkpoint;
+      checkpoint.type = static_cast<uint8_t>(reader.readBits(8));
+      bool finite = true;
+      checkpoint.x = readFloat(reader, finite);
+      checkpoint.y = readFloat(reader, finite);
+      checkpoint.z = readFloat(reader, finite);
+      checkpoint.nextX = readFloat(reader, finite);
+      checkpoint.nextY = readFloat(reader, finite);
+      checkpoint.nextZ = readFloat(reader, finite);
+      checkpoint.size = readFloat(reader, finite);
+      if (!reader.ok() || !finite || checkpoint.size < 0.0f) break;
+      checkpoint.active = true;
+      raceCheckpoint_ = checkpoint;
+      event.kind = RpcEventKind::RaceCheckpointChanged;
+      event.summary = "SetRaceCheckpoint";
+      return true;
+    }
+
+    case kDisableRaceCheckpoint:
+      raceCheckpoint_.active = false;
+      event.kind = RpcEventKind::RaceCheckpointChanged;
+      event.summary = "DisableRaceCheckpoint";
+      return true;
 
     // Server reply to PlayerRequestClass. This client advertises non-DL, so
     // CustomModelID is intentionally absent from the wire layout here.

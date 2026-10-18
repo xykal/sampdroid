@@ -25,7 +25,8 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 - [x] Transport keepalive reliable 5 detik + reply internal ping.
 - [ ] Full ACK-range behavior, reconnect, ping/timeout metrics, dan resend window.
 - [x] Bounded `SendClientMessage` chat state.
-- [ ] Dialog/checkpoint/textdraw native state.
+- [x] Normal + race checkpoint native state.
+- [ ] Dialog/textdraw native state.
 - [ ] Player sync encoder dengan rate limiter dan test vector.
 
 ## Milestone 0.8 — native Android controls + HUD

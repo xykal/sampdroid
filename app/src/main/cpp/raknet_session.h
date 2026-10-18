@@ -16,6 +16,8 @@ struct SessionSnapshot {
   bool classSelectable = false;
   bool spawnResponseKnown = false;
   bool spawnAllowed = false;
+  bool checkpointActive = false;
+  bool raceCheckpointActive = false;
   uint16_t playerId = 0;
   uint32_t classModel = 0;
   int receivedPackets = 0;

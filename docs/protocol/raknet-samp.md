@@ -179,6 +179,7 @@ bukan pengganti `PlayerSync` atau validasi gameplay live.
 | Multi-paket datagram + split reassembly | ✅ sebelum RPC diserahkan ke decoder |
 | PlayerInit RPC 139 | ✅ decoder wire format + test vector; observability di UI |
 | SendClientMessage RPC 93 | ✅ bounded chat state + regression coverage; HUD renderer masih pending |
+| Checkpoint RPC 37/38/39/107 | ✅ normal + race marker state, finite/negative-size guards; renderer masih pending |
 | Retained native session | 🧪 auto-poll, bounded ACK/retry, 5s reliable keepalive, internal-ping pong; live capture multi-server masih pending |
 | Persistent game sync | ⏳ belum |
 
