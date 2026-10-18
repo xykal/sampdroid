@@ -47,6 +47,7 @@ const char* name(uint8_t rpcId) {
     case 60: return "SendGameTimeUpdate";
     case 68: return "SetSpawnInfo";
     case 72: return "SetPlayerColor";
+    case 93: return "SendClientMessage";
     case 99: return "MoveObject";
     case 128: return "PlayerRequestClass";
     case 129: return "PlayerRequestSpawn";

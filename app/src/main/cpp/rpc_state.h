@@ -1,4 +1,4 @@
-// Small, renderer-independent state reducer for decoded server RPCs.
+// Small, renderer-independent state reducer for decoded player/chat server RPCs.
 #pragma once
 
 #include "rpc_decoder.h"
@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <string>
 #include <vector>
@@ -19,6 +20,7 @@ enum class RpcEventKind : uint8_t {
   PlayerQuit,
   PlayerRenamed,
   PlayerColorChanged,
+  ChatMessage,
   ClassSelection,
   SpawnResponse,
   Malformed,
@@ -35,6 +37,11 @@ struct Player {
   uint32_t rgba = 0;
   bool npc = false;
   std::string name;
+};
+
+struct ChatLine {
+  uint32_t rgba = 0;
+  std::string text;
 };
 
 struct ClassSelection {
@@ -60,6 +67,10 @@ public:
   const rpc::PlayerInitData& playerInit() const { return playerInit_; }
   size_t playerCount() const { return players_.size(); }
   const Player* findPlayer(uint16_t id) const;
+  size_t chatCount() const { return chatLines_.size(); }
+  const ChatLine* latestChat() const {
+    return chatLines_.empty() ? nullptr : &chatLines_.back();
+  }
   const ClassSelection& classSelection() const { return classSelection_; }
   bool spawnResponseKnown() const { return spawnResponseKnown_; }
   bool spawnAllowed() const { return spawnAllowed_; }
@@ -75,6 +86,7 @@ private:
   bool spawnResponseKnown_ = false;
   bool spawnAllowed_ = false;
   std::map<uint16_t, Player> players_;
+  std::deque<ChatLine> chatLines_;
 };
 
 }  // namespace samp::state

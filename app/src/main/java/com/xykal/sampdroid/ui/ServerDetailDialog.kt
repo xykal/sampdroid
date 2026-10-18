@@ -89,6 +89,8 @@ object ServerDetailDialog {
                 .append(" split / ").append(o.optInt("reassembledPackets")).append(" tersusun\n")
             append("state pemain     : ").append(o.optInt("trackedPlayers"))
                 .append(" terlacak\n")
+            append("chat state       : ").append(o.optInt("chatMessages"))
+                .append(" pesan tersimpan\n")
             append("RPC terlihat     : ").append(o.optString("rpcSummary").ifBlank { "-" }).append('\n')
             append("event            : ").append(o.optString("stateSummary").ifBlank { "-" }).append('\n')
             append("status           : ").append(o.optString("error").ifBlank { "ok" })

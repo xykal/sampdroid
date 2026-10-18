@@ -45,7 +45,7 @@ u32   (opsional) IsUsingOfficialClient / OmpVersion
 |----|------|--------|
 | 11 | SetPlayerName | |
 | 72 | SetPlayerColor | u16 PlayerID, u32 Color |
-| 93 | SendClientMessage | u32 color, u32 len, char[] |
+| 93 | SendClientMessage | u32 color, u32 len, char[] — reducer caps 144 bytes / 100 lines |
 | 99 | MoveObject | u16 ObjectID, VEC3 pos, VEC3 target, float speed, VEC3 rot |
 | 128 | PlayerRequestClassResponse | selectable, team, model, spawn, angle, 3 weapon/ammo slots |
 | 129 | PlayerRequestSpawnResponse | u32 Allow |
@@ -64,8 +64,19 @@ u32 Weapon[3] | u32 Ammo[3]
 ```
 
 RPC 129 dari server berisi `u32 Allow`; `0` berarti spawn ditolak.
-Keduanya sudah memiliki decoder/state + regression test, namun belum dikirim oleh
-persistent session karena lifecycle socket masih milestone berikutnya.
+Keduanya sudah memiliki decoder/state + regression test. `PlayerRequestClass`
+sudah dikirim explicit lewat retained native session; spawn sengaja belum diekspos
+sebagai UI gameplay sampai sync/world bridge siap.
+
+### SendClientMessage (93)
+
+```text
+u32 RGBA | u32 TextLength | char[TextLength] Text
+```
+
+Reducer menyimpan maksimal 100 line, masing-masing maksimal 144 byte. Payload
+chat tidak dimasukkan mentah ke summary diagnostic agar log tetap bounded; future
+native HUD mengambilnya dari `WorldState`.
 
 ### Layout PlayerInit (139) — paket terbesar saat join
 

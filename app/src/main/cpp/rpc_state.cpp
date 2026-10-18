@@ -1,4 +1,4 @@
-// Renderer-independent state reducer for the first join lifecycle RPCs.
+// Renderer-independent state reducer for player, class/spawn, and chat RPCs.
 #include "rpc_state.h"
 
 #include "raknet_codec.h"
@@ -13,6 +13,7 @@ namespace {
 constexpr uint8_t kIdRpc = 20;
 constexpr uint8_t kSetPlayerName = 11;
 constexpr uint8_t kSetPlayerColor = 72;
+constexpr uint8_t kSendClientMessage = 93;
 constexpr uint8_t kPlayerJoin = 137;
 constexpr uint8_t kPlayerQuit = 138;
 constexpr uint8_t kPlayerRequestClass = 128;
@@ -24,6 +25,14 @@ std::string readString8(raknet::BitReader& reader, size_t maxLength) {
   const size_t length = static_cast<uint8_t>(reader.readBits(8));
   if (!reader.ok() || length > maxLength) return {};
   const auto bytes = reader.readBytes(length);
+  if (!reader.ok() || bytes.empty()) return {};
+  return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+std::string readString32(raknet::BitReader& reader, size_t maxLength) {
+  const uint32_t length = reader.readBits(32);
+  if (!reader.ok() || length == 0 || length > maxLength) return {};
+  const auto bytes = reader.readBytes(static_cast<size_t>(length));
   if (!reader.ok() || bytes.empty()) return {};
   return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 }
@@ -127,6 +136,23 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       if (!player) break;
       player->rgba = rgba;
       setEvent(event, RpcEventKind::PlayerColorChanged, id, "SetPlayerColor");
+      return true;
+    }
+
+    // Server chat/HUD line. Bound both line bytes and retained history before
+    // allocation so a malformed peer cannot turn chat into unbounded memory.
+    case kSendClientMessage: {
+      constexpr size_t kMaxChatTextBytes = 144;
+      constexpr size_t kMaxChatLines = 100;
+      const uint32_t rgba = reader.readBits(32);
+      const std::string text = readString32(reader, kMaxChatTextBytes);
+      if (!reader.ok() || text.empty()) break;
+      if (chatLines_.size() >= kMaxChatLines) chatLines_.pop_front();
+      chatLines_.push_back({rgba, text});
+      event.kind = RpcEventKind::ChatMessage;
+      // Do not put untrusted text into diagnostic summaries; a future native
+      // HUD consumes the retained payload, while logs remain bounded/safe.
+      event.summary = "SendClientMessage";
       return true;
     }
 

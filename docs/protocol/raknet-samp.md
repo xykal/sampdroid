@@ -165,6 +165,7 @@ Contoh nyata — `ID_CONNECTION_REQUEST` reliable, messageNumber=1, payload `0B`
 | ACK reliable | ✅ setiap fragment reliable di-ACK |
 | Multi-paket datagram + split reassembly | ✅ sebelum RPC diserahkan ke decoder |
 | PlayerInit RPC 139 | ✅ decoder wire format + test vector; observability di UI |
+| SendClientMessage RPC 93 | ✅ bounded chat state + regression coverage; HUD renderer masih pending |
 | Retained native session | 🧪 socket/session state + class request di `main`; live capture multi-server masih pending |
 | Persistent game sync | ⏳ belum |
 

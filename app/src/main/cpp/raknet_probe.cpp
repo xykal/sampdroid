@@ -344,6 +344,7 @@ SessionSnapshot snapshotFrom(const LiveSession* session) {
   snapshot.splitFragments = session->splitFragments;
   snapshot.reassembledPackets = session->reassembledPackets;
   snapshot.trackedPlayers = static_cast<int>(session->world.playerCount());
+  snapshot.chatMessages = static_cast<int>(session->world.chatCount());
   snapshot.serverName = snapshot.playerInit ? session->world.playerInit().serverName : "";
   snapshot.rpcSummary = session->rpcSummary;
   snapshot.stateSummary = session->stateSummary;

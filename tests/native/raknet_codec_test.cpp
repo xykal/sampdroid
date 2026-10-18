@@ -92,6 +92,16 @@ std::vector<uint8_t> makePlayerColor(uint16_t id, uint32_t rgba) {
   return writer.buffer;
 }
 
+std::vector<uint8_t> makeChatMessage(uint32_t rgba, const std::string& text) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 93};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(rgba, 32);
+  writer.writeBits(static_cast<uint32_t>(text.size()), 32);
+  writer.writeBytes(reinterpret_cast<const uint8_t*>(text.data()), text.size());
+  return writer.buffer;
+}
+
 std::vector<uint8_t> makePlayerName(uint16_t id, const std::string& name) {
   samp::raknet::BitWriter writer;
   const uint8_t header[] = {20, 11};
@@ -273,6 +283,23 @@ void testWorldStateReducer() {
   expect(event.kind == samp::state::RpcEventKind::SpawnResponse &&
          world.spawnResponseKnown() && world.spawnAllowed(),
          "spawn response state wrong");
+
+  expect(world.applyRpc(makeChatMessage(0x33CCFFFFu, "Selamat datang"), event),
+         "WorldState rejected SendClientMessage");
+  expect(event.kind == samp::state::RpcEventKind::ChatMessage && world.chatCount() == 1,
+         "chat event/state wrong");
+  const auto* latestChat = world.latestChat();
+  expect(latestChat && latestChat->rgba == 0x33CCFFFFu && latestChat->text == "Selamat datang",
+         "chat payload wrong");
+  for (int i = 0; i < 101; ++i) {
+    expect(world.applyRpc(makeChatMessage(0xFFFFFFFFu, "x"), event),
+           "WorldState rejected bounded chat line");
+  }
+  expect(world.chatCount() == 100, "chat history cap changed");
+  expect(!world.applyRpc(makeChatMessage(0xFFFFFFFFu, std::string(145, 'x')), event),
+         "oversized chat line must be rejected");
+  expect(event.kind == samp::state::RpcEventKind::Malformed,
+         "oversized chat must report malformed state");
 
   expect(world.applyRpc(makePlayerJoin(7, 0xAABBCCDDu, false, "Darius"), event),
          "WorldState rejected PlayerJoin");

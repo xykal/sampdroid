@@ -39,6 +39,7 @@ std::string session_json(const samp::SessionSnapshot& s) {
     << ",\"splitFragments\":" << s.splitFragments
     << ",\"reassembledPackets\":" << s.reassembledPackets
     << ",\"trackedPlayers\":" << s.trackedPlayers
+    << ",\"chatMessages\":" << s.chatMessages
     << ",\"serverName\":\"" << samp::json_escape(s.serverName) << "\""
     << ",\"rpcSummary\":\"" << samp::json_escape(s.rpcSummary) << "\""
     << ",\"stateSummary\":\"" << samp::json_escape(s.stateSummary) << "\""
@@ -52,7 +53,7 @@ extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeVersion(JNIEnv* env, jclass) {
-  return to_java(env, "0.8.0 / auto-session-poll");
+  return to_java(env, "0.9.0 / native-chat-state");
 }
 
 JNIEXPORT jstring JNICALL
