@@ -4,112 +4,112 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-0b8f5a.svg)](LICENSE)
 [![ABIs](https://img.shields.io/badge/ABI-armeabi--v7a%20%7C%20arm64--v8a-2563eb.svg)](#kompatibilitas)
 
-**SampDroid** adalah proyek klien multiplayer Android native untuk ekosistem
-SA-MP/open.mp. Tujuannya: pengalaman Android yang lebih ringan dan fleksibel
-daripada menjalankan client Windows lewat Winlator/layer kompatibilitas,
-termasuk perangkat **32-bit ARMv7**.
+**SampDroid** adalah proyek port client SA-MP ke Android sebagai **APK native**.
+Target akhirnya: pemain dapat masuk server SA-MP/open.mp dari Android tanpa
+Winlator, tanpa Wine/x86 emulation, tanpa menjalankan `samp.exe`, dan tanpa
+menjadikan modpack PC sebagai syarat client.
 
-> **Status jujur:** APK saat ini adalah server browser + diagnostik transport
-> RakNet/ClientJoin. Gameplay/render dunia belum ada. Network core sengaja
-dibangun dan diuji dulu agar backend renderer serta kontrol komunitas nanti
-> punya fondasi yang stabil.
+> **Port di sini berarti kompatibilitas client PC dibangun ulang secara native
+> untuk ARM Android.** `samp.exe` adalah binary Windows/x86, jadi tidak bisa
+> sekadar di-compile ulang menjadi APK; yang dikerjakan adalah client Android
+> native dengan protocol, session, sync, HUD, input, dan world bridge yang setara
+> dari sisi pemain.
 
 **APK terbaru:** [GitHub Releases](https://github.com/xykal/sampdroid/releases)
 
 ---
 
-## Apa yang sudah jalan
-
-| Modul | Status | Bukti / catatan |
-|---|---:|---|
-| Server browser open.mp | ✅ | daftar server dari index publik |
-| Query SA-MP (`i/r/c/d/p`) | ✅ | info, rules, players, ping native |
-| RakNet 2.x open/cookie/auth | ✅ | diverifikasi terhadap server live |
-| `CONNECTION_REQUEST_ACCEPTED` | ✅ | token server diterima |
-| `ClientJoin` RPC 25 | ✅ | server memproses lalu mengirim stream balik |
-| ACK reliable + multi-packet datagram | ✅ | retransmisi tidak menumpuk |
-| Split reassembly | ✅ | fragment disusun sebelum RPC didecode |
-| RPC observability + state reducer | ✅ | `PlayerInit`, PlayerJoin/Quit/Name/Color jadi model pemain |
-| Persistent game session / sync | ⏳ | milestone berikutnya |
-| Touch/gamepad HUD runtime | ⏳ | schema profile v1 sudah terbuka |
-| Renderer/game bridge | ⏳ | asset-agnostic, belum di APK |
-
-Tekan **Probe RakNet** di detail server untuk melihat alur nyata:
+## Target produk
 
 ```text
-open → cookie → auth → accepted → ClientJoin → stream RPC
+Install APK SampDroid → pilih server → connect/login/spawn → main native Android
 ```
 
-## Kenapa bukan Winlator
+Bukan ini:
 
-Winlator berguna, tapi menjalankan client Windows berarti overhead x86 emulation,
-Wine/translation layer, dan sering hanya nyaman di perangkat 64-bit yang cukup
-kuat. SampDroid ditulis native untuk Android dan dibangun untuk dua ABI:
+```text
+Android → Winlator/Wine → Windows/x86 → samp.exe → server
+```
 
-- `armeabi-v7a` — agar perangkat ARM 32-bit tidak langsung ditinggal;
-- `arm64-v8a` — perangkat Android modern.
+SampDroid tidak didesain sebagai launcher modpack PC. Kontrol touch/gamepad yang
+akan tersedia adalah bagian dari client Android sendiri.
 
-Target minimum Android adalah **API 24 / Android 7.0**. Kompatibilitas gameplay
-penuh tetap tergantung backend renderer serta RAM/GPU perangkat; jangan anggap
-"dua ABI" sebagai janji bahwa semua device pasti kuat menjalankan map/mod berat.
+Detail kontrak port: [docs/NATIVE_PORT_TARGET.md](docs/NATIVE_PORT_TARGET.md).
 
----
+## Status implementasi saat ini
 
-## Open source yang benar-benar bebas
+| Modul client | Status | Bukti / catatan |
+|---|---:|---|
+| Browser + query server | ✅ | info, rules, player list, ping native |
+| RakNet 2.x open/cookie/auth | ✅ | diverifikasi terhadap server live |
+| `CONNECTION_REQUEST_ACCEPTED` + ClientJoin | ✅ | server memproses lalu stream balik |
+| ACK reliable + multi-packet datagram | ✅ | retransmisi tidak menumpuk |
+| Split reassembly | ✅ | fragment disusun sebelum RPC didecode |
+| State pemain dasar | ✅ | `PlayerInit`, Join/Quit/Name/Color → model native |
+| Class/spawn packet core | ✅ | request builder + response state native |
+| Persistent session + kirim class/spawn | ⏳ | implementasi berikutnya |
+| Player/vehicle/object sync penuh | ⏳ | belum |
+| HUD + textdraw/dialog native | ⏳ | belum |
+| Touch/gamepad/gyro native | ⏳ | input layout sudah didefinisikan |
+| World/game bridge Android | ⏳ | belum di APK |
+
+Saat ini tombol **Probe RakNet** di detail server membuktikan alur nyata:
+
+```text
+open → cookie → auth → accepted → ClientJoin → stream RPC → state pemain
+```
+
+## Kompatibilitas
+
+SampDroid dibangun native untuk:
+
+- **`armeabi-v7a`** — perangkat Android ARM 32-bit;
+- **`arm64-v8a`** — perangkat Android ARM 64-bit.
+
+Minimum Android: **API 24 / Android 7.0**. Dua ABI berarti APK tidak memerlukan
+Winlator, tetapi performa akhir tetap akan bergantung pada RAM/GPU saat renderer
+dunia selesai dibuat.
+
+## Native Android input
+
+Touch, gamepad, keyboard Bluetooth, gyro, dan HUD akan menjadi bagian internal
+APK. File layout hanya mendeskripsikan posisi tombol native — tidak memuat script,
+plugin PC, executable, atau asset eksternal.
+
+- [Native input layout v1](docs/NATIVE_INPUT.md)
+- [Schema input](schemas/native-input-layout.schema.json)
+- [Contoh default landscape](examples/native-input-layouts/default-landscape.json)
+
+## Open source untuk kontributor
 
 - Kode SampDroid: **[MIT License](LICENSE)**.
-- **Tidak ada CLA** dan tidak ada pengalihan copyright ke maintainer.
-- Kontributor memakai [DCO](DCO.txt): kontribusi masuk dan keluar di bawah MIT.
-- CI, issue, roadmap, dan APK release ada di repo publik `xykal/sampdroid`.
-- Aturan kontribusi: [CONTRIBUTING.md](CONTRIBUTING.md).
-- Aturan komunitas: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
-- Security disclosure: [SECURITY.md](SECURITY.md).
-- Governance/review: [GOVERNANCE.md](GOVERNANCE.md).
-- Attribution/provenance: [NOTICE.md](NOTICE.md).
+- **Tidak ada CLA**; kontributor mempertahankan copyright-nya.
+- Kontribusi memakai [DCO](DCO.txt), jadi masuk/keluar tetap MIT.
+- Repo public, GitHub Discussions, issue tracker, CI, roadmap, dan APK release
+  ada di `xykal/sampdroid`.
+- Panduan: [CONTRIBUTING.md](CONTRIBUTING.md), [GOVERNANCE.md](GOVERNANCE.md),
+  [SECURITY.md](SECURITY.md), [NOTICE.md](NOTICE.md).
 
-Kontributor boleh membuat fork, client UI alternatif, control profile, tooling,
-dan modpack manifest berlisensi bebas. Yang tidak boleh masuk repo: game asset,
-APK/OBB, `libGTASA.so`, crack, credential, cheat/bypass, atau mod yang tidak
-punya izin distribusi.
-
----
-
-## Modpack style PC, tapi aman dan portable
-
-SampDroid akan memisahkan **kode/config** dari **asset game**:
-
-- profile tombol, HUD, gamepad, gyro, accessibility, dan metadata pack dapat
-  dipublikasikan/difork komunitas;
-- asset GTA/mod milik pengguna tetap di perangkat pengguna, bukan dibundel APK;
-- importer nanti hanya menerima manifest/path sandbox, bukan script atau native
-  binary arbitrary;
-- pack wajib menyatakan target `armeabi-v7a`/`arm64-v8a` dan lisensi author.
-
-Mulai kontribusi dari:
-
-- [Kontrak modpack v1](docs/MODPACKS.md)
-- [Control profile v1](docs/CONTROL_PROFILES.md)
-- [Contoh classic landscape](examples/control-profiles/classic-landscape.json)
-- [Schema manifest](schemas/modpack-manifest.schema.json)
-- [Schema control profile](schemas/control-profile.schema.json)
-
----
+Kontributor dibutuhkan untuk network/session, native renderer bridge, Android
+input/HUD, ARMv7 optimization, test vector, accessibility, dokumentasi, dan
+localization. Tidak ada kontribusi yang boleh membawa game assets, Windows binary,
+crack, credential, cheat, atau bypass server.
 
 ## Arsitektur
 
 ```text
 Kotlin Android shell
-  ├─ server browser / import profile / HUD
+  ├─ server browser / native HUD / native input
   └─ JNI
-       └─ C++17 native core
+       └─ C++17 native client core
             ├─ query protocol
             ├─ RakNet bitstream + ACK + split reassembly
-            ├─ RPC decoder + session state
-            ├─ semantic input mapper
-            └─ renderer adapter (future, user-owned assets)
+            ├─ session + RPC/world state
+            ├─ player sync encoder
+            └─ Android game/world bridge
 ```
 
-Detail batas antarlayer: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Dokumentasi protocol:
 
@@ -118,32 +118,23 @@ Dokumentasi protocol:
 
 ## Build resmi — GitHub Actions
 
-Sesuai kebijakan proyek, **compile/build APK resmi dilakukan di GitHub Actions**
-pada repo publik, bukan dari laptop maintainer. Setiap push/PR menjalankan:
-
-1. regression test C++ untuk wire vector RakNet, ACK, split reassembly, dan
-   `PlayerInit`;
-2. build APK debug untuk `armeabi-v7a` + `arm64-v8a`;
-3. verifikasi dua `.so` benar-benar ada di dalam APK;
-4. upload artifact; push tag `v*` juga menerbitkan GitHub Release.
-
-Kontributor cukup fork → branch → PR. Lihat [CONTRIBUTING.md](CONTRIBUTING.md).
+Semua APK resmi di-compile oleh **GitHub Actions** dari repo publik, bukan build
+lokal maintainer. Setiap push/PR menjalankan regression test C++ lalu build APK
+untuk `armeabi-v7a` + `arm64-v8a`, kemudian memverifikasi kedua `.so` ada di APK.
+Push tag `v*` otomatis menerbitkan release.
 
 ## Roadmap
 
-Lihat [docs/ROADMAP.md](docs/ROADMAP.md). Area kontribusi paralel paling berguna:
+Lihat [docs/ROADMAP.md](docs/ROADMAP.md). Jalur prioritas port sekarang:
 
-1. decoder/state untuk RPC join/class/spawn/chat/object/vehicle;
-2. persistent RakNet session dan player sync yang dibatasi rate;
-3. touch/gamepad/gyro + editor layout;
-4. renderer adapter yang legal dan ramah ARMv7;
-5. test vector/sanitized capture, docs, localization, dan accessibility.
+1. persistent RakNet session, class selection, spawn, dan sync;
+2. state world untuk player, vehicle, object, pickup, checkpoint, dialog, chat;
+3. HUD + input Android native;
+4. world/game bridge tanpa runtime Windows;
+5. optimasi perangkat ARMv7 dan ARM64.
 
-## Legal & asset policy
+## Asset policy
 
-- Project ini tidak berafiliasi dengan Rockstar Games, Take-Two, SA-MP, atau
-  open.mp.
-- SampDroid **tidak** mendistribusikan game asset atau proprietary binary.
-- Pengguna wajib memiliki game/data/mod yang mereka impor sendiri dan mematuhi
-  lisensi/server rules masing-masing.
-- Detail attribution dan referensi interoperabilitas: [NOTICE.md](NOTICE.md).
+APK tidak membundel GTA APK/OBB/data, binary Windows, atau asset pihak ketiga.
+Backend dunia nantinya memakai data yang pengguna miliki sendiri; ini menjaga
+SampDroid tetap APK Android native, kecil, dan bukan repack game.

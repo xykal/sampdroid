@@ -3,7 +3,8 @@
 
 #include "raknet_codec.h"
 
-#include <cstdio>
+#include <cmath>
+#include <cstring>
 #include <utility>
 
 namespace samp::state {
@@ -14,6 +15,8 @@ constexpr uint8_t kSetPlayerName = 11;
 constexpr uint8_t kSetPlayerColor = 72;
 constexpr uint8_t kPlayerJoin = 137;
 constexpr uint8_t kPlayerQuit = 138;
+constexpr uint8_t kPlayerRequestClass = 128;
+constexpr uint8_t kPlayerRequestSpawn = 129;
 constexpr uint8_t kPlayerInit = 139;
 constexpr size_t kMaxPlayerNameBytes = 24;
 
@@ -23,6 +26,15 @@ std::string readString8(raknet::BitReader& reader, size_t maxLength) {
   const auto bytes = reader.readBytes(length);
   if (!reader.ok() || bytes.empty()) return {};
   return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+}
+
+float readFloat(raknet::BitReader& reader, bool& finite) {
+  const uint32_t raw = reader.readBits(32);
+  float value = 0.0f;
+  static_assert(sizeof(value) == sizeof(raw), "SA-MP uses 32-bit float values");
+  std::memcpy(&value, &raw, sizeof(value));
+  finite = finite && std::isfinite(value);
+  return value;
 }
 
 void setEvent(RpcEvent& event, RpcEventKind kind, uint16_t playerId, const char* action) {
@@ -115,6 +127,41 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       if (!player) break;
       player->rgba = rgba;
       setEvent(event, RpcEventKind::PlayerColorChanged, id, "SetPlayerColor");
+      return true;
+    }
+
+    // Server reply to PlayerRequestClass. This client advertises non-DL, so
+    // CustomModelID is intentionally absent from the wire layout here.
+    case kPlayerRequestClass: {
+      ClassSelection selection;
+      selection.selectable = reader.readBits(8) != 0;
+      selection.team = static_cast<uint8_t>(reader.readBits(8));
+      selection.model = reader.readBits(32);
+      reader.readBits(8);  // Unknown1
+      bool finite = true;
+      selection.x = readFloat(reader, finite);
+      selection.y = readFloat(reader, finite);
+      selection.z = readFloat(reader, finite);
+      selection.angle = readFloat(reader, finite);
+      for (uint32_t& weapon : selection.weapons) weapon = reader.readBits(32);
+      for (uint32_t& ammo : selection.ammo) ammo = reader.readBits(32);
+      if (!reader.ok() || !finite) break;
+      selection.valid = true;
+      classSelection_ = selection;
+      event.kind = RpcEventKind::ClassSelection;
+      event.summary = "ClassSelection model=" + std::to_string(selection.model) +
+                      (selection.selectable ? " selectable" : " blocked");
+      return true;
+    }
+
+    // Server reply to PlayerRequestSpawn: uint32 Allow.
+    case kPlayerRequestSpawn: {
+      const uint32_t allow = reader.readBits(32);
+      if (!reader.ok()) break;
+      spawnResponseKnown_ = true;
+      spawnAllowed_ = allow != 0;
+      event.kind = RpcEventKind::SpawnResponse;
+      event.summary = spawnAllowed_ ? "SpawnResponse allowed" : "SpawnResponse denied";
       return true;
     }
 

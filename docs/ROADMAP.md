@@ -1,50 +1,49 @@
-# Roadmap publik
+# Roadmap port native SampDroid
 
-Roadmap ini sengaja berbasis modul agar banyak kontributor bisa kerja paralel.
-Status bukan janji tanggal; CI dan test vector lebih penting daripada buru-buru
-menyebut playable.
+Tujuan roadmap ini jelas: mengganti kebutuhan menjalankan client SA-MP PC lewat
+Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 
-## Milestone 0.4 — protocol observability
+## Milestone 0.6 — protocol/state observability
 
 - [x] Open connection, cookie, auth, accepted, ClientJoin.
-- [x] ACK reliable dan decoder multi-packet datagram.
-- [x] Split reassembly + decode `PlayerInit` (RPC 139).
-- [x] Host regression tests untuk codec wire vector.
-- [ ] Capture parser untuk stream nyata yang sudah disanitasi.
-- [x] Decode + state reducer `PlayerJoin`, `PlayerQuit`, `SetPlayerName`, `SetPlayerColor`.
-- [ ] Decode class/spawn response dan entity/world state berikutnya.
+- [x] ACK reliable, multi-packet datagram, split reassembly.
+- [x] `PlayerInit`, PlayerJoin/Quit/Name/Color state reducer.
+- [x] Host regression tests untuk wire vector dan lifecycle player state.
+- [x] Client `PlayerRequestClass` / `PlayerRequestSpawn` builder + decoder state balasan.
+- [ ] Send class/spawn melalui persistent session ke server nyata.
+- [ ] Decode player stream, vehicle/object/pickup state.
+- [ ] Sanitized capture replay test dari server nyata.
 
-## Milestone 0.5 — persistent session state
+## Milestone 0.7 — persistent native session
 
-- [ ] Session lifecycle: connect, disconnect, retry, timeout, clean teardown.
-- [ ] Ordered RPC queue dan reliability resend window.
-- [ ] Player/class/spawn state reducer.
-- [ ] Chat/dialog/checkpoint state tanpa renderer.
+- [ ] Connect/disconnect/retry/timeout/clean teardown.
+- [ ] Ordered RPC queue dan resend window.
+- [ ] Class selection + spawn state.
+- [ ] Chat/dialog/checkpoint/textdraw native state.
 - [ ] Player sync encoder dengan rate limiter dan test vector.
 
-## Milestone 0.6 — native controls & HUD
+## Milestone 0.8 — native Android controls + HUD
 
-- [ ] Runtime untuk `control-profile` v1.
-- [ ] Touch joystick, camera swipe, buttons, aim/fire, vehicle controls.
+- [ ] Runtime native input layout v1.
+- [ ] Touch joystick, camera swipe, buttons, aim/fire, vehicle control.
 - [ ] Gamepad / keyboard / gyro mapping.
-- [ ] Editor layout di perangkat + export/import JSON.
-- [ ] Accessibility presets (large buttons, one-hand, high contrast).
+- [ ] Editor layout di perangkat + export JSON internal.
+- [ ] Accessibility: tombol besar, one-hand, high contrast.
 
-## Milestone 0.7 — renderer adapter contract
+## Milestone 0.9 — world/game bridge
 
-- [ ] Interface renderer/input yang tidak terikat binary/offset.
-- [ ] User-owned game data picker + checks yang tidak menyalin asset.
-- [ ] World/entity bridge untuk player, vehicle, object, weather, HUD.
-- [ ] Performance budget ARMv7 dan fallback low-memory.
+- [ ] Android renderer/world bridge interface tanpa Windows runtime.
+- [ ] User-owned game data selector/check tanpa copy atau download asset.
+- [ ] World/entity bridge: player, vehicle, object, weather, HUD.
+- [ ] ARMv7/ARM64 performance budget dan low-memory fallback.
 
-## Milestone 1.0 — community ready
+## Milestone 1.0 — native client loop
 
-- [ ] Manifest modpack/profile loader dengan sandbox path.
-- [ ] Katalog komunitas berbasis link + attribution, bukan asset mirror.
-- [ ] Reproducible tagged APK releases via GitHub Actions.
-- [ ] Contributor docs, security handling, dan compatibility matrix matang.
+- [ ] Join → class → spawn → sync → world/HUD/input berjalan sebagai APK native.
+- [ ] Tidak membutuhkan Winlator, `samp.exe`, atau modpack PC.
+- [ ] Reproducible tagged APK releases GitHub Actions untuk kedua ABI.
 
-## Label issue yang dicari
+## Label issue
 
-`good first issue`, `help wanted`, `protocol`, `android`, `controls`, `modpack`,
-`accessibility`, `armv7`, dan `documentation`.
+`good first issue`, `help wanted`, `protocol`, `android`, `native-port`,
+`controls`, `accessibility`, `armv7`, dan `documentation`.

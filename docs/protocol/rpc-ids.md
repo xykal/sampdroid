@@ -22,8 +22,8 @@ reliability `RELIABLE_ORDERED` (9).
 | 50 | PlayerCommandMessage | chat diawali `/` |
 | 101 | PlayerChatMessage | chat biasa |
 | 62 | OnPlayerDialogResponse | |
-| 128 | PlayerRequestClass | |
-| 129 | PlayerRequestSpawn | |
+| 128 | PlayerRequestClass | `u16 ClassID` — builder + wire test ada |
+| 129 | PlayerRequestSpawn | payload kosong — builder + wire test ada |
 | 155 | OnPlayerRequestScoresAndPings | |
 | 103 | ClientCheck | jawaban anti-cheat |
 
@@ -47,9 +47,25 @@ u32   (opsional) IsUsingOfficialClient / OmpVersion
 | 72 | SetPlayerColor | u16 PlayerID, u32 Color |
 | 93 | SendClientMessage | u32 color, u32 len, char[] |
 | 99 | MoveObject | u16 ObjectID, VEC3 pos, VEC3 target, float speed, VEC3 rot |
+| 128 | PlayerRequestClassResponse | selectable, team, model, spawn, angle, 3 weapon/ammo slots |
+| 129 | PlayerRequestSpawnResponse | u32 Allow |
 | 137 | PlayerJoin | |
 | 138 | PlayerQuit | u16 PlayerID, u8 Reason |
 | 139 | **PlayerInit** | ~212 byte (lihat bawah) |
+
+### Class selection / spawn response
+
+Untuk client non-DL seperti SampDroid saat ini, server membalas RPC 128 dengan:
+
+```text
+u8 Selectable | u8 TeamID | u32 ModelID | u8 Unknown1 |
+float SpawnX | float SpawnY | float SpawnZ | float ZAngle |
+u32 Weapon[3] | u32 Ammo[3]
+```
+
+RPC 129 dari server berisi `u32 Allow`; `0` berarti spawn ditolak.
+Keduanya sudah memiliki decoder/state + regression test, namun belum dikirim oleh
+persistent session karena lifecycle socket masih milestone berikutnya.
 
 ### Layout PlayerInit (139) — paket terbesar saat join
 

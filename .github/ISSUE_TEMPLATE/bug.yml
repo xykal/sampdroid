@@ -1,5 +1,5 @@
 name: Bug report
-description: Laporkan masalah app, protocol, UI, atau kompatibilitas perangkat.
+description: Laporkan masalah app, protocol, state, UI, atau kompatibilitas perangkat.
 title: "[Bug]: "
 labels: [bug, needs-triage]
 body:
@@ -19,14 +19,14 @@ body:
     id: area
     attributes:
       label: Area
-      options: [Android UI, Server browser, RakNet/protocol, ARMv7, ARM64, Controls, Modpack schema, Documentation]
+      options: [Android UI, Server browser, Native session, RakNet/protocol, RPC/world state, Native controls, Renderer/world bridge, ARMv7, ARM64, Documentation]
     validations:
       required: true
   - type: input
     id: version
     attributes:
       label: Versi / commit
-      placeholder: v0.5.0 atau hash commit
+      placeholder: v0.6.0 atau hash commit
     validations:
       required: true
   - type: input

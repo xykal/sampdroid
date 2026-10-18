@@ -3,6 +3,7 @@
 
 #include "rpc_decoder.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -18,6 +19,8 @@ enum class RpcEventKind : uint8_t {
   PlayerQuit,
   PlayerRenamed,
   PlayerColorChanged,
+  ClassSelection,
+  SpawnResponse,
   Malformed,
 };
 
@@ -34,6 +37,19 @@ struct Player {
   std::string name;
 };
 
+struct ClassSelection {
+  bool valid = false;
+  bool selectable = false;
+  uint8_t team = 0;
+  uint32_t model = 0;
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  float angle = 0.0f;
+  std::array<uint32_t, 3> weapons{};
+  std::array<uint32_t, 3> ammo{};
+};
+
 // This has no rendering or socket responsibility. It is the stable boundary
 // between untrusted network bytes and a future HUD/world renderer.
 class WorldState {
@@ -44,6 +60,9 @@ public:
   const rpc::PlayerInitData& playerInit() const { return playerInit_; }
   size_t playerCount() const { return players_.size(); }
   const Player* findPlayer(uint16_t id) const;
+  const ClassSelection& classSelection() const { return classSelection_; }
+  bool spawnResponseKnown() const { return spawnResponseKnown_; }
+  bool spawnAllowed() const { return spawnAllowed_; }
 
 private:
   // SA-MP/open.mp player IDs are small in normal use; bound state regardless
@@ -52,6 +71,9 @@ private:
 
   bool initialized_ = false;
   rpc::PlayerInitData playerInit_;
+  ClassSelection classSelection_;
+  bool spawnResponseKnown_ = false;
+  bool spawnAllowed_ = false;
   std::map<uint16_t, Player> players_;
 };
 

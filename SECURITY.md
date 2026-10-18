@@ -2,28 +2,31 @@
 
 ## Scope
 
-Laporkan secara privat jika menemukan masalah yang bisa membahayakan pemain,
+Laporkan secara privat jika menemukan masalah yang dapat membahayakan pemain,
 server, atau perangkat, misalnya:
 
-- overflow / crash dari packet UDP atau RPC yang malformed;
-- allocation / battery / bandwidth exhaustion;
+- overflow/crash dari UDP atau RPC malformed;
+- allocation, battery, atau bandwidth exhaustion;
 - kebocoran token, IP, atau data pribadi;
-- execution path yang tidak aman saat import profile/modpack;
-- bypass autentikasi, anti-cheat, ban, atau akses server.
+- path/import data milik pengguna yang tidak aman;
+- bypass autentikasi, anti-cheat, ban, atau akses server;
+- execution/hook path yang menjalankan binary/script tidak tepercaya.
+
+SampDroid adalah client Android native; Wine/Winlator/x86 runtime dan modpack
+script loader bukan bagian dari scope produk.
 
 ## Cara melapor
 
 Jangan taruh exploit atau packet reproduksi yang bisa disalahgunakan di issue
 publik. Gunakan [GitHub private security advisory](../../security/advisories/new)
 untuk `xykal/sampdroid`, sertakan versi APK/commit, perangkat/ABI, dampak, dan
-langkah reproduksi yang aman.
+langkah reproduksi aman.
 
 Kami akan mengonfirmasi laporan, mengerjakan patch, lalu mengoordinasikan
-pengungkapan setelah pengguna punya waktu update. Kontributor yang melaporkan
-dengan itikad baik tidak akan dihukum karena disclosure yang bertanggung jawab.
+disclosure setelah pengguna punya waktu update.
 
 ## Bukan tempatnya
 
 - minta cheat, bypass, credential, atau cara menyerang server;
 - kirim game asset/binary proprietary;
-- post server target dan proof-of-concept yang membuat pemain lain kena dampak.
+- post server target dan proof-of-concept yang berdampak pada pemain lain.

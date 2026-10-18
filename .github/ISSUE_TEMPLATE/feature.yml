@@ -1,5 +1,5 @@
 name: Feature / improvement
-description: Usulkan perbaikan untuk client native, controls, atau tooling komunitas.
+description: Usulkan perbaikan untuk port client Android native.
 title: "[Feature]: "
 labels: [enhancement, needs-triage]
 body:
@@ -7,14 +7,21 @@ body:
     id: problem
     attributes:
       label: Masalah pengguna
-      description: Masalah apa di perangkat Android/Winlator/modpack PC yang ingin diselesaikan?
+      description: Masalah apa yang harus diselesaikan agar pemain tidak perlu Winlator/samp.exe di Android?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area port
+      options: [Native session, RakNet/protocol, Player sync, World state, Android HUD, Native controls, Renderer/world bridge, ARMv7 performance, Documentation]
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
       label: Usulan
-      description: Jelaskan behavior, batas, dan UI/API jika ada.
+      description: Jelaskan behavior native Android yang diharapkan dan batas UI/API.
     validations:
       required: true
   - type: checkboxes
@@ -22,7 +29,9 @@ body:
     attributes:
       label: Checklist
       options:
-        - label: Usulan tidak membundel atau mengunduh asset game/proprietary binary.
+        - label: Usulan tidak membundel/mengunduh asset game atau proprietary binary.
+          required: true
+        - label: Usulan tidak membutuhkan Winlator, Wine, samp.exe, atau modpack PC.
           required: true
         - label: Usulan mempertimbangkan armeabi-v7a dan arm64-v8a.
           required: true

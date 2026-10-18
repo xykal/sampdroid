@@ -27,7 +27,7 @@ extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeVersion(JNIEnv* env, jclass) {
-  return to_java(env, "sampdroid-native 0.5.0 / rpc-state-reducer");
+  return to_java(env, "sampdroid-native 0.6.0 / native-port-track");
 }
 
 JNIEXPORT jstring JNICALL

@@ -29,6 +29,7 @@ jobs:
           mkdir -p .ci-native
           c++ -std=c++17 -O2 -Wall -Wextra -pedantic \
             -Iapp/src/main/cpp \
+            app/src/main/cpp/client_rpc.cpp \
             app/src/main/cpp/raknet_codec.cpp \
             app/src/main/cpp/rpc_decoder.cpp \
             app/src/main/cpp/rpc_state.cpp \

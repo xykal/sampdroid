@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "id": "org.sampdroid.classic-landscape",
-  "name": "Classic landscape",
+  "id": "org.sampdroid.default-landscape",
+  "name": "Default native landscape",
   "orientation": "landscape",
   "safeArea": true,
   "controls": [

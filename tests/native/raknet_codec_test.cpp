@@ -1,3 +1,4 @@
+#include "client_rpc.h"
 #include "raknet_codec.h"
 #include "rpc_decoder.h"
 #include "rpc_state.h"
@@ -110,6 +111,35 @@ std::vector<uint8_t> makePlayerQuit(uint16_t id, uint8_t reason) {
   return writer.buffer;
 }
 
+std::vector<uint8_t> makeClassSelection(bool selectable, uint8_t team, uint32_t model) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 128};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(selectable ? 1u : 0u, 8);
+  writer.writeBits(team, 8);
+  writer.writeBits(model, 32);
+  writer.writeBits(0, 8);  // Unknown1
+  writeFloat(writer, 10.0f);
+  writeFloat(writer, 20.0f);
+  writeFloat(writer, 30.0f);
+  writeFloat(writer, 180.0f);
+  writer.writeBits(24, 32);
+  writer.writeBits(25, 32);
+  writer.writeBits(0, 32);
+  writer.writeBits(100, 32);
+  writer.writeBits(50, 32);
+  writer.writeBits(0, 32);
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makeSpawnResponse(bool allowed) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 129};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(allowed ? 1u : 0u, 32);
+  return writer.buffer;
+}
+
 void testReliableAndAck() {
   const auto reliable = samp::raknet::buildReliable(1, {0x0B});
   const std::vector<uint8_t> expectedReliable = {0x00, 0x80, 0x43, 0x80, 0x0B};
@@ -126,6 +156,18 @@ void testReliableAndAck() {
 
   const auto ack = samp::raknet::buildAck({1});
   expect(ack == std::vector<uint8_t>({0xE3, 0x01, 0x00}), "ACK wire vector changed");
+
+  const auto ordered = samp::raknet::buildReliableOrdered(2, 2, 17, {20, 128, 3, 0});
+  const auto orderedDecoded = samp::raknet::decodeDatagram(ordered);
+  expect(orderedDecoded.ok && orderedDecoded.packets.size() == 1,
+         "reliable ordered packet did not decode");
+  const auto& packet = orderedDecoded.packets[0];
+  expect(packet.reliability == samp::raknet::kReliabilityReliableOrdered,
+         "wrong ordered reliability code");
+  expect(packet.orderingChannel == 2 && packet.orderingIndex == 17,
+         "ordered channel/index changed");
+  expect(packet.payload == std::vector<uint8_t>({20, 128, 3, 0}),
+         "ordered payload changed");
 }
 
 void testCompressedU32() {
@@ -177,6 +219,13 @@ void testPlayerInitDecoder() {
          "PlayerInit summary has no RPC name");
 }
 
+void testClientRpcBuilders() {
+  expect(samp::clientrpc::buildRequestClass(3) == std::vector<uint8_t>({20, 128, 3, 0}),
+         "request class payload changed");
+  expect(samp::clientrpc::buildRequestSpawn() == std::vector<uint8_t>({20, 129}),
+         "request spawn payload changed");
+}
+
 void testWorldStateReducer() {
   samp::state::WorldState world;
   samp::state::RpcEvent event;
@@ -184,6 +233,21 @@ void testWorldStateReducer() {
   expect(world.applyRpc(makePlayerInit(), event), "WorldState rejected PlayerInit");
   expect(world.initialized() && world.playerInit().playerId == 42,
          "WorldState did not retain PlayerInit");
+
+  expect(world.applyRpc(makeClassSelection(true, 3, 7), event),
+         "WorldState rejected class selection");
+  expect(event.kind == samp::state::RpcEventKind::ClassSelection,
+         "wrong class selection event kind");
+  expect(world.classSelection().valid && world.classSelection().selectable &&
+         world.classSelection().team == 3 && world.classSelection().model == 7 &&
+         std::fabs(world.classSelection().angle - 180.0f) < 0.001f,
+         "class selection state wrong");
+
+  expect(world.applyRpc(makeSpawnResponse(true), event),
+         "WorldState rejected spawn response");
+  expect(event.kind == samp::state::RpcEventKind::SpawnResponse &&
+         world.spawnResponseKnown() && world.spawnAllowed(),
+         "spawn response state wrong");
 
   expect(world.applyRpc(makePlayerJoin(7, 0xAABBCCDDu, false, "Darius"), event),
          "WorldState rejected PlayerJoin");
@@ -214,6 +278,7 @@ int main() {
   testCompressedU32();
   testSplitReassembly();
   testPlayerInitDecoder();
+  testClientRpcBuilders();
   testWorldStateReducer();
   std::puts("raknet codec/state regression tests: OK");
   return 0;

@@ -60,6 +60,8 @@ private:
 struct IncomingPacket {
   uint16_t messageNumber = 0;
   uint8_t reliability = 0;
+  uint8_t orderingChannel = 0;
+  uint16_t orderingIndex = 0;
   bool split = false;
   uint16_t splitId = 0;
   uint32_t splitIndex = 0;
@@ -75,6 +77,9 @@ struct Datagram {
 };
 
 std::vector<uint8_t> buildReliable(uint16_t messageNumber, const std::vector<uint8_t>& payload);
+std::vector<uint8_t> buildReliableOrdered(uint16_t messageNumber, uint8_t orderingChannel,
+                                          uint16_t orderingIndex,
+                                          const std::vector<uint8_t>& payload);
 std::vector<uint8_t> buildAck(const std::vector<uint16_t>& messageNumbers);
 Datagram decodeDatagram(const std::vector<uint8_t>& datagram);
 

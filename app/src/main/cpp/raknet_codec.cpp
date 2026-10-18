@@ -170,6 +170,21 @@ std::vector<uint8_t> buildReliable(uint16_t messageNumber, const std::vector<uin
   return writer.buffer;
 }
 
+std::vector<uint8_t> buildReliableOrdered(uint16_t messageNumber, uint8_t orderingChannel,
+                                          uint16_t orderingIndex,
+                                          const std::vector<uint8_t>& payload) {
+  BitWriter writer;
+  writer.writeBit(false);  // hasAcks
+  writer.writeBits(messageNumber, 16);
+  writer.writeBits(kReliabilityReliableOrdered, 4);
+  writer.writeBits(orderingChannel & 0x1Fu, 5);
+  writer.writeBits(orderingIndex, 16);
+  writer.writeBit(false);  // isSplit
+  writer.writeCompressedU16(static_cast<uint16_t>(payload.size() * 8));
+  writer.writeAlignedBytes(payload.data(), payload.size());
+  return writer.buffer;
+}
+
 std::vector<uint8_t> buildAck(const std::vector<uint16_t>& messageNumbers) {
   BitWriter writer;
   writer.writeBit(true);  // hasAcks
@@ -209,8 +224,8 @@ Datagram decodeDatagram(const std::vector<uint8_t>& datagram) {
     packet.reliability = static_cast<uint8_t>(reader.readBits(4));
     if (packet.reliability == 7 || packet.reliability == kReliabilityReliableOrdered ||
         packet.reliability == kReliabilityReliableSequenced) {
-      reader.readBits(5);   // ordering channel
-      reader.readBits(16);  // ordering index
+      packet.orderingChannel = static_cast<uint8_t>(reader.readBits(5));
+      packet.orderingIndex = static_cast<uint16_t>(reader.readBits(16));
     }
 
     packet.split = reader.readBit();

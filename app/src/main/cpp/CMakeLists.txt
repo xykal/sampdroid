@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_library(sampdroid SHARED
         jni_bridge.cpp
         samp_query.cpp
+        client_rpc.cpp
         raknet_codec.cpp
         rpc_decoder.cpp
         rpc_state.cpp

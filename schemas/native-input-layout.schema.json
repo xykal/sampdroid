@@ -1,7 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/xykal/sampdroid/schemas/control-profile.schema.json",
-  "title": "SampDroid control profile v1",
+  "$id": "https://github.com/xykal/sampdroid/schemas/native-input-layout.schema.json",
+  "title": "SampDroid native Android input layout v1",
+  "description": "Internal native input layout only; never loads scripts, binaries, or PC modpacks.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "id", "name", "orientation", "safeArea", "controls"],
