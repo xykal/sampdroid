@@ -21,7 +21,8 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 - [x] Socket retained setelah ClientJoin; peer IP/port filter dan bounded state.
 - [x] `RELIABLE_ORDERED` channel-2 class request, ACK consumption, bounded retry queue.
 - [x] Class selection + spawn response state reducer.
-- [ ] Lifecycle-aware poll loop/heartbeat, full ACK-range behavior, reconnect, dan resend window.
+- [x] Lifecycle-aware automatic poll saat detail session terlihat.
+- [ ] Heartbeat, full ACK-range behavior, reconnect, dan resend window.
 - [ ] Chat/dialog/checkpoint/textdraw native state.
 - [ ] Player sync encoder dengan rate limiter dan test vector.
 
@@ -44,7 +45,7 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 
 - [ ] Join → class → spawn → sync → world/HUD/input berjalan sebagai APK native.
 - [ ] Tidak membutuhkan Winlator, `samp.exe`, atau modpack PC.
-- [ ] Reproducible tagged APK releases GitHub Actions untuk kedua ABI.
+- [ ] Reproducible tagged APK draft releases GitHub Actions untuk kedua ABI, lalu publish manual setelah review.
 
 ## Label issue
 

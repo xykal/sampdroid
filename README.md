@@ -48,7 +48,7 @@ Detail kontrak port: [docs/NATIVE_PORT_TARGET.md](docs/NATIVE_PORT_TARGET.md).
 | Split reassembly | ✅ | fragment disusun sebelum RPC didecode |
 | State pemain dasar | ✅ | `PlayerInit`, Join/Quit/Name/Color → model native |
 | Class/spawn packet core | ✅ | request builder + response state native |
-| Persistent native session | 🧪 | socket retained after ClientJoin, peer filter, inbound ACK, bounded reliable retry |
+| Persistent native session | 🧪 | socket retained after ClientJoin, auto-poll while detail aktif, peer filter, ACK/retry bounded |
 | Class selection native | 🧪 | explicit `Class 0` request dari detail server; belum gameplay/render |
 | Player/vehicle/object sync penuh | ⏳ | belum |
 | HUD + textdraw/dialog native | ⏳ | belum |

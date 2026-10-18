@@ -52,7 +52,7 @@ extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeVersion(JNIEnv* env, jclass) {
-  return to_java(env, "0.7.0 / retained-native-session");
+  return to_java(env, "0.8.0 / auto-session-poll");
 }
 
 JNIEXPORT jstring JNICALL

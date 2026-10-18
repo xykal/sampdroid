@@ -33,9 +33,10 @@ Native Android renderer backend (future)
 `raknet_session` mempertahankan satu socket UDP yang dipilih pengguna setelah
 `ClientJoin`, membawa message/order counter, split reassembler, `WorldState`, ACK
 inbound, ACK outbound, dan retry queue bounded. Android shell memanggil JNI ini
-dari Kotlin IO coroutine; dialog server menutup socket saat ditutup.
+dari Kotlin IO coroutine; selama detail server terbuka, poll UDP berjalan
+otomatis dan berhenti/disconnect saat dialog ditutup.
 
-Belum ada loop gameplay otomatis, heartbeat/full congestion handling, atau sync
+Belum ada gameplay loop, protocol heartbeat/full congestion handling, atau sync
 encoder. Karena itu session surface sekarang diberi label eksperimen dan tidak
 boleh dipasarkan sebagai renderer/playable client.
 

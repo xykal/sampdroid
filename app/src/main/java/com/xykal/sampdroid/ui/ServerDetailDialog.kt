@@ -12,6 +12,9 @@ import com.xykal.sampdroid.NativeBridge
 import com.xykal.sampdroid.R
 import com.xykal.sampdroid.model.ServerEntry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -48,6 +51,7 @@ object ServerDetailDialog {
             .setView(view)
             .setNegativeButton("Tutup", null)
             .create()
+        var sessionPollJob: Job? = null
 
         fun run(block: () -> String) {
             log.text = "…"
@@ -63,7 +67,7 @@ object ServerDetailDialog {
             append("=== SESI NATIVE (EKSPERIMEN) ===\n")
             append("Soket ini native Android, bukan Winlator/samp.exe.\n")
             append("Belum ada renderer/gameplay; pakai hanya untuk validasi lifecycle.\n")
-            append("Tap Sesi native lagi untuk poll stream.\n\n")
+            append("Saat aktif, stream dipoll otomatis sampai sesi diputus/dialog ditutup.\n\n")
             append("aktif           : ").append(o.optBoolean("active")).append('\n')
             append("accepted        : ").append(o.optBoolean("accepted")).append('\n')
             append("ClientJoin stream: ").append(o.optBoolean("joined")).append('\n')
@@ -88,6 +92,33 @@ object ServerDetailDialog {
             append("RPC terlihat     : ").append(o.optString("rpcSummary").ifBlank { "-" }).append('\n')
             append("event            : ").append(o.optString("stateSummary").ifBlank { "-" }).append('\n')
             append("status           : ").append(o.optString("error").ifBlank { "ok" })
+        }
+
+        fun stopSessionPolling() {
+            sessionPollJob?.cancel()
+            sessionPollJob = null
+        }
+
+        fun startSessionPolling() {
+            if (sessionPollJob?.isActive == true) return
+            sessionPollJob = activity.lifecycleScope.launch {
+                while (isActive && dialog.isShowing) {
+                    try {
+                        val raw = withContext(Dispatchers.IO) {
+                            NativeBridge.nativeSessionPoll(250)
+                        }
+                        val snapshot = JSONObject(raw)
+                        log.text = formatSession(snapshot)
+                        if (!snapshot.optBoolean("active")) break
+                    } catch (t: Throwable) {
+                        log.text = "Sesi native berhenti: ${t.message}"
+                        break
+                    }
+                    // nativeSessionPoll already blocks up to 250 ms on UDP; this
+                    // small yield keeps the main thread/render loop responsive.
+                    delay(16)
+                }
+            }
         }
 
         btnInfo.setOnClickListener {
@@ -154,30 +185,47 @@ object ServerDetailDialog {
         }
 
         btnSession.setOnClickListener {
-            run {
-                val prior = JSONObject(NativeBridge.nativeSessionStatus())
-                val result = if (prior.optBoolean("active")) {
-                    NativeBridge.nativeSessionPoll(500)
-                } else {
-                    NativeBridge.nativeSessionConnect(server.ip, server.port, 1000)
+            if (sessionPollJob?.isActive == true) {
+                log.text = "Sesi native sudah aktif dan sedang polling otomatis."
+                return@setOnClickListener
+            }
+            log.text = "Membuka sesi native…"
+            activity.lifecycleScope.launch {
+                try {
+                    val raw = withContext(Dispatchers.IO) {
+                        val prior = JSONObject(NativeBridge.nativeSessionStatus())
+                        if (prior.optBoolean("active")) {
+                            NativeBridge.nativeSessionPoll(250)
+                        } else {
+                            NativeBridge.nativeSessionConnect(server.ip, server.port, 1000)
+                        }
+                    }
+                    val snapshot = JSONObject(raw)
+                    log.text = formatSession(snapshot)
+                    if (snapshot.optBoolean("active")) startSessionPolling()
+                } catch (t: Throwable) {
+                    log.text = "Gagal membuka sesi native: ${t.message}"
                 }
-                formatSession(JSONObject(result))
             }
         }
 
         btnClassZero.setOnClickListener {
-            run {
-                val sent = JSONObject(NativeBridge.nativeSessionRequestClass(0))
-                val result = if (sent.optBoolean("active") && sent.optString("error").isBlank()) {
-                    NativeBridge.nativeSessionPoll(800)
-                } else {
-                    sent.toString()
+            activity.lifecycleScope.launch {
+                try {
+                    val raw = withContext(Dispatchers.IO) {
+                        NativeBridge.nativeSessionRequestClass(0)
+                    }
+                    val snapshot = JSONObject(raw)
+                    log.text = formatSession(snapshot)
+                    if (snapshot.optBoolean("active")) startSessionPolling()
+                } catch (t: Throwable) {
+                    log.text = "Gagal meminta class: ${t.message}"
                 }
-                formatSession(JSONObject(result))
             }
         }
 
         btnSessionDisconnect.setOnClickListener {
+            stopSessionPolling()
             run {
                 formatSession(JSONObject(NativeBridge.nativeSessionDisconnect()))
             }
@@ -216,6 +264,7 @@ object ServerDetailDialog {
         // Closing the dialog releases it instead of leaving an invisible player
         // connection behind while a renderer/sync loop is still under development.
         dialog.setOnDismissListener {
+            stopSessionPolling()
             activity.lifecycleScope.launch(Dispatchers.IO) {
                 runCatching { NativeBridge.nativeSessionDisconnect() }
             }

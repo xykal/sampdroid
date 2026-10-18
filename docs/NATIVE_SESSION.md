@@ -50,17 +50,23 @@ RakNet congestion control/resend window; itu pekerjaan session/sync berikutnya.
 
 Di detail server terdapat:
 
-- **Sesi native** — connect pertama, lalu poll datagram pada tap berikutnya;
+- **Sesi native** — membuka socket dan memulai poll lifecycle-aware otomatis
+  selama dialog masih terlihat;
 - **Class 0** — mengirim `PlayerRequestClass(0)` hanya bila socket aktif;
-- **Putus sesi** — menutup socket native.
+- **Putus sesi** — menghentikan poll lalu menutup socket native.
+
+Loop memanggil native poll di `Dispatchers.IO` (timeout UDP 250 ms) dan memberi
+main thread jeda kecil antartick. Saat dialog ditutup, coroutine dibatalkan dan
+disconnect best-effort dikirim. Ini belum heartbeat/player sync; server yang
+membutuhkan sync gameplay tetap bisa timeout, dan itu tidak boleh disamarkan.
 
 Surface ini sengaja menulis **eksperimen** dan **belum renderer/gameplay**. Ini
 memvalidasi lifecycle secara jujur tanpa mengklaim APK sudah playable.
 
 ## Berikutnya
 
-1. Poll loop/heartbeat yang lifecycle-aware, bukan tombol diagnostic.
-2. Full ACK range handling + resend window, timeout, reconnect, dan teardown.
-3. Class chooser native, spawn flow, lalu `OnFootSync` dengan rate limiter.
-4. Player/vehicle/object state → native HUD + renderer/world bridge.
-5. Input touch/gamepad/keyboard/gyro → semantic action → sync encoder.
+1. Heartbeat/protocol keepalive, full ACK range behavior, reconnect, dan resend
+   window yang benar.
+2. Class chooser native, spawn flow, lalu `OnFootSync` dengan rate limiter.
+3. Player/vehicle/object state → native HUD + renderer/world bridge.
+4. Input touch/gamepad/keyboard/gyro → semantic action → sync encoder.
