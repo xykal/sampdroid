@@ -81,10 +81,18 @@ void BitWriter::writeCompressedU32(uint32_t value) {
   }
 }
 
-BitReader::BitReader(const uint8_t* data, size_t size) : data_(data), size_(size) {}
+BitReader::BitReader(const uint8_t* data, size_t size, size_t bitLength)
+    : data_(data), bitLength_(bitLength == 0 ? size * 8 : bitLength) {
+  if (bitLength_ > size * 8) {
+    // A declared range outside the backing buffer is malformed. Retain a
+    // bounded range so no later arithmetic can read past `data_`.
+    bitLength_ = size * 8;
+    ok_ = false;
+  }
+}
 
 bool BitReader::readBit() {
-  if (bitPosition_ / 8 >= size_) {
+  if (bitPosition_ >= bitLength_) {
     ok_ = false;
     return false;
   }
@@ -124,7 +132,7 @@ std::vector<uint8_t> BitReader::readBytes(size_t count) {
 std::vector<uint8_t> BitReader::readAlignedBytes(size_t count) {
   align();
   if (!ok_) return {};
-  if (bitPosition_ / 8 + count > size_) {
+  if (count > (bitLength_ - bitPosition_) / 8) {
     ok_ = false;
     return {};
   }
@@ -157,6 +165,27 @@ uint32_t BitReader::readCompressedU32() {
   }
   if (readBit()) return readBits(4);
   return readBits(8);
+}
+
+bool SequencedPacketGate::accept(uint8_t orderingChannel, uint16_t orderingIndex) {
+  if (orderingChannel >= latest_.size()) return false;
+  if (!seen_[orderingChannel]) {
+    seen_[orderingChannel] = true;
+    latest_[orderingChannel] = orderingIndex;
+    return true;
+  }
+  const uint16_t forwardDistance =
+      static_cast<uint16_t>(orderingIndex - latest_[orderingChannel]);
+  // Zero is a duplicate. A distance in the upper half of the 16-bit ring is
+  // stale; exactly 0x8000 has no unambiguous direction and is rejected.
+  if (forwardDistance == 0 || forwardDistance >= 0x8000u) return false;
+  latest_[orderingChannel] = orderingIndex;
+  return true;
+}
+
+void SequencedPacketGate::clear() {
+  seen_.fill(false);
+  latest_.fill(0);
 }
 
 std::vector<uint8_t> buildUnreliable(uint16_t messageNumber, const std::vector<uint8_t>& payload) {
@@ -288,6 +317,7 @@ Datagram decodeDatagram(const std::vector<uint8_t>& datagram) {
 
     const uint16_t bitLength = reader.readCompressedU16();
     if (!reader.ok() || bitLength == 0) break;
+    packet.payloadBitLength = bitLength;
     packet.payload = reader.readAlignedBytes((bitLength + 7) / 8);
     if (!reader.ok() || packet.payload.empty()) break;
 
@@ -304,6 +334,14 @@ Datagram decodeDatagram(const std::vector<uint8_t>& datagram) {
 }
 
 std::vector<IncomingPacket> SplitReassembler::push(IncomingPacket packet) {
+  const size_t availableBits = packet.payload.size() * 8;
+  if (availableBits > UINT16_MAX) return {};
+  // Keep hand-built test callers compatible while decoded RakNet frames retain
+  // their exact declared size.
+  if (packet.payloadBitLength == 0) {
+    packet.payloadBitLength = static_cast<uint16_t>(availableBits);
+  }
+  if (packet.payloadBitLength > availableBits) return {};
   if (!packet.split) return {std::move(packet)};
 
   // MTU-sized SA-MP traffic should be tiny; this bound prevents an untrusted
@@ -311,6 +349,12 @@ std::vector<IncomingPacket> SplitReassembler::push(IncomingPacket packet) {
   constexpr uint32_t kMaxSplitParts = 512;
   if (packet.splitCount == 0 || packet.splitCount > kMaxSplitParts ||
       packet.splitIndex >= packet.splitCount) {
+    return {};
+  }
+  // Concatenating byte fragments preserves an exact bit length only when every
+  // fragment before the last ends on a byte boundary. Reject an ambiguous
+  // malformed split instead of inventing padding between its bit sequences.
+  if (packet.splitIndex + 1 < packet.splitCount && (packet.payloadBitLength % 8) != 0) {
     return {};
   }
 
@@ -324,6 +368,7 @@ std::vector<IncomingPacket> SplitReassembler::push(IncomingPacket packet) {
     fresh.expectedCount = packet.splitCount;
     fresh.reliability = packet.reliability;
     fresh.parts.resize(packet.splitCount);
+    fresh.partBitLengths.resize(packet.splitCount);
     fresh.received.assign(packet.splitCount, false);
     it = pending_.insert_or_assign(packet.splitId, std::move(fresh)).first;
   }
@@ -331,19 +376,36 @@ std::vector<IncomingPacket> SplitReassembler::push(IncomingPacket packet) {
   PendingSplit& pending = it->second;
   if (!pending.received[packet.splitIndex]) {
     pending.parts[packet.splitIndex] = std::move(packet.payload);
+    pending.partBitLengths[packet.splitIndex] = packet.payloadBitLength;
     pending.received[packet.splitIndex] = true;
     ++pending.receivedCount;
   }
 
   if (pending.receivedCount != pending.expectedCount) return {};
 
+  size_t totalBytes = 0;
+  size_t totalBits = 0;
+  for (size_t i = 0; i < pending.parts.size(); ++i) {
+    const auto& part = pending.parts[i];
+    const size_t partBits = pending.partBitLengths[i];
+    if (partBits > part.size() * 8 || (i + 1 < pending.parts.size() && partBits % 8 != 0)) {
+      pending_.erase(it);
+      return {};
+    }
+    totalBytes += part.size();
+    totalBits += partBits;
+  }
+  if (totalBits > UINT16_MAX) {
+    pending_.erase(it);
+    return {};
+  }
+
   IncomingPacket assembled = std::move(packet);
   assembled.split = false;
   assembled.reassembled = true;
+  assembled.payloadBitLength = static_cast<uint16_t>(totalBits);
   assembled.payload.clear();
-  size_t total = 0;
-  for (const auto& part : pending.parts) total += part.size();
-  assembled.payload.reserve(total);
+  assembled.payload.reserve(totalBytes);
   for (const auto& part : pending.parts) {
     assembled.payload.insert(assembled.payload.end(), part.begin(), part.end());
   }

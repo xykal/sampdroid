@@ -13,7 +13,9 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   response decoder dual legacy/open.mp, dan transport-ACK gate.
 - [x] Retain socket setelah ClientJoin dan kirim class/spawn flow lewat session native.
 - [ ] Live interoperability capture untuk class/spawn di beberapa server nyata.
-- [ ] Decode player stream, vehicle/object/pickup state.
+- [x] Decode player StreamIn/StreamOut dan broadcast remote `PlayerFootSync` (207)
+  ke state entity bounded; belum renderer/model/radar.
+- [ ] Decode vehicle/object/pickup state.
 - [ ] Sanitized capture replay test dari server nyata.
 
 ## Milestone 0.7 — persistent native session
@@ -33,6 +35,8 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   `PlayerInit`, serta spawn/session gate.
 - [x] Touch semantic mapper bounded + local-player → OnFoot preview, tanpa packet
   movement otomatis atau posisi/collision palsu.
+- [x] Decoder Packet 207 server→client dengan quaternion/percent/velocity
+  compressed, opsi surfing/animation, guards malformed, dan lifecycle remote entity.
 - [ ] Hubungkan encoder OnFoot ke world bridge + input native dan validasi capture/live
   sebelum mengaktifkan loop periodik gameplay.
 
@@ -50,7 +54,8 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 
 - [ ] Android renderer/world bridge interface tanpa Windows runtime.
 - [ ] User-owned game data selector/check tanpa copy atau download asset.
-- [ ] World/entity bridge: player, vehicle, object, weather, HUD.
+- [ ] World/entity bridge: remote player state ada; model/radar/renderer, vehicle,
+  object, weather, dan HUD masih berikutnya.
 - [ ] ARMv7/ARM64 performance budget dan low-memory fallback.
 
 ## Milestone 1.0 — native client loop

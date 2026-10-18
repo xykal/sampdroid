@@ -178,6 +178,8 @@ bukan pengganti `PlayerSync` atau validasi gameplay live.
 | ACK reliable | ✅ setiap fragment reliable di-ACK |
 | Multi-paket datagram + split reassembly | ✅ sebelum RPC diserahkan ke decoder |
 | PlayerInit RPC 139 | ✅ decoder wire format + test vector; observability di UI |
+| PlayerStreamIn/Out RPC 32/163 | ✅ lifecycle actor remote bounded; belum model/renderer |
+| Broadcast remote PlayerFootSync 207 | 🧪 decoder compressed + reducer state/regression; belum live capture/renderer |
 | SendClientMessage RPC 93 | ✅ bounded chat state + regression coverage; HUD renderer masih pending |
 | Checkpoint RPC 37/38/39/107 | ✅ normal + race marker state, finite/negative-size guards; renderer masih pending |
 | Retained native session | 🧪 auto-poll, bounded ACK/retry, 5s reliable keepalive, internal-ping pong; live capture multi-server masih pending |
@@ -233,14 +235,41 @@ di tabel — perlu tabel dari `samp.dll` (lihat `samp-re`).
 1. **Session loop yang benar** — full ACK range, reconnect, ping/timeout
    metrics, resend window, lalu capture sanitasi terhadap beberapa server di
    atas auto-poll/keepalive transport yang sudah ada.
-2. **PlayerSync (207)** — encode posisi dari semantic input dengan rate limiter;
-   jangan membuat server/pemain lain kena flood.
+2. **PlayerSync (207) live validation** — decoder broadcast remote sudah ada;
+   berikutnya replay capture sanitasi dan renderer state. Encoder posisi dari
+   semantic input tetap harus lewat rate limiter agar tidak flood server/pemain lain.
 3. **Renderer adapter** — interface asset-agnostic yang membaca data milik
    pengguna sendiri, bukan hook/bundle `libGTASA.so` ke APK.
 
 ---
 
-## 6. Catatan metodologi
+## 6. Broadcast remote PlayerFootSync (Packet 207)
+
+Packet 207 **server→client** berbeda dari payload OnFoot yang dikirim client ke
+server. Setelah byte ID 207, server menulis `u16 PlayerID`, bit presence
+`LeftRight` + `u16` bila ada, bit presence `UpDown` + `u16` bila ada, `u16 Keys`,
+lalu `VEC3 Position`. Rotasi memakai `WriteNormQuat`: empat bit tanda W/X/Y/Z
+dan tiga `u16` magnitudo X/Y/Z; W direkonstruksi dari akar `1-x²-y²-z²`.
+
+Setelah itu susunannya adalah satu byte percent health/armour (nibble tinggi/
+rendah; `F` berarti 100, lainnya langkah 7), `u8 WeaponAdditionalKey`,
+`u8 SpecialAction`, dan compressed velocity (`float magnitude`, lalu tiga
+compressed float arah hanya bila magnitude > `0.00001`). Dua bagian terakhir
+juga conditional: bit surfing diikuti `u16 SurfingID + VEC3 offset`, lalu bit
+animation diikuti `u16 AnimationID + u16 AnimationFlags`.
+
+Decoder SampDroid membaca seluruh branch ini agar alignment tetap benar dan
+menolak frame kurang, float non-finite, posisi/velocity/offset di luar envelope,
+dan quaternion tidak normal. Frame hanya boleh mengubah actor yang sudah
+`PlayerStreamIn`; `StreamOut`, ID pemain lokal, dan ID orphan tidak mengubah
+state. Untuk frame `UNRELIABLE_SEQUENCED`, gate per ordering channel membuang
+index stale/duplikat dan menangani wrap 16-bit sebelum reducer berjalan. State ini
+renderer-neutral: tidak ada interpolasi visual, movement, collision, atau
+transmit packet di milestone ini.
+
+---
+
+## 7. Catatan metodologi
 
 Yang bikin fase ini bisa dikerjakan tanpa game dan tanpa HP:
 

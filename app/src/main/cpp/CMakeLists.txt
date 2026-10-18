@@ -11,6 +11,7 @@ add_library(sampdroid SHARED
         client_sync.cpp
         input_state.cpp
         local_player_sync.cpp
+        sync_decoder.cpp
         raknet_codec.cpp
         rpc_decoder.cpp
         rpc_state.cpp

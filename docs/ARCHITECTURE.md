@@ -11,7 +11,7 @@ Native client core (C++17, ARMv7 + ARM64)
  │   ├─ bitstream / ACK / reliability
  │   └─ split reassembly
  ├─ Persistent session + RPC/world state
- ├─ Player sync encoder
+ ├─ Player sync encoder + remote broadcast decoder
  └─ Android world/game bridge
        │
 Native Android renderer backend (future)
@@ -43,19 +43,27 @@ Fondasi encoder `OnFootSync` sudah ada: payload client→server yang diuji,
 `UNRELIABLE_SEQUENCED` channel 1, rate gate `PlayerInit`, dan spawn/session
 safety gate. Spawn gate sekarang mencakup `RequestSpawn` → respons → `PlayerSpawn`
 (52) → transport ACK, sementara `WorldState` menahan template spawn/posisi/vitals
-lokal terverifikasi. Touch pad runtime sudah memetakan intent Android ke preview
-input/heading `OnFoot` lokal, tetapi tidak mengirim gameplay packet atau mengarang
-posisi sebelum world/collision bridge ada. Namun belum ada gameplay loop,
-reconnect/full congestion handling, atau world bridge. Transport keepalive
-bukan player sync. Karena itu session surface sekarang diberi label eksperimen
-dan tidak boleh dipasarkan sebagai renderer/playable client.
+lokal terverifikasi. Kebalikannya, decoder read-only Packet 207 menerima broadcast
+server→client hanya untuk entity yang sudah `PlayerStreamIn`; ia memvalidasi
+bit-packed quaternion/percent/velocity serta field surfing/animation opsional lalu
+mereduksinya ke state remote bounded. `PlayerStreamOut`, ID lokal, dan sync orphan
+diabaikan. Gate `UNRELIABLE_SEQUENCED` per channel juga membuang index stale
+(sekaligus menangani wrap 16-bit) sebelum state disentuh. Ini belum menghasilkan
+model, radar, collision, atau packet movement.
+
+Touch pad runtime sudah memetakan intent Android ke preview input/heading `OnFoot`
+lokal, tetapi tidak mengirim gameplay packet atau mengarang posisi sebelum
+world/collision bridge ada. Namun belum ada gameplay loop, reconnect/full
+congestion handling, atau world bridge. Transport keepalive bukan player sync.
+Karena itu session surface sekarang diberi label eksperimen dan tidak boleh
+dipasarkan sebagai renderer/playable client.
 
 ## Batas layer
 
 | Layer | Boleh | Tidak boleh |
 |---|---|---|
 | `raknet_codec` | parse/serialize bytes, bounds checks, test vector | UI, asset IO |
-| `rpc_decoder` / `rpc_state` | decode packet menjadi state | hook/execute binary Windows |
+| `rpc_decoder` / `sync_decoder` / `rpc_state` | decode RPC/broadcast menjadi state | hook/execute binary Windows |
 | session | lifecycle, ACK/retry, ordered RPC, sync | block UI thread |
 | Android UI | HUD, browser, input event | socket blocking di main thread |
 | world bridge | render state dengan backend Android | bundle/download proprietary game asset |

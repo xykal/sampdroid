@@ -61,6 +61,9 @@ std::string session_json(const samp::SessionSnapshot& s) {
     << ",\"splitFragments\":" << s.splitFragments
     << ",\"reassembledPackets\":" << s.reassembledPackets
     << ",\"trackedPlayers\":" << s.trackedPlayers
+    << ",\"streamedPlayers\":" << s.streamedPlayers
+    << ",\"remoteOnFootPlayers\":" << s.remoteOnFootPlayers
+    << ",\"remoteOnFootPackets\":" << s.remoteOnFootPackets
     << ",\"chatMessages\":" << s.chatMessages
     << ",\"reliableKeepalives\":" << s.reliableKeepalives
     << ",\"connectedPongs\":" << s.connectedPongs
@@ -68,6 +71,7 @@ std::string session_json(const samp::SessionSnapshot& s) {
     << ",\"localOnFootStateKnown\":" << (s.localOnFootStateKnown ? "true" : "false")
     << ",\"serverName\":\"" << samp::json_escape(s.serverName) << "\""
     << ",\"rpcSummary\":\"" << samp::json_escape(s.rpcSummary) << "\""
+    << ",\"syncSummary\":\"" << samp::json_escape(s.syncSummary) << "\""
     << ",\"stateSummary\":\"" << samp::json_escape(s.stateSummary) << "\""
     << ",\"error\":\"" << samp::json_escape(s.error) << "\"}";
   return o.str();
@@ -79,7 +83,7 @@ extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeVersion(JNIEnv* env, jclass) {
-  return to_java(env, "0.14.0 / native-touch-preview");
+  return to_java(env, "0.15.0 / remote-onfoot-bridge");
 }
 
 JNIEXPORT jstring JNICALL

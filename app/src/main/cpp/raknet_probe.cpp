@@ -10,6 +10,7 @@
 #include "raknet_session.h"
 #include "raknet_session_policy.h"
 #include "sync_policy.h"
+#include "sync_decoder.h"
 #include "rpc_decoder.h"
 #include "rpc_state.h"
 
@@ -196,6 +197,7 @@ struct LiveSession {
   int reliableKeepalives = 0;
   int connectedPongs = 0;
   int outboundOnFootPackets = 0;
+  int remoteOnFootPackets = 0;
   bool spawnConfirmationSent = false;
   bool spawnConfirmationAcked = false;
   bool nativeControlsKnown = false;
@@ -207,10 +209,12 @@ struct LiveSession {
   sync::OnFootState localOnFootState;
   std::chrono::steady_clock::time_point lastReliableSent = std::chrono::steady_clock::now();
   std::string rpcSummary;
+  std::string syncSummary;
   std::string stateSummary;
   std::string error;
   std::vector<PendingReliable> pendingReliable;
   raknet::SplitReassembler reassembler;
+  raknet::SequencedPacketGate inboundSequenced;
   state::WorldState world;
 };
 
@@ -422,6 +426,11 @@ void processSessionDatagram(LiveSession& session, const std::vector<uint8_t>& by
       if (packet.payload.empty()) continue;
       ++session.receivedPackets;
       if (packet.reassembled) ++session.reassembledPackets;
+      if (packet.reliability == raknet::kReliabilityUnreliableSequenced &&
+          !session.inboundSequenced.accept(packet.orderingChannel, packet.orderingIndex)) {
+        // A late sync datagram must not roll a remote entity back in time.
+        continue;
+      }
 
       const uint8_t id = packet.payload[0];
       if (id == ID_DISCONNECTION_NOTIFICATION) {
@@ -433,8 +442,21 @@ void processSessionDatagram(LiveSession& session, const std::vector<uint8_t>& by
         replyToInternalPing(session, packet.payload);
         continue;
       }
+      if (id == syncdecode::kPlayerFootSyncPacketId) {
+        syncdecode::RemoteOnFootSync remote;
+        if (syncdecode::decodeRemoteOnFootBroadcast(packet.payload, remote,
+                                                    packet.payloadBitLength)) {
+          ++session.remoteOnFootPackets;
+          appendBounded(session.syncSummary, syncdecode::summarize(remote), 320);
+          state::RpcEvent event;
+          if (session.world.applyRemoteOnFoot(remote, event)) {
+            appendBounded(session.stateSummary, event.summary, 240);
+          }
+        }
+        continue;
+      }
       // Transport control frames are handled above or require no app-level
-      // reducer action. Game state starts at ID_RPC (20).
+      // reducer action. Game RPC state starts at ID_RPC (20).
       if (id != 20 || packet.payload.size() < 2) continue;
 
       ++session.receivedRpcs;
@@ -511,6 +533,9 @@ SessionSnapshot snapshotFrom(const LiveSession* session) {
   snapshot.splitFragments = session->splitFragments;
   snapshot.reassembledPackets = session->reassembledPackets;
   snapshot.trackedPlayers = static_cast<int>(session->world.playerCount());
+  snapshot.streamedPlayers = static_cast<int>(session->world.streamedPlayerCount());
+  snapshot.remoteOnFootPlayers = static_cast<int>(session->world.remoteOnFootCount());
+  snapshot.remoteOnFootPackets = session->remoteOnFootPackets;
   snapshot.chatMessages = static_cast<int>(session->world.chatCount());
   snapshot.reliableKeepalives = session->reliableKeepalives;
   snapshot.connectedPongs = session->connectedPongs;
@@ -518,6 +543,7 @@ SessionSnapshot snapshotFrom(const LiveSession* session) {
   snapshot.localOnFootStateKnown = session->localOnFootStateKnown;
   snapshot.serverName = snapshot.playerInit ? session->world.playerInit().serverName : "";
   snapshot.rpcSummary = session->rpcSummary;
+  snapshot.syncSummary = session->syncSummary;
   snapshot.stateSummary = session->stateSummary;
   snapshot.error = session->error;
   return snapshot;

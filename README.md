@@ -46,14 +46,15 @@ Detail kontrak port: [docs/NATIVE_PORT_TARGET.md](docs/NATIVE_PORT_TARGET.md).
 | `CONNECTION_REQUEST_ACCEPTED` + ClientJoin | ✅ | server memproses lalu stream balik |
 | ACK reliable + multi-packet datagram | ✅ | retransmisi tidak menumpuk |
 | Split reassembly | ✅ | fragment disusun sebelum RPC didecode |
-| State pemain dasar | ✅ | `PlayerInit`, Join/Quit/Name/Color + local spawn/posisi/vitals → model native |
+| State pemain dasar | ✅ | `PlayerInit`, Join/Quit/Name/Color, StreamIn/Out, dan local spawn/posisi/vitals → model native bounded |
 | Native chat state | ✅ | `SendClientMessage` bounded 100 line; HUD chat masih berikutnya |
 | Checkpoint state | ✅ | normal + race checkpoint reducer; marker renderer masih berikutnya |
 | Class/spawn packet core | ✅ | Class → RequestSpawn → PlayerSpawn confirmation + ACK gate native |
 | Persistent native session | 🧪 | auto-poll, peer filter, ACK/retry bounded, keepalive transport reliable + internal pong; reconnect belum |
-| OnFootSync core | 🧪 | packet-207 client→server vector-tested, USeq channel-1, rate/spawn gate + native input→local preview; belum ada loop/gameplay packet otomatis |
+| OnFootSync core | 🧪 | encoder packet-207 client→server vector-tested, USeq channel-1, rate/spawn gate + native input→local preview; belum ada loop/gameplay packet otomatis |
+| Remote on-foot bridge | 🧪 | decoder broadcast packet-207 server→client + lifecycle StreamIn/Out → state entity native bounded; belum ada model/radar/renderer atau movement send |
 | Class/spawn native | 🧪 | explicit `Class 0` + `Spawn`, response/ACK terlihat di diagnostic; belum gameplay/render |
-| Player/vehicle/object sync penuh | ⏳ | belum |
+| Player/vehicle/object sync penuh | ⏳ | remote on-foot state baru fondasi; vehicle/object dan renderer belum |
 | HUD + textdraw/dialog native | ⏳ | belum |
 | Touch/gamepad/gyro native | 🧪 | touch pad runtime → semantic native action → OnFoot preview; gamepad/gyro dan world loop berikutnya |
 | World/game bridge Android | ⏳ | belum di APK |
@@ -62,6 +63,7 @@ Saat ini tombol **Probe RakNet** di detail server membuktikan alur nyata:
 
 ```text
 open → cookie → auth → accepted → ClientJoin → stream RPC → state pemain
+(remote Packet 207 siap didecode saat server membroadcast sync)
 ```
 
 ## Kompatibilitas
@@ -110,7 +112,7 @@ Kotlin Android shell
             ├─ query protocol
             ├─ RakNet bitstream + ACK + split reassembly
             ├─ session + RPC/world state
-            ├─ player sync encoder
+            ├─ player sync encoder + remote decoder
             └─ Android game/world bridge
 ```
 

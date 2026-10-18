@@ -2,6 +2,7 @@
 #pragma once
 
 #include "rpc_decoder.h"
+#include "sync_decoder.h"
 
 #include <array>
 #include <cstddef>
@@ -20,6 +21,9 @@ enum class RpcEventKind : uint8_t {
   PlayerQuit,
   PlayerRenamed,
   PlayerColorChanged,
+  PlayerStreamedIn,
+  PlayerStreamedOut,
+  RemotePlayerSync,
   ChatMessage,
   ClassSelection,
   SpawnInfoChanged,
@@ -44,6 +48,33 @@ struct Player {
   uint32_t rgba = 0;
   bool npc = false;
   std::string name;
+
+  // Renderer-neutral remote actor facts. They are only updated by a valid
+  // StreamIn RPC or a decoded server-to-recipient PlayerFootSync packet.
+  bool streamedIn = false;
+  bool positionKnown = false;
+  bool remoteOnFootKnown = false;
+  uint8_t team = 0;
+  uint32_t model = 0;
+  uint8_t fightingStyle = 0;
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  float angle = 0.0f;
+  float quaternionW = 1.0f;
+  float quaternionX = 0.0f;
+  float quaternionY = 0.0f;
+  float quaternionZ = 0.0f;
+  float health = 100.0f;
+  float armour = 0.0f;
+  uint8_t weaponAdditionalKey = 0;
+  uint8_t specialAction = 0;
+  float velocityX = 0.0f;
+  float velocityY = 0.0f;
+  float velocityZ = 0.0f;
+  bool animationKnown = false;
+  uint16_t animationId = 0;
+  uint16_t animationFlags = 0;
 };
 
 struct ChatLine {
@@ -120,10 +151,13 @@ struct LocalPlayer {
 class WorldState {
 public:
   bool applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& event);
+  bool applyRemoteOnFoot(const syncdecode::RemoteOnFootSync& sync, RpcEvent& event);
 
   bool initialized() const { return initialized_; }
   const rpc::PlayerInitData& playerInit() const { return playerInit_; }
   size_t playerCount() const { return players_.size(); }
+  size_t streamedPlayerCount() const;
+  size_t remoteOnFootCount() const;
   const Player* findPlayer(uint16_t id) const;
   size_t chatCount() const { return chatLines_.size(); }
   const ChatLine* latestChat() const {

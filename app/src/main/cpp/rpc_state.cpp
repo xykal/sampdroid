@@ -16,6 +16,7 @@ constexpr uint8_t kSetPlayerPosition = 12;
 constexpr uint8_t kSetPlayerPositionFindZ = 13;
 constexpr uint8_t kSetPlayerHealth = 14;
 constexpr uint8_t kSetPlayerFacingAngle = 19;
+constexpr uint8_t kPlayerStreamIn = 32;
 constexpr uint8_t kDisableCheckpoint = 37;
 constexpr uint8_t kSetRaceCheckpoint = 38;
 constexpr uint8_t kDisableRaceCheckpoint = 39;
@@ -31,6 +32,7 @@ constexpr uint8_t kPlayerQuit = 138;
 constexpr uint8_t kPlayerRequestClass = 128;
 constexpr uint8_t kPlayerRequestSpawn = 129;
 constexpr uint8_t kPlayerInit = 139;
+constexpr uint8_t kPlayerStreamOut = 163;
 constexpr size_t kMaxPlayerNameBytes = 24;
 
 std::string readString8(raknet::BitReader& reader, size_t maxLength) {
@@ -111,6 +113,70 @@ const Player* WorldState::findPlayer(uint16_t id) const {
   return it == players_.end() ? nullptr : &it->second;
 }
 
+size_t WorldState::streamedPlayerCount() const {
+  size_t count = 0;
+  for (const auto& [id, player] : players_) {
+    (void)id;
+    if (player.streamedIn) ++count;
+  }
+  return count;
+}
+
+size_t WorldState::remoteOnFootCount() const {
+  size_t count = 0;
+  for (const auto& [id, player] : players_) {
+    (void)id;
+    if (player.streamedIn && player.remoteOnFootKnown) ++count;
+  }
+  return count;
+}
+
+bool WorldState::applyRemoteOnFoot(const syncdecode::RemoteOnFootSync& sync, RpcEvent& event) {
+  event = {};
+  const double quaternionLengthSquared =
+      static_cast<double>(sync.quaternionW) * sync.quaternionW +
+      static_cast<double>(sync.quaternionX) * sync.quaternionX +
+      static_cast<double>(sync.quaternionY) * sync.quaternionY +
+      static_cast<double>(sync.quaternionZ) * sync.quaternionZ;
+  if (!validWorldPosition(sync.positionX, sync.positionY, sync.positionZ) ||
+      !validVelocity(sync.velocityX, sync.velocityY, sync.velocityZ) ||
+      !std::isfinite(quaternionLengthSquared) || quaternionLengthSquared < 0.98 ||
+      quaternionLengthSquared > 1.02 ||
+      sync.health < 0.0f || sync.health > 100.0f || sync.armour < 0.0f || sync.armour > 100.0f) {
+    return false;
+  }
+  // The server broadcasts only other players. Never let a packet claiming our
+  // own ID overwrite authoritative local-player reducer state.
+  if (initialized_ && sync.playerId == playerInit_.playerId) return false;
+  auto it = players_.find(sync.playerId);
+  // StreamIn/Join establishes entity identity first. Ignoring orphan sync
+  // frames prevents a UDP peer from filling the bounded player model with IDs.
+  if (it == players_.end() || !it->second.streamedIn) return false;
+
+  Player& player = it->second;
+  player.positionKnown = true;
+  player.remoteOnFootKnown = true;
+  player.x = sync.positionX;
+  player.y = sync.positionY;
+  player.z = sync.positionZ;
+  player.quaternionW = sync.quaternionW;
+  player.quaternionX = sync.quaternionX;
+  player.quaternionY = sync.quaternionY;
+  player.quaternionZ = sync.quaternionZ;
+  player.health = sync.health;
+  player.armour = sync.armour;
+  player.weaponAdditionalKey = sync.weaponAdditionalKey;
+  player.specialAction = sync.specialAction;
+  player.velocityX = sync.velocityX;
+  player.velocityY = sync.velocityY;
+  player.velocityZ = sync.velocityZ;
+  player.animationKnown = sync.animationKnown;
+  player.animationId = sync.animationId;
+  player.animationFlags = sync.animationFlags;
+  setEvent(event, RpcEventKind::RemotePlayerSync, sync.playerId, "PlayerFootSync");
+  return true;
+}
+
 void WorldState::beginSpawnRequest() {
   spawnResponseKnown_ = false;
   spawnAllowed_ = false;
@@ -136,6 +202,54 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
 
   raknet::BitReader reader(rpcPayload.data() + 2, rpcPayload.size() - 2);
   switch (rpcId) {
+    // Server-to-recipient StreamIn includes the initial actor transform. This
+    // Android client advertises non-DL, so CustomSkin is intentionally absent.
+    case kPlayerStreamIn: {
+      const uint16_t id = static_cast<uint16_t>(reader.readBits(16));
+      const uint8_t team = static_cast<uint8_t>(reader.readBits(8));
+      const uint32_t model = reader.readBits(32);
+      bool finite = true;
+      const float x = readFloat(reader, finite);
+      const float y = readFloat(reader, finite);
+      const float z = readFloat(reader, finite);
+      const float angle = readFloat(reader, finite);
+      const uint32_t rgba = reader.readBits(32);
+      const uint8_t fightingStyle = static_cast<uint8_t>(reader.readBits(8));
+      // open.mp SDK NUM_SKILL_LEVELS is 11; retain no skill data until the
+      // renderer/game bridge needs it, but consume the exact wire fields.
+      for (int i = 0; i < 11; ++i) reader.readBits(16);
+      if (!reader.ok() || !finite || !validWorldPosition(x, y, z)) break;
+      if (initialized_ && id == playerInit_.playerId) return false;
+      Player* player = getOrCreate(id);
+      if (!player) break;
+      player->streamedIn = true;
+      player->positionKnown = true;
+      player->remoteOnFootKnown = false;
+      player->team = team;
+      player->model = model;
+      player->x = x;
+      player->y = y;
+      player->z = z;
+      player->angle = normalizedAngle(angle);
+      player->rgba = rgba;
+      player->fightingStyle = fightingStyle;
+      setEvent(event, RpcEventKind::PlayerStreamedIn, id, "PlayerStreamIn");
+      return true;
+    }
+
+    case kPlayerStreamOut: {
+      const uint16_t id = static_cast<uint16_t>(reader.readBits(16));
+      if (!reader.ok()) break;
+      if (initialized_ && id == playerInit_.playerId) return false;
+      const auto it = players_.find(id);
+      if (it == players_.end()) return false;
+      it->second.streamedIn = false;
+      it->second.remoteOnFootKnown = false;
+      it->second.animationKnown = false;
+      setEvent(event, RpcEventKind::PlayerStreamedOut, id, "PlayerStreamOut");
+      return true;
+    }
+
     // Non-DL SetSpawnInfo is the authoritative local respawn template. This
     // client does not advertise/download custom models, so the optional DL
     // CustomModelID field is intentionally absent from this reader.

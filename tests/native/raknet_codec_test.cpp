@@ -6,6 +6,7 @@
 #include "raknet_session.h"
 #include "raknet_session_policy.h"
 #include "sync_policy.h"
+#include "sync_decoder.h"
 #include "rpc_decoder.h"
 #include "rpc_state.h"
 
@@ -128,6 +129,101 @@ std::vector<uint8_t> makePlayerQuit(uint16_t id, uint8_t reason) {
   return writer.buffer;
 }
 
+std::vector<uint8_t> makePlayerStreamIn(uint16_t id, uint8_t team, uint32_t model,
+                                        float x, float y, float z, float angle, uint32_t rgba,
+                                        uint8_t fightingStyle) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 32};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(id, 16);
+  writer.writeBits(team, 8);
+  writer.writeBits(model, 32);
+  writeFloat(writer, x);
+  writeFloat(writer, y);
+  writeFloat(writer, z);
+  writeFloat(writer, angle);
+  writer.writeBits(rgba, 32);
+  writer.writeBits(fightingStyle, 8);
+  for (int i = 0; i < 11; ++i) writer.writeBits(static_cast<uint32_t>(i), 16);
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makePlayerStreamOut(uint16_t id) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 163};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(id, 16);
+  return writer.buffer;
+}
+
+void writeCompressedUnitFloat(samp::raknet::BitWriter& writer, float value) {
+  // Matches NetworkBitStream::WriteCompressed(float)'s unsigned-short cast.
+  const auto raw = static_cast<uint16_t>((value + 1.0f) * 32767.5f);
+  writer.writeBits(raw, 16);
+}
+
+std::vector<uint8_t> makeMinimalRemoteOnFootBroadcast(uint16_t id, float x) {
+  samp::raknet::BitWriter writer;
+  writer.writeBits(207, 8);
+  writer.writeBits(id, 16);
+  writer.writeBit(false);  // LeftRight omitted
+  writer.writeBit(false);  // UpDown omitted
+  writer.writeBits(0, 16);
+  writeFloat(writer, x);
+  writeFloat(writer, 0.0f);
+  writeFloat(writer, 3.0f);
+  writer.writeBit(false);  // W sign
+  writer.writeBit(false);  // X sign
+  writer.writeBit(false);  // Y sign
+  writer.writeBit(false);  // Z sign
+  writer.writeBits(0, 16);
+  writer.writeBits(0, 16);
+  writer.writeBits(0, 16);
+  writer.writeBits(0xF0, 8);
+  writer.writeBits(0, 8);
+  writer.writeBits(0, 8);
+  writeFloat(writer, 0.0f);
+  writer.writeBit(false);  // no surfing
+  writer.writeBit(false);  // no animation
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makeRemoteOnFootBroadcast(uint16_t id) {
+  samp::raknet::BitWriter writer;
+  writer.writeBits(207, 8);
+  writer.writeBits(id, 16);
+  writer.writeBit(true);   // LeftRight present
+  writer.writeBits(static_cast<uint16_t>(-12), 16);
+  writer.writeBit(false);  // UpDown omitted
+  writer.writeBits(0x1234, 16);
+  writeFloat(writer, 100.5f);
+  writeFloat(writer, -200.25f);
+  writeFloat(writer, 18.0f);
+  writer.writeBit(false);  // quaternion W sign
+  writer.writeBit(false);  // X sign
+  writer.writeBit(true);   // Y sign
+  writer.writeBit(false);  // Z sign
+  writer.writeBits(static_cast<uint32_t>(0.5f * 65535.0f), 16);
+  writer.writeBits(static_cast<uint32_t>(0.5f * 65535.0f), 16);
+  writer.writeBits(0, 16);
+  writer.writeBits(0xF8, 8);  // health 100, armour ceil(50 / 7) = 8 => 56 decoded
+  writer.writeBits(0x98, 8);
+  writer.writeBits(3, 8);
+  writeFloat(writer, 5.0f);
+  writeCompressedUnitFloat(writer, 0.6f);
+  writeCompressedUnitFloat(writer, 0.8f);
+  writeCompressedUnitFloat(writer, 0.0f);
+  writer.writeBit(true);  // surfing
+  writer.writeBits(123, 16);
+  writeFloat(writer, 8.0f);
+  writeFloat(writer, -9.0f);
+  writeFloat(writer, 10.0f);
+  writer.writeBit(true);  // animation
+  writer.writeBits(456, 16);
+  writer.writeBits(789, 16);
+  return writer.buffer;
+}
+
 std::vector<uint8_t> makeClassSelection(bool selectable, uint8_t team, uint32_t model) {
   samp::raknet::BitWriter writer;
   const uint8_t header[] = {20, 128};
@@ -241,8 +337,9 @@ void testReliableAndAck() {
   expect(decoded.packets[0].messageNumber == 1, "wrong reliable message number");
   expect(decoded.packets[0].reliability == samp::raknet::kReliabilityReliable,
          "wrong reliability code");
-  expect(decoded.packets[0].payload == std::vector<uint8_t>({0x0B}),
-         "wrong reliable payload");
+  expect(decoded.packets[0].payload == std::vector<uint8_t>({0x0B}) &&
+         decoded.packets[0].payloadBitLength == 8,
+         "wrong reliable payload/bit length");
   expect(decoded.ackMessageNumbers == std::vector<uint16_t>({1}), "ACK list missing");
 
   // RakNet 2.52 transport keepalive is a one-byte reliable frame, not an
@@ -326,13 +423,29 @@ void testUnreliableSequencedTransport() {
          "unreliable sequenced packet decode/ACK behavior changed");
   expect(decoded.packets[0].reliability == samp::raknet::kReliabilityUnreliableSequenced &&
          decoded.packets[0].orderingChannel == 1 && decoded.packets[0].orderingIndex == 0x00A5 &&
-         decoded.packets[0].payload == std::vector<uint8_t>({0xA8}),
+         decoded.packets[0].payload == std::vector<uint8_t>({0xA8}) &&
+         decoded.packets[0].payloadBitLength == 5,
          "unreliable sequenced semantics changed");
+  samp::raknet::BitReader exactPayload(decoded.packets[0].payload.data(),
+                                       decoded.packets[0].payload.size(),
+                                       decoded.packets[0].payloadBitLength);
+  expect(exactPayload.readBits(5) == 0x15 && exactPayload.ok(),
+         "exact payload bit reader changed");
+  exactPayload.readBit();
+  expect(!exactPayload.ok(), "payload padding bit must not be readable");
 
   expect(samp::raknet::buildUnreliableSequenced(1, 1, 0, {0x00}, 0).empty(),
          "zero-bit sequenced packet must be rejected");
   expect(samp::raknet::buildUnreliableSequenced(1, 1, 0, {0x00}, 9).empty(),
          "oversized sequenced bit length must be rejected");
+
+  samp::raknet::SequencedPacketGate gate;
+  expect(gate.accept(1, 65534) && gate.accept(1, 65535) && gate.accept(1, 0),
+         "sequenced ordering wrap must move forward");
+  expect(!gate.accept(1, 0) && !gate.accept(1, 65535) && !gate.accept(32, 1),
+         "duplicate, stale, or invalid sequenced packet must be rejected");
+  gate.clear();
+  expect(gate.accept(1, 12), "cleared sequenced gate must accept a fresh index");
 }
 
 void testPlayerFootSyncBuilder() {
@@ -415,6 +528,61 @@ void testPlayerFootSyncBuilder() {
          !samp::syncpolicy::onFootSessionReady(true, true, true, false, true) &&
          !samp::syncpolicy::onFootSessionReady(true, true, true, true, false),
          "on-foot spawn/ACK gate changed");
+}
+
+void testRemoteOnFootBroadcastDecoder() {
+  const auto payload = makeRemoteOnFootBroadcast(7);
+  // Captures the open.mp broadcast writer layout, including fields beginning
+  // mid-byte after the two directional presence bits. This must stay separate
+  // from the 69-byte client-to-server OnFootSync vector above.
+  const std::vector<uint8_t> expected = {
+      0xCF, 0x07, 0x00, 0xFA, 0x7F, 0x8D, 0x04, 0x80, 0x00, 0x32, 0x50, 0x80,
+      0x10, 0x12, 0x30, 0xC0, 0x00, 0x24, 0x10, 0x4B, 0xFD, 0xFF, 0xFD, 0xFC,
+      0x00, 0x03, 0xE2, 0x60, 0x0C, 0x00, 0x02, 0x81, 0x03, 0x33, 0x31, 0x97,
+      0x9B, 0xFD, 0xFE, 0xF6, 0x00, 0x00, 0x00, 0x00, 0x82, 0x00, 0x00, 0x21,
+      0x82, 0x00, 0x00, 0x40, 0x83, 0xC8, 0x01, 0x15, 0x03};
+  expect(payload == expected, "remote PlayerFootSync broadcast wire vector changed");
+  samp::syncdecode::RemoteOnFootSync remote;
+  expect(samp::syncdecode::decodeRemoteOnFootBroadcast(payload, remote),
+         "remote PlayerFootSync broadcast did not decode");
+  expect(remote.playerId == 7 && remote.leftRight == -12 && remote.upDown == 0 &&
+         remote.keys == 0x1234 && std::fabs(remote.positionX - 100.5f) < 0.001f &&
+         std::fabs(remote.positionY + 200.25f) < 0.001f && std::fabs(remote.positionZ - 18.0f) < 0.001f,
+         "remote PlayerFootSync base fields changed");
+  expect(std::fabs(remote.quaternionX - 0.5f) < 0.0001f &&
+         std::fabs(remote.quaternionY + 0.5f) < 0.0001f &&
+         std::fabs(remote.quaternionZ) < 0.0001f && std::fabs(remote.health - 100.0f) < 0.001f &&
+         std::fabs(remote.armour - 56.0f) < 0.001f && remote.weaponAdditionalKey == 0x98 &&
+         remote.specialAction == 3,
+         "remote PlayerFootSync compressed quaternion/percent fields changed");
+  expect(std::fabs(remote.velocityX - 3.0f) < 0.01f && std::fabs(remote.velocityY - 4.0f) < 0.01f &&
+         std::fabs(remote.velocityZ) < 0.01f && remote.surfing && remote.surfingId == 123 &&
+         std::fabs(remote.surfingOffsetY + 9.0f) < 0.001f && remote.animationKnown &&
+         remote.animationId == 456 && remote.animationFlags == 789,
+         "remote PlayerFootSync optional field alignment changed");
+  expect(samp::syncdecode::summarize(remote).find("#7") != std::string::npos,
+         "remote PlayerFootSync summary missing player ID");
+
+  auto truncated = payload;
+  truncated.pop_back();
+  expect(!samp::syncdecode::decodeRemoteOnFootBroadcast(truncated, remote),
+         "truncated remote PlayerFootSync must be rejected");
+  expect(!samp::syncdecode::decodeRemoteOnFootBroadcast(payload, remote,
+                                                         payload.size() * 8 - 1),
+         "declared-short remote PlayerFootSync must not consume padding");
+  // A deliberately too-short packet must never be interpreted as a complete
+  // broadcast frame, even when its first byte is unrelated to Packet 207.
+  auto badPosition = std::vector<uint8_t>(4, 0);
+  expect(!samp::syncdecode::decodeRemoteOnFootBroadcast(badPosition, remote),
+         "malformed remote PlayerFootSync must be rejected");
+  const auto minimal = makeMinimalRemoteOnFootBroadcast(8, 1.0f);
+  expect(samp::syncdecode::decodeRemoteOnFootBroadcast(minimal, remote) && remote.playerId == 8 &&
+         remote.leftRight == 0 && remote.upDown == 0 && !remote.surfing && !remote.animationKnown &&
+         std::fabs(remote.velocityX) < 0.001f && std::fabs(remote.quaternionW - 1.0f) < 0.001f,
+         "minimal remote PlayerFootSync optional branches changed");
+  expect(!samp::syncdecode::decodeRemoteOnFootBroadcast(
+             makeMinimalRemoteOnFootBroadcast(7, 20000.0f), remote),
+         "out-of-range remote PlayerFootSync position must be rejected");
 }
 
 void testNativeInputAndLocalPreview() {
@@ -532,8 +700,19 @@ void testSplitReassembly() {
   const auto result = reassembler.push(first);
   expect(result.size() == 1, "split was not reassembled");
   expect(result[0].reassembled, "reassembled flag absent");
-  expect(result[0].payload == std::vector<uint8_t>({0x01, 0x02, 0x03, 0x04}),
-         "split order changed");
+  expect(result[0].payload == std::vector<uint8_t>({0x01, 0x02, 0x03, 0x04}) &&
+         result[0].payloadBitLength == 32,
+         "split order/bit length changed");
+
+  samp::raknet::IncomingPacket ambiguous;
+  ambiguous.split = true;
+  ambiguous.splitId = 78;
+  ambiguous.splitIndex = 0;
+  ambiguous.splitCount = 2;
+  ambiguous.payload = {0xA8};
+  ambiguous.payloadBitLength = 5;
+  expect(reassembler.push(ambiguous).empty() && reassembler.pendingCount() == 0,
+         "non-byte-aligned non-final split must be rejected");
 }
 
 void testPlayerInitDecoder() {
@@ -699,6 +878,9 @@ void testWorldStateReducer() {
   expect(event.kind == samp::state::RpcEventKind::Malformed,
          "oversized chat must report malformed state");
 
+  expect(!world.applyRpc(makePlayerStreamIn(42, 0, 0, 0.0f, 0.0f, 3.0f, 0.0f,
+                                             0, 0), event),
+         "WorldState must ignore a StreamIn claiming local player ID");
   expect(world.applyRpc(makePlayerJoin(7, 0xAABBCCDDu, false, "Darius"), event),
          "WorldState rejected PlayerJoin");
   expect(event.kind == samp::state::RpcEventKind::PlayerJoined, "wrong join event kind");
@@ -706,6 +888,38 @@ void testWorldStateReducer() {
   const auto* player = world.findPlayer(7);
   expect(player && player->name == "Darius" && player->rgba == 0xAABBCCDDu,
          "join player data wrong");
+
+  expect(world.applyRpc(makePlayerStreamIn(7, 9, 411, 90.0f, -80.0f, 12.0f, 450.0f,
+                                            0x11223344u, 5), event),
+         "WorldState rejected PlayerStreamIn");
+  expect(event.kind == samp::state::RpcEventKind::PlayerStreamedIn && world.streamedPlayerCount() == 1 &&
+         world.remoteOnFootCount() == 0 && world.findPlayer(7)->streamedIn &&
+         world.findPlayer(7)->model == 411 && world.findPlayer(7)->team == 9 &&
+         std::fabs(world.findPlayer(7)->x - 90.0f) < 0.001f &&
+         std::fabs(world.findPlayer(7)->angle - 90.0f) < 0.001f,
+         "PlayerStreamIn actor state wrong");
+  samp::syncdecode::RemoteOnFootSync remote;
+  expect(samp::syncdecode::decodeRemoteOnFootBroadcast(makeRemoteOnFootBroadcast(7), remote) &&
+         world.applyRemoteOnFoot(remote, event),
+         "WorldState rejected decoded remote PlayerFootSync");
+  expect(event.kind == samp::state::RpcEventKind::RemotePlayerSync && world.remoteOnFootCount() == 1 &&
+         world.findPlayer(7)->remoteOnFootKnown && std::fabs(world.findPlayer(7)->x - 100.5f) < 0.001f &&
+         std::fabs(world.findPlayer(7)->velocityY - 4.0f) < 0.01f,
+         "remote PlayerFootSync actor state wrong");
+  const auto validRemote = remote;
+  remote.positionX = 20000.0f;
+  expect(!world.applyRemoteOnFoot(remote, event) &&
+         std::fabs(world.findPlayer(7)->x - 100.5f) < 0.001f,
+         "remote state reducer must reject invalid direct state");
+  remote = validRemote;
+  expect(world.applyRpc(makePlayerStreamOut(7), event) &&
+         event.kind == samp::state::RpcEventKind::PlayerStreamedOut && world.streamedPlayerCount() == 0 &&
+         world.remoteOnFootCount() == 0 && !world.findPlayer(7)->streamedIn,
+         "PlayerStreamOut actor state wrong");
+  // Packet 207 must not invent an entity after the stream lifecycle says it
+  // is out; a later StreamIn will explicitly reactivate it.
+  expect(!world.applyRemoteOnFoot(remote, event),
+         "orphan remote PlayerFootSync must be ignored");
 
   expect(world.applyRpc(makePlayerColor(7, 0x10203040u), event),
          "WorldState rejected SetPlayerColor");
@@ -727,6 +941,7 @@ int main() {
   testReliableAndAck();
   testUnreliableSequencedTransport();
   testPlayerFootSyncBuilder();
+  testRemoteOnFootBroadcastDecoder();
   testNativeInputAndLocalPreview();
   testCompressedU32();
   testSplitReassembly();

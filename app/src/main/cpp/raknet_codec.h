@@ -2,6 +2,7 @@
 // This is an independent implementation; it does not link against RakNet.
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -37,7 +38,9 @@ public:
 
 class BitReader {
 public:
-  BitReader(const uint8_t* data, size_t size);
+  // `bitLength == 0` means all bytes are readable. Supplying the exact
+  // RakNet frame bit length keeps padding bits from being mistaken as payload.
+  BitReader(const uint8_t* data, size_t size, size_t bitLength = 0);
 
   bool readBit();
   uint32_t readBits(int count);
@@ -54,7 +57,7 @@ public:
 
 private:
   const uint8_t* data_;
-  size_t size_;
+  size_t bitLength_;
   size_t bitPosition_ = 0;
   bool ok_ = true;
 };
@@ -69,6 +72,9 @@ struct IncomingPacket {
   uint32_t splitIndex = 0;
   uint32_t splitCount = 0;
   bool reassembled = false;
+  // Exact app-payload bit count carried in the RakNet frame. It can be less
+  // than payload.size() * 8 when the final byte contains transport padding.
+  uint16_t payloadBitLength = 0;
   std::vector<uint8_t> payload;
 };
 
@@ -79,6 +85,19 @@ struct Datagram {
   // ACK records carried by the remote peer for our own reliable message numbers.
   std::vector<uint16_t> receivedAckMessageNumbers;
   std::vector<IncomingPacket> packets;
+};
+
+// RakNet UNRELIABLE_SEQUENCED packets must not let an older datagram overwrite
+// newer state. The 16-bit index wraps; half the sequence space is deliberately
+// treated as ambiguous/stale.
+class SequencedPacketGate {
+public:
+  bool accept(uint8_t orderingChannel, uint16_t orderingIndex);
+  void clear();
+
+private:
+  std::array<bool, 32> seen_{};
+  std::array<uint16_t, 32> latest_{};
 };
 
 std::vector<uint8_t> buildUnreliable(uint16_t messageNumber, const std::vector<uint8_t>& payload);
@@ -111,6 +130,7 @@ private:
     uint32_t expectedCount = 0;
     uint8_t reliability = 0;
     std::vector<std::vector<uint8_t>> parts;
+    std::vector<uint16_t> partBitLengths;
     std::vector<bool> received;
     size_t receivedCount = 0;
   };

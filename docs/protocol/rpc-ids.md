@@ -39,11 +39,12 @@ u8    VerLen   + char[] VersionString
 u32   (opsional) IsUsingOfficialClient / OmpVersion
 ```
 
-## Server -> Client (yang sudah terverifikasi muncul)
+## Server -> Client (layout yang didecode saat ini)
 
 | ID | Nama | Layout |
 |----|------|--------|
 | 11 | SetPlayerName | |
+| 32 | PlayerStreamIn | reducer actor remote non-DL: ID, team, skin, VEC3, angle, color, fighting style, 11 skill level |
 | 37 | DisableCheckpoint | payload kosong |
 | 38 | SetRaceCheckpoint | u8 type, VEC3 pos, VEC3 next pos, float size |
 | 39 | DisableRaceCheckpoint | payload kosong |
@@ -56,6 +57,16 @@ u32   (opsional) IsUsingOfficialClient / OmpVersion
 | 137 | PlayerJoin | |
 | 138 | PlayerQuit | u16 PlayerID, u8 Reason |
 | 139 | **PlayerInit** | ~212 byte (lihat bawah) |
+| 163 | PlayerStreamOut | `u16 PlayerID`; reducer clears remote sync eligibility |
+
+### Lifecycle remote player
+
+`PlayerStreamIn` (32) adalah batas identitas/render entity: untuk client non-DL
+layoutnya `u16 id | u8 team | u32 skin | VEC3 pos | float angle | u32 RGBA |
+u8 fightingStyle | u16 skill[11]`. SampDroid menyimpan actor ini secara bounded.
+`PlayerStreamOut` (163) menonaktifkan actor tersebut dan menolak Packet 207
+berikutnya sampai `StreamIn` baru datang. Field `CustomSkin` yang hanya ada pada
+client 0.3.DL sengaja tidak diparse/diminta oleh jalur client saat ini.
 
 ### Checkpoint / race checkpoint
 

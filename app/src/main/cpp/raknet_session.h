@@ -49,6 +49,9 @@ struct SessionSnapshot {
   int splitFragments = 0;
   int reassembledPackets = 0;
   int trackedPlayers = 0;
+  int streamedPlayers = 0;
+  int remoteOnFootPlayers = 0;
+  int remoteOnFootPackets = 0;
   int chatMessages = 0;
   int reliableKeepalives = 0;
   int connectedPongs = 0;
@@ -56,6 +59,7 @@ struct SessionSnapshot {
   bool localOnFootStateKnown = false;
   std::string serverName;
   std::string rpcSummary;
+  std::string syncSummary;
   std::string stateSummary;
   std::string error;
 };

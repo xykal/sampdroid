@@ -48,6 +48,7 @@ const char* name(uint8_t rpcId) {
     case 14: return "SetPlayerHealth";
     case 19: return "SetPlayerFacingAngle";
     case 25: return "PlayerConnect";
+    case 32: return "PlayerStreamIn";
     case 37: return "DisableCheckpoint";
     case 38: return "SetRaceCheckpoint";
     case 39: return "DisableRaceCheckpoint";
@@ -66,6 +67,7 @@ const char* name(uint8_t rpcId) {
     case 137: return "PlayerJoin";
     case 138: return "PlayerQuit";
     case 139: return "PlayerInit";
+    case 163: return "PlayerStreamOut";
     case 164: return "StreamInVehicle";
     case 165: return "StreamOutVehicle";
     case 166: return "PlayerDeath";
