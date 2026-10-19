@@ -1963,6 +1963,7 @@ internal fun WorldFrame.resolvedChatBubbles(maxBubbles: Int = 12): List<Resolved
 private class NativeWorldSurfaceView(context: Context) : View(context) {
 
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val markerPath = Path()
     private val mapBounds = RectF()
     private var frame = WorldFrame()
     // Radius in GTA world units represented from the center to one map edge.
@@ -2020,7 +2021,7 @@ private class NativeWorldSurfaceView(context: Context) : View(context) {
         canvas.clipRect(mapBounds)
         drawGrid(canvas, originX, originY, scale, ::screenX, ::screenY)
         frame.gangZones.forEach { zone ->
-            drawGangZone(zone, screenX(zone.minX), screenY(zone.maxY),
+            drawGangZone(canvas, zone, screenX(zone.minX), screenY(zone.maxY),
                 screenX(zone.maxX), screenY(zone.minY))
         }
         frame.mapIcons.forEach { icon ->
