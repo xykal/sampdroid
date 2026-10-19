@@ -31,10 +31,24 @@ jobs:
             -Iapp/src/main/cpp \
             app/src/main/cpp/client_rpc.cpp \
             app/src/main/cpp/client_sync.cpp \
+            app/src/main/cpp/gta_img_archive.cpp \
+            app/src/main/cpp/gta_collision.cpp \
+            app/src/main/cpp/gta_collision_catalog.cpp \
+            app/src/main/cpp/gta_collision_world.cpp \
+            app/src/main/cpp/gta_data_runtime.cpp \
+            app/src/main/cpp/gta_dff_mesh.cpp \
+            app/src/main/cpp/gta_file_source.cpp \
+            app/src/main/cpp/gta_map_manifest.cpp \
+            app/src/main/cpp/gta_txd_texture.cpp \
             app/src/main/cpp/input_state.cpp \
+            app/src/main/cpp/local_gameplay_bridge.cpp \
+            app/src/main/cpp/local_movement.cpp \
+            app/src/main/cpp/local_vehicle_movement.cpp \
             app/src/main/cpp/local_player_sync.cpp \
             app/src/main/cpp/sync_decoder.cpp \
             app/src/main/cpp/raknet_codec.cpp \
+            app/src/main/cpp/raknet_string_compressor.cpp \
+            app/src/main/cpp/samp_query.cpp \
             app/src/main/cpp/rpc_decoder.cpp \
             app/src/main/cpp/rpc_state.cpp \
             app/src/main/cpp/raknet_probe.cpp \
@@ -73,25 +87,61 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Build debug APK (armeabi-v7a + arm64-v8a)
-        run: gradle :app:assembleDebug --no-daemon --stacktrace
+      - name: Materialize official release keystore
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$ANDROID_KEYSTORE_BASE64" || { echo "::error::ANDROID_KEYSTORE_BASE64 belum di-set"; exit 1; }
+          test -n "$ANDROID_KEYSTORE_PASSWORD" || { echo "::error::ANDROID_KEYSTORE_PASSWORD belum di-set"; exit 1; }
+          test -n "$ANDROID_KEY_ALIAS" || { echo "::error::ANDROID_KEY_ALIAS belum di-set"; exit 1; }
+          test -n "$ANDROID_KEY_PASSWORD" || { echo "::error::ANDROID_KEY_PASSWORD belum di-set"; exit 1; }
+          mkdir -p .ci-signing
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > .ci-signing/sampdroid-release.jks
+          test -s .ci-signing/sampdroid-release.jks || { echo "::error::keystore release kosong"; exit 1; }
+          keytool -list -keystore .ci-signing/sampdroid-release.jks \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" > /dev/null
+          echo "ANDROID_KEYSTORE_PATH=$GITHUB_WORKSPACE/.ci-signing/sampdroid-release.jks" >> "$GITHUB_ENV"
+          echo "ANDROID_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_ALIAS=$ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Build APK (armeabi-v7a + arm64-v8a)
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            gradle :app:assembleRelease --no-daemon --stacktrace
+            echo "APK_PATH=app/build/outputs/apk/release/app-release.apk" >> "$GITHUB_ENV"
+            echo "APK_VARIANT=release" >> "$GITHUB_ENV"
+          else
+            gradle :app:assembleDebug --no-daemon --stacktrace
+            echo "APK_PATH=app/build/outputs/apk/debug/app-debug.apk" >> "$GITHUB_ENV"
+            echo "APK_VARIANT=debug" >> "$GITHUB_ENV"
+          fi
 
       - name: Verify both ABIs are present
         run: |
-          APK=app/build/outputs/apk/debug/app-debug.apk
-          echo "=== native libs di dalam APK ==="
+          APK="$APK_PATH"
+          test -f "$APK" || { echo "::error::APK tidak ditemukan: $APK"; exit 1; }
+          echo "=== native libs di dalam APK ($APK_VARIANT) ==="
           unzip -l "$APK" | grep -E "lib/(armeabi-v7a|arm64-v8a)/"
           unzip -l "$APK" | grep -q "lib/armeabi-v7a/libsampdroid.so" \
             || { echo "::error::armeabi-v7a tidak ada di APK"; exit 1; }
           unzip -l "$APK" | grep -q "lib/arm64-v8a/libsampdroid.so" \
             || { echo "::error::arm64-v8a tidak ada di APK"; exit 1; }
+          if [[ "$APK_VARIANT" == "release" ]]; then
+            "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose "$APK"
+            echo "OK: APK release ditandatangani keystore resmi"
+          fi
           echo "OK: kedua ABI terbundel"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SampDroid-debug
-          path: app/build/outputs/apk/debug/*.apk
+          name: SampDroid-apk
+          path: app/build/outputs/apk/**/*.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -104,18 +154,20 @@ jobs:
       contents: write
 
     steps:
-      - name: Download APK artifact
+      - name: Download signed APK artifact
         uses: actions/download-artifact@v4
         with:
-          name: SampDroid-debug
+          name: SampDroid-apk
           path: release-assets
 
-      - name: Give release APK a stable name
+      - name: Give signed release APK a stable name
         run: |
-          APK=$(find release-assets -maxdepth 1 -type f -name '*.apk' -print -quit)
+          # upload-artifact may preserve subdirectories when the glob contains
+          # `**`; find recursively rather than assuming a flat download.
+          APK=$(find release-assets -type f -name '*.apk' -print -quit)
           test -n "$APK" || { echo "::error::APK artifact tidak ditemukan"; exit 1; }
           VERSION="${GITHUB_REF_NAME#v}"
-          mv "$APK" "release-assets/SampDroid-${VERSION}-debug.apk"
+          mv "$APK" "release-assets/SampDroid-${VERSION}-release.apk"
 
       - name: Create draft release and attach APK
         uses: softprops/action-gh-release@v2

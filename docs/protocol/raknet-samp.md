@@ -175,10 +175,11 @@ bukan pengganti `PlayerSync` atau validasi gameplay live.
 | Connection request accepted | ✅ **diterima dari server live** |
 | AUTH_KEY challenge/response | ✅ 256 entri tabel, lookup runtime |
 | ClientJoin / PlayerConnect RPC 25 | ✅ server memproses dan mengirim stream balik |
-| ACK reliable | ✅ setiap fragment reliable di-ACK |
+| ACK reliable | ✅ setiap fragment reliable di-ACK; outbound sort/dedupe serta range contiguous non-wrap bounded |
 | Multi-paket datagram + split reassembly | ✅ sebelum RPC diserahkan ke decoder |
 | PlayerInit RPC 139 | ✅ decoder wire format + test vector; observability di UI |
-| PlayerStreamIn/Out RPC 32/163 | ✅ lifecycle actor remote bounded; belum model/renderer |
+| PlayerStreamIn/Out RPC 32/163 + SetPlayerSkin 153 | ✅ lifecycle actor remote bounded dan update model non-DL exact; renderer tetap bounded/fallback bila DFF user belum resolve |
+| Server NPC `Show/HideActor` + transform RPC 171/172/175/176/178 | 🧪 layout non-DL source-verified, lifecycle separate 1.000 retained/64 snapshot, host regression + radar/GLES proxy/DFF path; belum capture server nyata/animasi 173/174 |
 | Broadcast remote PlayerFootSync 207 | 🧪 decoder compressed + reducer state/regression; belum live capture/renderer |
 | SendClientMessage RPC 93 | ✅ bounded chat state + regression coverage; HUD renderer masih pending |
 | Checkpoint RPC 37/38/39/107 | ✅ normal + race marker state, finite/negative-size guards; renderer masih pending |
@@ -232,7 +233,7 @@ di tabel — perlu tabel dari `samp.dll` (lihat `samp-re`).
 
 ### Yang berikutnya
 
-1. **Session loop yang benar** — full ACK range, reconnect, ping/timeout
+1. **Session loop yang benar** — reconnect, ping/timeout
    metrics, resend window, lalu capture sanitasi terhadap beberapa server di
    atas auto-poll/keepalive transport yang sudah ada.
 2. **PlayerSync (207) live validation** — decoder broadcast remote sudah ada;

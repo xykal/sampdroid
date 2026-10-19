@@ -32,8 +32,8 @@ Bukan ini:
 Android → Winlator/Wine → Windows/x86 → samp.exe → server
 ```
 
-SampDroid tidak didesain sebagai launcher modpack PC. Kontrol touch/gamepad yang
-akan tersedia adalah bagian dari client Android sendiri.
+SampDroid tidak didesain sebagai launcher modpack PC. Kontrol touch/gamepad dan
+keyboard Bluetooth adalah bagian dari client Android sendiri.
 
 Detail kontrak port: [docs/NATIVE_PORT_TARGET.md](docs/NATIVE_PORT_TARGET.md).
 
@@ -46,19 +46,30 @@ Detail kontrak port: [docs/NATIVE_PORT_TARGET.md](docs/NATIVE_PORT_TARGET.md).
 | `CONNECTION_REQUEST_ACCEPTED` + ClientJoin | ✅ | server memproses lalu stream balik |
 | ACK reliable + multi-packet datagram | ✅ | retransmisi tidak menumpuk |
 | Split reassembly | ✅ | fragment disusun sebelum RPC didecode |
-| State pemain dasar | ✅ | `PlayerInit`, Join/Quit/Name/Color, StreamIn/Out, dan local spawn/posisi/vitals → model native bounded |
-| Native chat state | ✅ | `SendClientMessage` bounded 100 line; HUD chat masih berikutnya |
-| Checkpoint state | ✅ | normal + race checkpoint reducer; marker renderer masih berikutnya |
+| State pemain dasar | ✅ | `PlayerInit`, Join/Quit/Name/Color, StreamIn/Out, roster score/ping RPC 155, policy nametag `ShowNameTags`/jarak + RPC 80 per-player, dan local spawn/posisi/vitals → model native bounded |
+| Native chat state | 🧪 | chat broadcast/HUD tail bounded + composer chat/`/command` reliable native (tombol CHAT di scene/radar, keyboard `T` atau `/`, dan controller Start) dengan IME **Kirim**, serta `SetPlayerChatBubble` server dengan expiry native bounded; bukan log saja |
+| Checkpoint state | ✅ | normal + race checkpoint reducer dengan marker di radar + scene GPU |
 | Class/spawn packet core | ✅ | Class → RequestSpawn → PlayerSpawn confirmation + ACK gate native |
-| Persistent native session | 🧪 | auto-poll, peer filter, ACK/retry bounded, keepalive transport reliable + internal pong; reconnect belum |
-| OnFootSync core | 🧪 | encoder packet-207 client→server vector-tested, USeq channel-1, rate/spawn gate + native input→local preview; belum ada loop/gameplay packet otomatis |
-| Remote on-foot bridge | 🧪 | decoder broadcast packet-207 server→client + lifecycle StreamIn/Out → state entity native bounded |
-| Dunia/radar + scene GPU native | 🧪 | Canvas radar dan scene GLES 2.0 Android menampilkan local/remote actor + checkpoint dari snapshot native; scene memakai grid/geometri buatan APK, bukan map/model GTA, collision, atau movement gameplay |
-| Class/spawn native | 🧪 | explicit `Class 0` + `Spawn`, response/ACK terlihat di diagnostic; belum gameplay/render |
-| Player/vehicle/object sync penuh | ⏳ | remote on-foot state baru fondasi; vehicle/object dan renderer belum |
-| HUD + textdraw/dialog native | ⏳ | belum |
-| Touch/gamepad/gyro native | 🧪 | touch pad runtime → semantic native action → OnFoot preview; gamepad/gyro dan world loop berikutnya |
-| World/game bridge Android | 🧪 | radar/entity surface dan scene GPU geometri tanpa asset sudah ada; renderer/map GTA berbasis data milik pengguna, collision, HUD penuh, dan gameplay loop belum |
+| Persistent native session | 🧪 | auto-poll 40 ms, peer filter, satu receive blocking lalu—bila tidak timeout—maksimal 15 receive ready nonblocking (16 attempt total), ACK/retry bounded, keepalive transport reliable + internal pong; reconnect belum |
+| OnFootSync core | 🧪 | encoder packet-207 client→server vector-tested, USeq channel-1, rate/spawn gate; surface dunia radar/GPU menjalankan tick gerak **hanya** dari collision GTA yang telah tersedia lalu rate-gated send. Exterior grounding + sweep silinder sisi dasar terhadap COL box/sphere/mesh wall sudah ada, bersama raycast statik box/sphere/mesh bounded (interior exact, ≤256 unit) yang hanya dapat memberi `HitPos` absolut dekat pada Packet-206 `HitType=None` tanpa target/damage; RPC `SetPlayerInterior` memilih batch IPL dan query COL dengan ID interior yang persis sama, sedangkan RPC 17 `SetWorldBounds` menahan prediction on-foot/driver **exterior** di rectangle server tanpa menebak push-back. Transisi/ubah envelope mereset prediksi lalu tick hanya lanjut bila floor matching tersedia. Renderer placement interior bounded sudah ada bila IPL user termuat; physics GTA penuh dan capture/live validation tetap belum |
+| AimSync + no-target fire core | 🧪 | Packet-203 `PlayerAimSync` client→server fixed 32-byte, vector-tested, USeq channel-1 dan rate `WeaponRate` sendiri. Hanya aktif on-foot saat semantic **AIM** ditahan, transform collision-grounded + heading/yaw dan pitch native bounded valid, serta armed weapon/ammo diketahui dari RPC server. Saat **AIM+FIRE**, Packet-206 client 41-byte `HitType=None` rate-capped juga dapat dikirim dari pose kamera yang sama. Layout no-`PlayerID` ini diaudit terhadap reader + generator NPC open.mp commit `3d20f3dc`; `LagCompensation=0` menahan sender fail-closed dan server legacy/anticheat live belum divalidasi. Ia tidak dapat membawa target ID, entity raycast/impact, offset, damage, reward, atau ammo decrement lokal; hanya ray COL statik dekat dari data user yang boleh mengisi `HitPos` absolut tetap dengan `HitType=None`. Camera mode compatible, packed `CamZoom:6 | WeaponState:2`, serta gate spawn/ACK/freeze/vehicle/kamera-server tetap diverifikasi |
+| Remote on-foot bridge | 🧪 | decoder broadcast packet-207 server→client + lifecycle StreamIn/Out → state entity native bounded; RPC 166 hanya memberi cue `WASTED` remote singkat, bukan death/respawn lokal |
+| Dunia/radar + scene GPU native | 🧪 | Canvas radar + GLES 2.0 menampilkan local/remote actor, nametag/bubble server berjarak, checkpoint, weather/waktu (termasuk `SetPlayerTime`/clock recipient), proxy kendaraan, state `Create/Set/Move/Stop/DestroyObject`, pickup `Create/DestroyPickup`, GangZone visual, map-icon server, dan label 3D portable. Endpoint kamera server (`SetCamera*`/`InterpolateCamera`) diprioritaskan renderer tanpa memutasi gerak/sync lokal; `SetCameraBehindPlayer` kembali ke fallback touch/player-follow. GangZone hanya rectangle/flash visual—bukan capture turf—dan map icon/label memakai marker/Canvas portable, bukan sprite/font/LOS GTA penuh. Bila IDE/IMG user memuat `cars`/`peds`, model vehicle streamed, skin actor remote, serta NPC `ShowActor` dapat ikut masuk batch DFF prelit dinamis bounded; reducer NPC (`Show/HideActor`, posisi, sudut, health) memakai namespace ID terpisah, maksimal 1.000 retained/64 render copy, dan visual-only—bukan player identity, hit target, collision, atau interaction authority. `SetPlayerSkin` non-DL juga mengganti model remote/local dari server (actor lokal tetap perlu template `SetSpawnInfo` agar tidak dipalsukan di origin); proxy authority tetap fallback. Tap **USE** memilih pickup valid dulu (RPC 131 tanpa reward lokal), lalu request enter vehicle driver (26); tahan **USE** membawa intent passenger untuk vehicle yang sama, dan USE saat sudah diset-seat server meminta exit (154). RPC 70/71 tetap satu-satunya authority seat; spawn/posisi/interior/radius/rate-limit dicek native dan state kendaraan tak pernah diubah sebelum RPC server. Objek server yang model ID-nya cocok dengan IDE/IMG user—termasuk `MoveObject` dengan transform sampled monotonic—bisa masuk batch DFF prelit; yang belum resolve tetap marker/proxy jujur. Placement IPL pada interior server yang terpilih (exterior = 0) serta subset objek/vehicle/skin dinamis kini dapat membawa sampai empat overlay material/TXD independen yang dibatasi (vertex + total 1 MiB pixel RGBA per jalur); resolver `txdp` child→parent dapat melewati GTA3 IMG utama dan sampai empat companion `models/*.img` read-only. Overlay disalin dulu, texture GL stale dibersihkan pada thread GL, dan proxy tetap fallback—ini belum binding semua material, map stream, atau visual GTA lengkap |
+| Class/spawn native | 🧪 | browser class dari `PlayerInit.SetSpawnInfoCount` (tap class berikutnya, tahan untuk sebelumnya), request reliable satu-per-satu + timeout bounded, response/ACK, local vitals/freeze server, dan state spawn authoritative |
+| Vehicle visual + occupant sync | 🧪 | `StreamIn/OutVehicle` + broadcast Packet 200 driver / Packet 209 unoccupied mengubah proxy kendaraan yang sudah stream-in. Occupancy memakai flag eksplisit (`driverKnown`), jadi ID player `0` tetap driver valid, bukan sentinel kosong. Packet 211 inbound `PlayerPassengerSync` juga diparse dari layout writer open.mp yang source-verified: passenger remote memakai anchor posisi wire dan dapat coexist dengan driver; Packet 209 hanya melepas driver, bukan passenger aktif. Driver maupun passenger remote yang sudah stream menahan ped geometry/DFF supaya tidak dobel/tembus mobil; nametag, bubble, serta marker radar tetap tampil pada anchor tervalidasi. Packet on-foot, stream-out/quit, driver baru, atau stream-out vehicle melepas anchor lama. Jika IDE `cars` + DFF/TXD user tersedia, batch GLES juga dapat resolve model vehicle terdekat read-only dengan overlay material bounded (proxy authority tetap fallback). Tap **USE** request enter driver/exit dan tahan USE request intent passenger; 70/71 tetap satu-satunya authority seat. Passenger lokal kini mengirim Packet-211 client→server raw 25-byte hanya setelah RPC 70 seat nonzero + vehicle masih streamed + spawn/ACK; posisinya disalin dari transform vehicle authoritative, tanpa physics atau offset kursi lokal. Input/vitals/armed weapon server ikut pada `InCarRate`; passenger non-cuffed dengan Uzi/MP5/Tec-9 yang memang diarm+berammo dari server dapat mengaktifkan bit drive-by Packet-211 saat AIM ditahan (FIRE tetap key input), tanpa BulletSync target/damage. Cuffed tetap hanya dari `SetPlayerSpecialAction` server. Untuk seat driver 0, Packet-200 client→server raw 64-byte kini vector-tested dan dikirim USeq channel-1 mengikuti `InCarRate`; pilot kinematic memakai gas/mundur, steer, rem, floor COL, dan sweep geometri statik. Trailer/siren/gear/Hydra aktif, handling/suspension/damage, physics GTA penuh, serta binding semua material/skin/animasi vehicle belum |
+| Player/vehicle/object sync penuh | ⏳ | remote on-foot + driver Packet-200/passenger Packet-211 visual bounded, inbound Packet-203 remote camera-direction serta Packet-206 server-relay direction cue transient, dan outbound AimSync Packet-203 + BulletSync no-target `HitType=None` dari AIM+FIRE, global object lifecycle/motion, global pickup display + user-confirmed RPC 131, attempt enter/exit + seat lifecycle authoritative, serta driver Packet-200 kinematic terbatas sudah ada; player-object/pickup variant, drive-by/trailer sync, **local** target/raycast/hit/damage authority, handling/fisika kendaraan penuh, inventory/reward authority, dan gameplay penuh belum |
+| HUD + textdraw/dialog native | 🧪 | HUD vitals/chat/entity, money dari `Give/ResetPlayerMoney`, TAB-style score/ping roster yang meminta RPC 155 server, serta armed weapon/ammo yang benar-benar didorong RPC server, `SendGameText` timed banner proxy, ShowDialog + respons reliable native, serta stream audio RPC 41/42 yang lifecycle-bound dan HTTPS-only tersedia (URL HTTP/unsafe sengaja diblokir lokal). Saat AIM ditahan dan kandidat Packet-203 native benar-benar lolos gate, scene beralih ke view aim orang-pertama dari yaw/pitch yang sama; HUD scene menampilkan reticle + pitch serta status kandidat tanpa target/hit marker. Saat AIM+FIRE, HUD menampilkan counter datagram Packet-206 no-target dan pulse `COL dekat (lokal)` bila socket-send native membawa contact COL statik dekat—keduanya bukan receipt server, hit entity, damage, atau ammo lokal. `Show/Hide/SetString` TextDraw punya Canvas text/box proxy bounded dan tap selectable → RPC 83 setelah native recheck; font-4 sprite literal `dictionary:texture` dapat memakai TXD RGBA user-owned yang dibatasi/cache, sedangkan font-5 dapat memakai mesh DFF prelit user-owned bounded bila model resolvable. Keduanya belum mengklaim font/kamera/material GTA penuh; animasi TextDraw/GameText penuh juga belum. |
+| Touch/gamepad/keyboard/gyro native | 🧪 | touch pad runtime → semantic native action → scene gameplay tick collision-grounded; tap **USE** meminta pickup/driver, tahan USE meminta intent passenger tanpa mengubah seat lokal; drag kanan mengubah yaw/heading dan pitch look relative native (pitch hanya untuk AimSync, bukan transform dunia). Scene GPU **dan radar fallback** memakai overlay touch yang sama serta menerima keyboard Bluetooth (`WASD`/arrow, Space/Shift/C/F/Q/R/E; `T` chat, `/` command, Tab scores) dan gamepad (stick/D-pad, A/B/X/Y, shoulder/trigger, Start chat); gameplay tetap melewati mapper semantic yang sama, sementara shortcut chat/score hanya membuka UI native. Gyro look opt-in di **LAYOUT** mengubah kecepatan sudut perangkat menjadi delta yaw/pitch bounded saja dan berhenti saat freeze/spectate/dead/dialog dismiss—bukan posisi/target/packet mandiri. LAYOUT juga menyimpan drag/scale, kontras, dan preset satu tangan kiri/kanan per perangkat serta dapat menyalin JSON data-only v1; validasi sensor/perangkat Android nyata masih berikutnya |
+| User-owned GTA data runtime | 🧪 | menu **Data GTA** memakai Android SAF untuk memilih folder GTA hasil ekstrak, parse `gta.dat`, mount GTA3 IMG utama serta sampai empat companion `models/*.img` read-only untuk lookup DFF/TXD, batch COL/IDE/IPL text, serta mencoba resolver dinamis stock opsional `data/vehicles.ide` dan `data/peds.ide` (karena tidak terdaftar di `gta.dat`). Lalu ia menemukan hanya `parent_streamN.ipl` `bnry` relevan dan (saat sinkronisasi eksplisit) seluruh member `.col` IMG utama yang dibatasi 256 member/32 MiB; native merakit catalog/spatial collision world dari fd read-only tanpa storage permission lebar, copy, atau asset bundling |
+| World/game bridge Android | 🧪 | radar/entity surface, scene GPU, HUD, dialog, touch overlay, runtime collision, parser mesh DFF/material, decoder TXD, placement-aware DFF batch per-ID interior, sampai empat overlay TXD bounded untuk placement/dynamic model, serta resolver `cars`/`peds` stock → streamed vehicle/skin DFF bounded sudah ada; session hanya mengirim gerak yang tervalidasi oleh floor + side sweep COL pada interior server yang cocok. Resolver map/texture/LOD penuh, material/texture vehicle, collision/streaming multi-IMG penuh, physics GTA lengkap, dan gameplay server lengkap belum |
+
+Regresi C++ host/audit JNI pernah lulus pada batch sebelumnya, tetapi perubahan
+sumber aktif terbaru (editor object/attachment revision-bound, baseline capped,
+gyro/layout, poll receive bounded, Packet-206, dan raycast COL) **belum
+divalidasi ulang** karena batch sengaja belum selesai.
+Kotlin/GLES dan packaging Android juga belum bisa dikompilasi lokal karena
+workspace ini tidak memiliki Gradle/Kotlin/Android SDK; build APK tetap hanya
+boleh lewat GitHub Actions setelah batch sumber ini benar-benar selesai.
 
 Saat ini tombol **Probe RakNet** di detail server membuktikan alur nyata:
 
@@ -80,9 +91,9 @@ dunia selesai dibuat.
 
 ## Native Android input
 
-Touch, gamepad, keyboard Bluetooth, gyro, dan HUD akan menjadi bagian internal
-APK. File layout hanya mendeskripsikan posisi tombol native — tidak memuat script,
-plugin PC, executable, atau asset eksternal.
+Touch, gamepad, keyboard Bluetooth, gyro, dan HUD berada dalam scope internal
+APK. File layout hanya mendeskripsikan posisi tombol native — tidak memuat
+script, plugin PC, executable, atau asset eksternal.
 
 - [Native input layout v1](docs/NATIVE_INPUT.md)
 - [Schema input](schemas/native-input-layout.schema.json)
@@ -130,8 +141,10 @@ Dokumentasi protocol:
 Semua APK resmi di-compile oleh **GitHub Actions** dari repo publik, bukan build
 lokal maintainer. Setiap push/PR menjalankan regression test C++ lalu build APK
 untuk `armeabi-v7a` + `arm64-v8a`, kemudian memverifikasi kedua `.so` ada di APK.
-Push tag `v*` membuat **draft release** beserta APK; maintainer harus mempublishnya
-secara manual setelah review.
+Push tag `v*` hanya membuat **draft release** bila keystore resmi tersedia di
+GitHub Secrets: CI menghasilkan APK `release` signed, bukan debug APK, lalu
+maintainer mempublishnya manual setelah review. Lihat
+[signing rilis](docs/RELEASE_SIGNING.md).
 
 ## Roadmap
 
@@ -146,5 +159,13 @@ Lihat [docs/ROADMAP.md](docs/ROADMAP.md). Jalur prioritas port sekarang:
 ## Asset policy
 
 APK tidak membundel GTA APK/OBB/data, binary Windows, atau asset pihak ketiga.
-Backend dunia nantinya memakai data yang pengguna miliki sendiri; ini menjaga
-SampDroid tetap APK Android native, kecil, dan bukan repack game.
+Backend dunia memakai data yang pengguna miliki sendiri; ini menjaga SampDroid
+APK Android native, kecil, dan bukan repack game. Menu **Data GTA** menerima
+folder GTA yang sudah diekstrak melalui Android Storage Access Framework—termasuk
+folder SD card—lalu membaca `gta.dat`, IMG, COL/IDE/IPL text, resolver dinamis
+stock opsional `data/vehicles.ide`/`data/peds.ide`, binary `parent_streamN.ipl`
+relevan, dan saat pengguna menjalankan sinkronisasi map, member `.col` IMG yang
+dibatasi (maksimal 256 / 32 MiB) melalui descriptor read-only tanpa menyalin isi
+ke internal storage. RAR dan executable PC tidak
+dieksekusi atau dibundel. Fondasi indeks IMG/COL, `gta.dat`/IDE/text+binary IPL,
+dan urutan runtime dunia: [docs/GAME_DATA_RUNTIME.md](docs/GAME_DATA_RUNTIME.md).

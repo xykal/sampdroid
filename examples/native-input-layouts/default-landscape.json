@@ -4,6 +4,8 @@
   "name": "Default native landscape",
   "orientation": "landscape",
   "safeArea": true,
+  "highContrast": false,
+  "gyroLook": false,
   "controls": [
     { "id": "move", "kind": "stick", "action": "move", "anchor": "bottom-start", "x": 0.12, "y": 0.82, "size": 0.18, "opacity": 0.72 },
     { "id": "look", "kind": "swipe-zone", "action": "look", "anchor": "center", "x": 0.70, "y": 0.44, "size": 0.48, "opacity": 0.10 },

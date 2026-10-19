@@ -3,6 +3,25 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// Official releases are signed only from a maintainer-owned keystore injected
+// by CI. Nothing private is kept in git or silently replaced with debug signing.
+val officialKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+val officialKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+val officialKeyAlias = System.getenv("ANDROID_KEY_ALIAS")
+val officialKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+val hasOfficialReleaseSigning = listOf(
+    officialKeystorePath,
+    officialKeystorePassword,
+    officialKeyAlias,
+    officialKeyPassword
+).all { !it.isNullOrBlank() }
+val requestedReleaseTask = gradle.startParameter.taskNames.any { task ->
+    task.contains("release", ignoreCase = true)
+}
+if (requestedReleaseTask && !hasOfficialReleaseSigning) {
+    error("Release APK ditolak: keystore resmi Android belum disediakan oleh CI.")
+}
+
 android {
     namespace = "com.xykal.sampdroid"
     compileSdk = 34
@@ -12,8 +31,8 @@ android {
         applicationId = "com.xykal.sampdroid"
         minSdk = 24
         targetSdk = 34
-        versionCode = 17
-        versionName = "0.17.0"
+        versionCode = 18
+        versionName = "0.18.0"
 
         // WAJIB: dua arsitektur sesuai permintaan
         ndk {
@@ -35,12 +54,26 @@ android {
         }
     }
 
+    signingConfigs {
+        create("officialRelease") {
+            if (hasOfficialReleaseSigning) {
+                storeFile = file(officialKeystorePath!!)
+                storePassword = officialKeystorePassword!!
+                keyAlias = officialKeyAlias!!
+                keyPassword = officialKeyPassword!!
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // belum ada signing config — APK release akan unsigned.
-            // Untuk sideload pakai build debug, atau tambahkan keystore sendiri.
+            // `assembleRelease` already fails above without every credential.
+            // Debug signing is never used as a fallback for a publishable APK.
+            if (hasOfficialReleaseSigning) {
+                signingConfig = signingConfigs.getByName("officialRelease")
+            }
         }
         debug {
             isDebuggable = true
@@ -66,6 +99,7 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
+    implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.recyclerview:recyclerview:1.3.2")

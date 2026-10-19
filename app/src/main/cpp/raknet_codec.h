@@ -114,6 +114,8 @@ std::vector<uint8_t> buildReliable(uint16_t messageNumber, const std::vector<uin
 std::vector<uint8_t> buildReliableOrdered(uint16_t messageNumber, uint8_t orderingChannel,
                                           uint16_t orderingIndex,
                                           const std::vector<uint8_t>& payload);
+// Sorts/deduplicates and coalesces non-wrapping contiguous u16 message IDs into
+// bounded RakNet ACK ranges. Wrap-around IDs are intentionally separate records.
 std::vector<uint8_t> buildAck(const std::vector<uint16_t>& messageNumbers);
 Datagram decodeDatagram(const std::vector<uint8_t>& datagram);
 

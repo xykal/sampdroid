@@ -245,12 +245,44 @@ std::vector<uint8_t> buildReliableOrdered(uint16_t messageNumber, uint8_t orderi
 }
 
 std::vector<uint8_t> buildAck(const std::vector<uint16_t>& messageNumbers) {
+  // RakNet ACK blocks can represent a contiguous inclusive message-number span
+  // with one record. Coalesce only ordinary ascending spans: the on-wire u16
+  // counter wraps, while the bounded decoder intentionally rejects a wrapping
+  // range as ambiguous. The two sides of 0xFFFF -> 0 therefore stay separate
+  // singleton/range records instead of accidentally acknowledging all 65k IDs.
+  struct AckRecord {
+    bool single = true;
+    uint16_t first = 0;
+    uint16_t second = 0;
+  };
+  constexpr size_t kMaxAckRecords = 64;
+  constexpr uint16_t kMaxAckSpan = 511;  // decoder permits high - low < 512.
+
+  std::vector<uint16_t> sorted = messageNumbers;
+  std::sort(sorted.begin(), sorted.end());
+  sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+
+  std::vector<AckRecord> records;
+  records.reserve(std::min(sorted.size(), kMaxAckRecords));
+  size_t index = 0;
+  while (index < sorted.size() && records.size() < kMaxAckRecords) {
+    const uint16_t first = sorted[index++];
+    uint16_t last = first;
+    while (index < sorted.size() && last != 0xFFFFu &&
+           sorted[index] == static_cast<uint16_t>(last + 1u) &&
+           static_cast<uint16_t>(last - first) < kMaxAckSpan) {
+      last = sorted[index++];
+    }
+    records.push_back({first == last, first, last});
+  }
+
   BitWriter writer;
   writer.writeBit(true);  // hasAcks
-  writer.writeCompressedU16(static_cast<uint16_t>(messageNumbers.size()));
-  for (uint16_t message : messageNumbers) {
-    writer.writeBit(true);  // max == min
-    writer.writeBits(message, 16);
+  writer.writeCompressedU16(static_cast<uint16_t>(records.size()));
+  for (const AckRecord& record : records) {
+    writer.writeBit(record.single);
+    writer.writeBits(record.first, 16);
+    if (!record.single) writer.writeBits(record.second, 16);
   }
   writer.align();
   return writer.buffer;

@@ -9,6 +9,7 @@ namespace {
 constexpr float kMaxAxis = 1.0f;
 constexpr float kAxisDeadZone = 0.08f;
 constexpr float kMaxLookDeltaDegrees = 90.0f;
+constexpr float kMaxAimPitchDegrees = 75.0f;
 constexpr float kProtocolAxisMagnitude = 128.0f;
 
 // open.mp SDK/include/values.hpp Key enum. These are the legacy on-foot Keys
@@ -40,7 +41,7 @@ float normalizeDegrees(float degrees) {
 
 bool sanitizeTouchIntent(const TouchIntent& input, TouchIntent& sanitized) {
   if (!std::isfinite(input.moveX) || !std::isfinite(input.moveY) ||
-      !std::isfinite(input.lookDeltaDegrees) ||
+      !std::isfinite(input.lookDeltaDegrees) || !std::isfinite(input.lookPitchDeltaDegrees) ||
       (input.heldActions & ~kKnownHeldActions) != 0) {
     return false;
   }
@@ -49,6 +50,8 @@ bool sanitizeTouchIntent(const TouchIntent& input, TouchIntent& sanitized) {
   sanitized.moveY = std::clamp(input.moveY, -kMaxAxis, kMaxAxis);
   sanitized.lookDeltaDegrees =
       std::clamp(input.lookDeltaDegrees, -kMaxLookDeltaDegrees, kMaxLookDeltaDegrees);
+  sanitized.lookPitchDeltaDegrees =
+      std::clamp(input.lookPitchDeltaDegrees, -kMaxLookDeltaDegrees, kMaxLookDeltaDegrees);
   sanitized.heldActions = input.heldActions;
   return true;
 }
@@ -61,6 +64,11 @@ bool OnFootInputMapper::update(const TouchIntent& input) {
   if (headingKnown_) {
     headingDegrees_ = normalizeDegrees(headingDegrees_ + intent_.lookDeltaDegrees);
   }
+  // Pitch has no server-side heading equivalent in this limited native bridge.
+  // Preserve it locally for camera/AimSync only, bounded far below an inverted
+  // vertical camera; it never alters the on-foot movement quaternion.
+  aimPitchDegrees_ = std::clamp(aimPitchDegrees_ + intent_.lookPitchDeltaDegrees,
+                                -kMaxAimPitchDegrees, kMaxAimPitchDegrees);
   return true;
 }
 
@@ -75,12 +83,14 @@ void OnFootInputMapper::reset() {
   headingKnown_ = false;
   intent_ = {};
   headingDegrees_ = 0.0f;
+  aimPitchDegrees_ = 0.0f;
 }
 
 WireInput OnFootInputMapper::wireInput() const {
   WireInput output;
   output.headingKnown = headingKnown_;
   output.headingDegrees = headingDegrees_;
+  output.aimPitchDegrees = aimPitchDegrees_;
   output.leftRight = quantizeAxis(intent_.moveX);
   // SA-MP/open.mp uses negative signed up/down values for forward input
   // (SDK Key::UP = -128, Key::DOWN = 128).

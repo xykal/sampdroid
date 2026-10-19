@@ -39,8 +39,10 @@ fungsional untuk pengguna — APK Android langsung, bukan emulator Windows.
 ## Batas distribusi
 
 APK SampDroid berisi kode client sendiri, bukan GTA APK/OBB, binary Windows,
-atau asset pihak ketiga. Backend dunia game nantinya memakai data yang pengguna
-punya sendiri; ini menjaga APK tetap kecil, native, dan tidak jadi repack game.
+atau asset pihak ketiga. Backend dunia memakai data yang pengguna punya sendiri;
+intake awal hanya lewat file chooser Android SAF read-only dan descriptor native,
+tanpa copy/download/repack. Ini menjaga APK tetap kecil, native, dan tidak jadi
+repack game.
 
 ## Urutan implementasi
 

@@ -21,6 +21,15 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
 
+// Keep native socket ownership in this explicit session dialog, but use a
+// short wait so movement/Aim sync is not serialized behind a 250 ms receive.
+// The native side drains only a capped ready-datagram burst after this wait.
+private const val SESSION_POLL_TIMEOUT_MS = 40
+private const val SESSION_POLL_YIELD_MS = 4L
+// Poll transport promptly, but avoid rebuilding a full JSON world/UI more often
+// than the renderer's own immutable-frame cadence.
+private const val SESSION_PRESENTATION_INTERVAL_NANOS = 100_000_000L
+
 object ServerDetailDialog {
 
     fun show(activity: AppCompatActivity, server: ServerEntry) {
@@ -37,6 +46,7 @@ object ServerDetailDialog {
         val btnClassZero: Button = view.findViewById(R.id.btnClassZero)
         val btnSpawn: Button = view.findViewById(R.id.btnSpawn)
         val btnControls: Button = view.findViewById(R.id.btnControls)
+        val btnChat: Button = view.findViewById(R.id.btnChat)
         val btnWorld: Button = view.findViewById(R.id.btnWorld)
         val btnSessionDisconnect: Button = view.findViewById(R.id.btnSessionDisconnect)
 
@@ -56,6 +66,9 @@ object ServerDetailDialog {
             .setNegativeButton("Tutup", null)
             .create()
         var sessionPollJob: Job? = null
+        // Cursor is a UI hint only. Native rechecks PlayerInit's raw class
+        // count and serializes one reliable class request at a time.
+        var classCursor = 0
 
         fun run(block: () -> String) {
             log.text = "…"
@@ -70,7 +83,7 @@ object ServerDetailDialog {
         fun formatSession(o: JSONObject): String = buildString {
             append("=== SESI NATIVE (EKSPERIMEN) ===\n")
             append("Soket ini native Android, bukan Winlator/samp.exe.\n")
-            append("Spawn/local + sync remote native; Dunia native punya radar dan scene GPU geometri, gameplay GTA penuh belum.\n")
+            append("Spawn/local + sync remote native; scene GPU punya collision on-foot, driver Packet-200, AimSync Packet-203, serta Packet-206 HitType=None saat AIM+FIRE. Target/hit/damage/ammo lokal tetap tidak diklaim. Gameplay GTA penuh belum.\n")
             append("Saat aktif, stream dipoll otomatis sampai sesi diputus/dialog ditutup.\n\n")
             append("aktif           : ").append(o.optBoolean("active")).append('\n')
             append("accepted        : ").append(o.optBoolean("accepted")).append('\n')
@@ -79,14 +92,26 @@ object ServerDetailDialog {
             if (o.optBoolean("playerInit")) {
                 append("player ID       : ").append(o.optInt("playerId")).append('\n')
                 append("nama server     : ").append(o.optString("serverName")).append('\n')
+                append("class server    : ").append(o.optLong("spawnClassCount"))
+                    .append(" slot\n")
                 append("sync on-foot    : ").append(o.optInt("onFootSyncRateMs"))
                     .append(" ms (efektif ").append(o.optInt("effectiveOnFootSyncRateMs"))
                     .append(" ms)\n")
+                append("sync in-car     : ").append(o.optInt("inCarSyncRateMs"))
+                    .append(" ms (efektif ").append(o.optInt("effectiveInCarSyncRateMs"))
+                    .append(" ms)\n")
+                append("sync senjata    : ").append(o.optInt("weaponSyncRateMs"))
+                    .append(" ms (efektif ").append(o.optInt("effectiveWeaponSyncRateMs"))
+                    .append(" ms)\n")
             }
             append("class state      : ")
-                .append(if (o.optBoolean("classSelectionKnown")) {
+                .append(if (o.optBoolean("classRequestPending")) {
+                    "menunggu balasan class #${o.optInt("requestedClassId")}"
+                } else if (o.optBoolean("classSelectionKnown")) {
                     "model ${o.optInt("classModel")} / " +
                         (if (o.optBoolean("classSelectable")) "selectable" else "ditolak")
+                } else if (o.optBoolean("classSelectionForced")) {
+                    "server memaksa pilih ulang — tekan tombol Class"
                 } else {
                     "belum ada balasan"
                 }).append('\n')
@@ -109,23 +134,64 @@ object ServerDetailDialog {
                 } else {
                     "belum ada SetSpawnInfo"
                 }).append('\n')
+            append("kontrol server  : ").append(
+                if (o.optBoolean("localControllableKnown")) {
+                    if (o.optBoolean("localControllable", true)) "aktif" else "FREEZE"
+                } else {
+                    "belum diatur"
+                }
+            ).append('\n')
+            append("dunia server    : ").append(
+                buildString {
+                    if (o.optBoolean("localInteriorKnown")) append("INT ${o.optInt("localInterior")}")
+                    else append("INT ?")
+                    append(" · ")
+                    if (o.optBoolean("localVirtualWorldKnown")) append("VW ${o.optInt("localVirtualWorld")}")
+                    else append("VW ?")
+                    append(" (VW bukan filter collision lokal)")
+                }
+            ).append('\n')
             append("touch input     : ")
                 .append(if (o.optBoolean("nativeControlsKnown")) {
                     String.format(
                         Locale.US,
-                        "move %.2f/%.2f, heading %.1f°, keys=0x%04X",
+                        "move %.2f/%.2f, heading %.1f°, pitch %.1f°, keys=0x%04X",
                         o.optDouble("controlMoveX"), o.optDouble("controlMoveY"),
-                        o.optDouble("controlHeading"), o.optInt("controlKeys")
+                        o.optDouble("controlHeading"), o.optDouble("controlAimPitch"),
+                        o.optInt("controlKeys")
                     )
                 } else {
                     "belum ada"
                 }).append('\n')
             append("on-foot preview : ")
                 .append(if (o.optBoolean("onFootPreviewReady")) {
-                    "siap lokal (belum dikirim)"
+                    if (o.optBoolean("localPredictionActive")) {
+                        if (o.optBoolean("localGrounded")) "collision grounded" else "collision airborne"
+                    } else {
+                        "siap lokal (menunggu tick collision)"
+                    }
                 } else {
                     "menunggu state lokal"
                 }).append('\n')
+            append("aim lokal       : ").append(
+                if (o.optBoolean("aimPreviewReady")) {
+                    "Packet-203 siap (AIM on-foot; kamera/weapon server-safe)"
+                } else {
+                    "idle / menunggu AIM, ammo server, collision, atau kamera server"
+                }
+            ).append('\n')
+            append("kendaraan lokal : ").append(
+                when {
+                    !o.optBoolean("localInVehicle") -> "tidak duduk"
+                    o.optInt("localVehicleSeat") != 0 && o.optBoolean("passengerPreviewReady") ->
+                        "passenger #${o.optInt("localVehicleId")} · Packet-211 server-anchor"
+                    o.optInt("localVehicleSeat") != 0 ->
+                        "passenger #${o.optInt("localVehicleId")} menunggu vehicle/sync server"
+                    o.optBoolean("inCarPreviewReady") && o.optBoolean("localPredictionActive") ->
+                        "driver #${o.optInt("localVehicleId")} · kinematic collision Packet-200"
+                    else -> "driver #${o.optInt("localVehicleId")} menunggu vehicle/COL server"
+                }
+            ).append('\n')
             append("checkpoint      : ")
                 .append(if (o.optBoolean("checkpointActive")) "aktif" else "tidak aktif")
                 .append(" / race ")
@@ -136,20 +202,50 @@ object ServerDetailDialog {
             append("transport       : ").append(o.optInt("reliableKeepalives"))
                 .append(" keepalive reliable / ").append(o.optInt("connectedPongs"))
                 .append(" pong\n")
+            append("link lokal      : idle ").append(o.optLong("inboundIdleMs"))
+                .append("ms · ACK terakhir ").append(o.optLong("latestReliableRttMs"))
+                .append("ms · rata2 ").append(o.optLong("smoothedReliableRttMs"))
+                .append("ms · resend ").append(o.optInt("reliableResends"))
+                .append(" (diagnostik transport, bukan ping server)\n")
             append("on-foot keluar : ").append(o.optInt("outboundOnFootPackets"))
                 .append(" packet / state lokal ")
                 .append(if (o.optBoolean("localOnFootStateKnown")) "siap" else "belum ada")
+                .append('\n')
+            append("in-car keluar  : ").append(o.optInt("outboundInCarPackets"))
+                .append(" Packet-200 kinematic\n")
+            append("aim keluar     : ").append(o.optInt("outboundAimPackets"))
+                .append(" Packet-203 / state ")
+                .append(if (o.optBoolean("localAimStateKnown")) "siap" else "belum ada")
+                .append('\n')
+            append("tembak keluar  : ").append(o.optInt("outboundNoTargetBulletPackets"))
+                .append(" Packet-206 HitType=None (AIM+FIRE; tanpa target/damage lokal)\n")
+            append("passenger keluar: ").append(o.optInt("outboundPassengerPackets"))
+                .append(" Packet-211 / state ")
+                .append(if (o.optBoolean("localPassengerStateKnown")) "siap" else "belum ada")
                 .append('\n')
             append("fragment        : ").append(o.optInt("splitFragments"))
                 .append(" split / ").append(o.optInt("reassembledPackets")).append(" tersusun\n")
             append("remote on-foot  : ").append(o.optInt("remoteOnFootPlayers"))
                 .append(" player / ").append(o.optInt("remoteOnFootPackets"))
                 .append(" packet broadcast\n")
+            append("remote aim      : ").append(o.optInt("remoteAimPackets"))
+                .append(" Packet-203 visual (tanpa hit)\n")
+            append("remote bullet   : ").append(o.optInt("remoteBulletPackets"))
+                .append(" Packet-206 relay visual (tanpa damage lokal)\n")
             append("state pemain     : ").append(o.optInt("trackedPlayers"))
                 .append(" terlacak / ").append(o.optInt("streamedPlayers"))
                 .append(" stream-in\n")
+            append("state kendaraan  : ").append(o.optInt("trackedVehicles"))
+                .append(" terlacak / ").append(o.optInt("streamedVehicles"))
+                .append(" stream-in / ").append(o.optInt("remoteVehiclePackets"))
+                .append(" sync visual\n")
+            append("NPC server       : ").append(o.optInt("trackedServerActors"))
+                .append(" retained / max 64 copy render (visual-only)\n")
             append("chat state       : ").append(o.optInt("chatMessages"))
-                .append(" pesan tersimpan\n")
+                .append(" pesan tersimpan / ").append(o.optInt("outboundChatMessages"))
+                .append(" terkirim native\n")
+            append("dialog native    : ").append(o.optInt("outboundDialogResponses"))
+                .append(" respon terkirim (ShowDialog tampil otomatis)\n")
             append("RPC terlihat     : ").append(o.optString("rpcSummary").ifBlank { "-" }).append('\n')
             append("sync terlihat    : ").append(o.optString("syncSummary").ifBlank { "-" }).append('\n')
             append("event            : ").append(o.optString("stateSummary").ifBlank { "-" }).append('\n')
@@ -164,21 +260,40 @@ object ServerDetailDialog {
         fun startSessionPolling() {
             if (sessionPollJob?.isActive == true) return
             sessionPollJob = activity.lifecycleScope.launch {
+                var lastPresentationNanos = 0L
                 while (isActive && dialog.isShowing) {
                     try {
+                        // This is the hot path: it advances UDP/ACK/retry work
+                        // frequently, while snapshot JSON/UI stays bounded below.
                         val raw = withContext(Dispatchers.IO) {
-                            NativeBridge.nativeSessionPoll(250)
+                            NativeBridge.nativeSessionPoll(SESSION_POLL_TIMEOUT_MS)
                         }
                         val snapshot = JSONObject(raw)
-                        log.text = formatSession(snapshot)
+                        val nowNanos = System.nanoTime()
+                        if (lastPresentationNanos == 0L ||
+                            nowNanos - lastPresentationNanos >= SESSION_PRESENTATION_INTERVAL_NANOS ||
+                            !snapshot.optBoolean("active")
+                        ) {
+                            val worldRaw = withContext(Dispatchers.IO) {
+                                NativeBridge.nativeSessionWorldSnapshot()
+                            }
+                            log.text = formatSession(snapshot)
+                            runCatching {
+                                val frame = WorldFrame.from(JSONObject(worldRaw))
+                                NativeServerDialogController.submit(activity, frame)
+                                NativeServerMenuController.submit(activity, frame)
+                            }
+                            lastPresentationNanos = nowNanos
+                        }
                         if (!snapshot.optBoolean("active")) break
                     } catch (t: Throwable) {
                         log.text = "Sesi native berhenti: ${t.message}"
                         break
                     }
-                    // nativeSessionPoll already blocks up to 250 ms on UDP; this
-                    // small yield keeps the main thread/render loop responsive.
-                    delay(16)
+                    // The native poll blocks only briefly, then drains a
+                    // bounded ready-datagram burst. Yield enough for UI work
+                    // without starving active remote sync on busy servers.
+                    delay(SESSION_POLL_YIELD_MS)
                 }
             }
         }
@@ -257,7 +372,7 @@ object ServerDetailDialog {
                     val raw = withContext(Dispatchers.IO) {
                         val prior = JSONObject(NativeBridge.nativeSessionStatus())
                         if (prior.optBoolean("active")) {
-                            NativeBridge.nativeSessionPoll(250)
+                            NativeBridge.nativeSessionPoll(SESSION_POLL_TIMEOUT_MS)
                         } else {
                             NativeBridge.nativeSessionConnect(server.ip, server.port, 1000)
                         }
@@ -271,19 +386,42 @@ object ServerDetailDialog {
             }
         }
 
-        btnClassZero.setOnClickListener {
+        fun requestClass(step: Int) {
             activity.lifecycleScope.launch {
                 try {
-                    val raw = withContext(Dispatchers.IO) {
-                        NativeBridge.nativeSessionRequestClass(0)
+                    val before = withContext(Dispatchers.IO) {
+                        JSONObject(NativeBridge.nativeSessionStatus())
                     }
-                    val snapshot = JSONObject(raw)
-                    log.text = formatSession(snapshot)
-                    if (snapshot.optBoolean("active")) startSessionPolling()
+                    val count = before.optLong("spawnClassCount").coerceIn(0L, 65_536L).toInt()
+                    if (!before.optBoolean("active") || !before.optBoolean("playerInit")) {
+                        log.text = "Tunggu ClientJoin dan PlayerInit sebelum memilih class."
+                    } else if (count <= 0) {
+                        log.text = "Server tidak mengumumkan slot class yang dapat dipilih."
+                    } else {
+                        val base = ((classCursor % count) + count) % count
+                        val requested = if (step < 0) (base - 1 + count) % count else base
+                        val raw = withContext(Dispatchers.IO) {
+                            NativeBridge.nativeSessionRequestClass(requested)
+                        }
+                        val snapshot = JSONObject(raw)
+                        // Advance only when native successfully retained this
+                        // one request as pending; error replies keep the cursor.
+                        if (snapshot.optBoolean("classRequestPending")) {
+                            classCursor = (requested + 1) % count
+                        }
+                        btnClassZero.text = "Class ${classCursor + 1}/$count"
+                        log.text = formatSession(snapshot)
+                        if (snapshot.optBoolean("active")) startSessionPolling()
+                    }
                 } catch (t: Throwable) {
                     log.text = "Gagal meminta class: ${t.message}"
                 }
             }
+        }
+        btnClassZero.setOnClickListener { requestClass(1) }
+        btnClassZero.setOnLongClickListener {
+            requestClass(-1)
+            true
         }
 
         btnSpawn.setOnClickListener {
@@ -318,6 +456,23 @@ object ServerDetailDialog {
             }
         }
 
+        btnChat.setOnClickListener {
+            activity.lifecycleScope.launch {
+                try {
+                    val snapshot = withContext(Dispatchers.IO) {
+                        JSONObject(NativeBridge.nativeSessionStatus())
+                    }
+                    if (!snapshot.optBoolean("active")) {
+                        log.text = "Buka Sesi native dulu sebelum mengirim chat atau command."
+                    } else {
+                        NativeChatDialog.show(activity)
+                    }
+                } catch (t: Throwable) {
+                    log.text = "Gagal membuka chat native: ${t.message}"
+                }
+            }
+        }
+
         btnWorld.setOnClickListener {
             activity.lifecycleScope.launch {
                 try {
@@ -338,6 +493,8 @@ object ServerDetailDialog {
 
         btnSessionDisconnect.setOnClickListener {
             stopSessionPolling()
+            NativeServerDialogController.clear()
+            NativeServerMenuController.clear()
             run {
                 formatSession(JSONObject(NativeBridge.nativeSessionDisconnect()))
             }
@@ -377,6 +534,8 @@ object ServerDetailDialog {
         // connection behind while a renderer/sync loop is still under development.
         dialog.setOnDismissListener {
             stopSessionPolling()
+            NativeServerDialogController.clear()
+            NativeServerMenuController.clear()
             activity.lifecycleScope.launch(Dispatchers.IO) {
                 runCatching { NativeBridge.nativeSessionDisconnect() }
             }

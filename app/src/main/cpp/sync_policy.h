@@ -8,6 +8,8 @@ namespace samp::syncpolicy {
 
 // PlayerInit sends OnFootRate in milliseconds. open.mp's default is 30 ms.
 constexpr uint32_t kDefaultOnFootRateMs = 30;
+constexpr uint32_t kDefaultInCarRateMs = 30;
+constexpr uint32_t kDefaultWeaponRateMs = 30;
 
 // A malicious/malformed server must not turn the Android client into a packet
 // flooder or suspend its local state for an unbounded period. Valid server
@@ -46,6 +48,32 @@ inline uint32_t boundedOnFootRateMs(uint32_t serverRateMs) {
 inline bool onFootSendDue(uint64_t nowMs, uint64_t lastSentMs, uint32_t serverRateMs) {
   return lastSentMs == 0 ||
          (nowMs >= lastSentMs && nowMs - lastSentMs >= boundedOnFootRateMs(serverRateMs));
+}
+
+// PlayerInit's InCarRate has the same millisecond semantics as OnFootRate, but
+// keep a distinct API/counter at the call site so a high-frequency vehicle tick
+// cannot accidentally consume the on-foot cadence state.
+inline uint32_t boundedInCarRateMs(uint32_t serverRateMs) {
+  if (serverRateMs == 0) return kDefaultInCarRateMs;
+  return std::clamp(serverRateMs, kMinOnFootRateMs, kMaxOnFootRateMs);
+}
+
+inline bool inCarSendDue(uint64_t nowMs, uint64_t lastSentMs, uint32_t serverRateMs) {
+  return lastSentMs == 0 ||
+         (nowMs >= lastSentMs && nowMs - lastSentMs >= boundedInCarRateMs(serverRateMs));
+}
+
+// PlayerInit also supplies WeaponRate. AimSync is a secondary sync packet, not
+// an input-event packet, so it receives its own bounded cadence/counter rather
+// than borrowing an OnFoot timestamp and starving movement updates.
+inline uint32_t boundedWeaponRateMs(uint32_t serverRateMs) {
+  if (serverRateMs == 0) return kDefaultWeaponRateMs;
+  return std::clamp(serverRateMs, kMinOnFootRateMs, kMaxOnFootRateMs);
+}
+
+inline bool weaponSendDue(uint64_t nowMs, uint64_t lastSentMs, uint32_t serverRateMs) {
+  return lastSentMs == 0 ||
+         (nowMs >= lastSentMs && nowMs - lastSentMs >= boundedWeaponRateMs(serverRateMs));
 }
 
 }  // namespace samp::syncpolicy

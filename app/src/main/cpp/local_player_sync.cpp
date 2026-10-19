@@ -41,6 +41,10 @@ OnFootPreview buildOnFootPreview(const state::LocalPlayer& local,
                                  const input::WireInput& controls) {
   OnFootPreview preview;
   if (!local.positionKnown) return preview;
+  if (local.controllableKnown && !local.controllable) {
+    preview.status = OnFootPreviewStatus::InvalidState;
+    return preview;
+  }
   if (!controls.headingKnown || !std::isfinite(controls.headingDegrees)) {
     preview.status = OnFootPreviewStatus::MissingHeading;
     return preview;
@@ -75,9 +79,10 @@ OnFootPreview buildOnFootPreview(const state::LocalPlayer& local,
 
   next.health = percentByte(health);
   next.armour = percentByte(armour);
-  // The reducer knows spawn weapons but not the actively selected weapon. Do
-  // not guess a weapon byte until equipment/UI state owns that decision.
-  next.weaponAdditionalKey = 0;
+  // Only an exact server SetPlayerArmedWeapon may populate the low six weapon
+  // bits. This Packet-207 builder never fabricates a weapon selection; the
+  // separate on-foot AIM+FIRE no-target Packet-206 gate rechecks it again.
+  next.weaponAdditionalKey = local.armedWeaponKnown ? local.armedWeapon : 0;
   next.specialAction = local.specialActionKnown ? local.specialAction : 0;
   if (local.velocityKnown) {
     next.velocityX = local.velocityX;

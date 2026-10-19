@@ -62,6 +62,29 @@ std::string clean(std::string s) {
   return s;
 }
 
+// JNI NewStringUTF and JSON both require well-formed text. Query/RPC strings
+// originate on the network, so preserve valid UTF-8 but replace an isolated or
+// malformed high byte before it can cross either boundary.
+size_t validUtf8Width(const std::string& value, size_t index) {
+  const uint8_t first = static_cast<uint8_t>(value[index]);
+  size_t width = 0;
+  if (first >= 0xC2 && first <= 0xDF) width = 2;
+  if (first >= 0xE0 && first <= 0xEF) width = 3;
+  if (first >= 0xF0 && first <= 0xF4) width = 4;
+  if (width == 0 || index + width > value.size()) return 0;
+  for (size_t part = 1; part < width; ++part) {
+    if ((static_cast<uint8_t>(value[index + part]) & 0xC0u) != 0x80u) return 0;
+  }
+  const uint8_t second = static_cast<uint8_t>(value[index + 1]);
+  if ((width == 3 && ((first == 0xE0 && second < 0xA0) ||
+                      (first == 0xED && second >= 0xA0))) ||
+      (width == 4 && ((first == 0xF0 && second < 0x90) ||
+                      (first == 0xF4 && second >= 0x90)))) {
+    return 0;
+  }
+  return width;
+}
+
 bool send_query(const std::string& ip, uint16_t port, char opcode,
                 const std::vector<uint8_t>& extra, int timeoutMs,
                 std::vector<uint8_t>& resp) {
@@ -108,13 +131,14 @@ bool send_query(const std::string& ip, uint16_t port, char opcode,
 std::string json_escape(const std::string& s) {
   std::string out;
   out.reserve(s.size() + 8);
-  for (unsigned char c : s) {
+  for (size_t i = 0; i < s.size();) {
+    const uint8_t c = static_cast<uint8_t>(s[i]);
     switch (c) {
-      case '"': out += "\\\""; break;
-      case '\\': out += "\\\\"; break;
-      case '\n': out += "\\n"; break;
-      case '\r': out += "\\r"; break;
-      case '\t': out += "\\t"; break;
+      case '"': out += "\\\""; ++i; break;
+      case '\\': out += "\\\\"; ++i; break;
+      case '\n': out += "\\n"; ++i; break;
+      case '\r': out += "\\r"; ++i; break;
+      case '\t': out += "\\t"; ++i; break;
       default:
         // JSON strings may not contain raw control bytes. Server-provided
         // names/rules and decoded RPC strings are untrusted network input.
@@ -122,8 +146,19 @@ std::string json_escape(const std::string& s) {
           char escaped[7];
           std::snprintf(escaped, sizeof(escaped), "\\u%04X", static_cast<unsigned>(c));
           out += escaped;
-        } else {
+          ++i;
+        } else if (c < 0x80) {
           out += static_cast<char>(c);
+          ++i;
+        } else {
+          const size_t width = validUtf8Width(s, i);
+          if (width == 0) {
+            out += '?';
+            ++i;
+          } else {
+            out.append(s, i, width);
+            i += width;
+          }
         }
     }
   }

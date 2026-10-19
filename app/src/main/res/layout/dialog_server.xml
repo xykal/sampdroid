@@ -115,6 +115,15 @@
                 android:textSize="12sp" />
 
             <Button
+                android:id="@+id/btnChat"
+                style="?attr/materialButtonOutlinedStyle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:text="@string/btn_chat"
+                android:textSize="12sp" />
+
+            <Button
                 android:id="@+id/btnWorld"
                 style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="wrap_content"

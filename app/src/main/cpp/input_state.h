@@ -28,12 +28,14 @@ constexpr uint16_t kKnownHeldActions =
     kHeldWalk;
 
 // One bounded semantic input sample. moveY is positive when the user pushes
-// forward/up on the virtual stick. lookDeltaDegrees is relative, accumulated
-// into the local preview heading only; it is not an absolute camera transform.
+// forward/up on the virtual stick. lookDeltaDegrees is relative and updates
+// native heading; lookPitchDeltaDegrees is a separate bounded relative camera
+// pitch used only by compatible AimSync (never a world transform).
 struct TouchIntent {
   float moveX = 0.0f;
   float moveY = 0.0f;
   float lookDeltaDegrees = 0.0f;
+  float lookPitchDeltaDegrees = 0.0f;
   uint16_t heldActions = 0;
 };
 
@@ -46,6 +48,9 @@ struct WireInput {
   int16_t upDown = 0;
   uint16_t keys = 0;
   float headingDegrees = 0.0f;
+  // Positive is aim/camera upward. It is independent of the player-facing
+  // quaternion and remains bounded before Packet-203 derives AimZ.
+  float aimPitchDegrees = 0.0f;
 };
 
 // Validates finiteness and known action bits, then clamps untrusted Android
@@ -72,6 +77,7 @@ private:
   bool headingKnown_ = false;
   TouchIntent intent_;
   float headingDegrees_ = 0.0f;
+  float aimPitchDegrees_ = 0.0f;
 };
 
 }  // namespace samp::input

@@ -31,8 +31,17 @@ merujuk dokumentasi/paket publik berikut:
   RakNet 2.x/SA-MP compatibility layer.
 
 Tidak ada source upstream yang di-vendor atau di-link sebagai library di APK.
-Kontributor wajib mencatat sumber/lisensi tabel, capture, dan hasil observasi di
-PR; jangan copy-paste source/binary dengan lisensi tidak kompatibel.
+Pembaca format data dunia dibuat sendiri berdasarkan spesifikasi publik
+[IMG archive](https://gtamods.com/wiki/IMG_archive) dan
+[Collision File](https://gtamods.com/wiki/Collision_File), dan struktur public
+[RenderWare/RpGeometry](https://gtamods.com/wiki/RpGeometry), dan
+[Direct3D Raster/TXD](https://gtamods.com/wiki/Raster_(RW_Section)); parser tidak
+membawa asset game, kode tool pihak ketiga, atau data hasil ekstraksi.
+`raknet_string_compressor.cpp` membangun decoder sendiri dari tabel frekuensi
+bahasa default yang menentukan wire format publik `StringCompressor`; ia tidak
+menyalin atau menautkan implementasi upstream. Kontributor wajib mencatat
+sumber/lisensi tabel, capture, dan hasil observasi di PR; jangan copy-paste
+source/binary dengan lisensi tidak kompatibel.
 
 ## Compatibility data
 

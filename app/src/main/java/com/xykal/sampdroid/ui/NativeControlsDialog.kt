@@ -26,10 +26,10 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * First runtime implementation of the native input-layout contract. It emits
- * semantic Android actions into C++ and intentionally shows an OnFoot preview
- * only: movement packets remain disabled until the world/collision bridge owns
- * a real local position.
+ * Standalone inspector for the native input-layout contract. It emits semantic
+ * Android actions into C++; actual collision-grounded movement and Packet-207
+ * ticking run from the active Dunia native scene so this dialog cannot create a
+ * second competing gameplay loop.
  */
 object NativeControlsDialog {
 
@@ -40,9 +40,9 @@ object NativeControlsDialog {
             setPadding((16 * density).toInt(), (12 * density).toInt(), (16 * density).toInt(), 0)
         }
         val intro = TextView(activity).apply {
-            text = "KONTROL TOUCH NATIVE · PREVIEW AMAN\n" +
+            text = "KONTROL TOUCH NATIVE · INSPEKTOR INPUT\n" +
                 "Joystick, look, dan tombol di bawah masuk sebagai action Android native. " +
-                "Belum ada packet pergerakan yang dikirim ke server."
+                "Buka Dunia native (radar atau scene GPU) untuk menjalankan gerak collision + Packet-207 yang rate-gated."
             textSize = 12f
             setTextColor(Color.rgb(210, 225, 235))
         }
@@ -77,6 +77,7 @@ object NativeControlsDialog {
                             sample.moveX,
                             sample.moveY,
                             sample.lookDeltaDegrees,
+                            sample.lookPitchDeltaDegrees,
                             sample.heldActions
                         )
                     }
@@ -86,6 +87,14 @@ object NativeControlsDialog {
             }
         }
         pad.onControlSample = { inputs.trySend(it) }
+        pad.onUseRequested = { passengerIntent ->
+            activity.lifecycleScope.launch(Dispatchers.IO) {
+                // A tap asks driver/pickup use; a deliberate hold asks passenger
+                // intent. Native still rechecks range/authority and never seats
+                // the player until a server RPC 70 arrives.
+                runCatching { NativeBridge.nativeSessionUseNearby(passengerIntent) }
+            }
+        }
 
         val dialog = MaterialAlertDialogBuilder(activity)
             .setTitle("Kontrol native")
@@ -104,7 +113,7 @@ object NativeControlsDialog {
             // before the final touch-up sample is consumed.
             activity.lifecycleScope.launch(Dispatchers.IO) {
                 runCatching {
-                    NativeBridge.nativeSessionUpdateControls(0f, 0f, 0f, 0)
+                    NativeBridge.nativeSessionUpdateControls(0f, 0f, 0f, 0f, 0)
                 }
             }
         }
@@ -113,17 +122,20 @@ object NativeControlsDialog {
 
     private fun formatState(o: JSONObject): String = when {
         !o.optBoolean("active") -> "Sesi native tidak aktif: ${o.optString("error").ifBlank { "buka sesi dulu" }}"
+        o.optBoolean("localControllableKnown") && !o.optBoolean("localControllable", true) ->
+            "SERVER FREEZE: input gameplay dibuang sampai TogglePlayerControllable aktif lagi."
         !o.optBoolean("localPositionKnown") ->
             "Input diterima. Preview menunggu posisi/spawn lokal dari server."
         !o.optBoolean("onFootPreviewReady") ->
             "Input diterima. Preview belum valid; cek state lokal server."
         else -> String.format(
             Locale.US,
-            "preview lokal siap · move %.2f / %.2f · heading %.1f° · lr=%d ud=%d keys=0x%04X\n" +
-                "Tidak dikirim ke server; world/collision bridge belum ada.",
+            "preview input siap · move %.2f / %.2f · heading %.1f° · pitch %.1f° · lr=%d ud=%d keys=0x%04X\n" +
+                "Buka Dunia native untuk tick collision dan pengiriman sync yang tervalidasi.",
             o.optDouble("controlMoveX"),
             o.optDouble("controlMoveY"),
             o.optDouble("controlHeading"),
+            o.optDouble("controlAimPitch"),
             o.optInt("controlLeftRight"),
             o.optInt("controlUpDown"),
             o.optInt("controlKeys")
@@ -131,8 +143,8 @@ object NativeControlsDialog {
     }
 }
 
-/** Private semantic values mirrored by input_state.h, never raw SA-MP keys. */
-private object NativeHeldAction {
+/** Semantic values mirrored by input_state.h, never raw SA-MP keys. */
+internal object NativeHeldAction {
     const val USE = 1 shl 0
     const val CROUCH = 1 shl 1
     const val FIRE = 1 shl 2
@@ -143,10 +155,13 @@ private object NativeHeldAction {
     const val WALK = 1 shl 7
 }
 
-private data class ControlSample(
+internal data class ControlSample(
     val moveX: Float = 0f,
     val moveY: Float = 0f,
     val lookDeltaDegrees: Float = 0f,
+    // Positive means camera/aim up. It is a relative pulse, like yaw, and is
+    // retained only by native input_state as bounded pitch.
+    val lookPitchDeltaDegrees: Float = 0f,
     val heldActions: Int = 0
 )
 
@@ -158,6 +173,9 @@ private data class ControlSample(
 private class NativeControlPadView(context: Context) : View(context) {
 
     var onControlSample: ((ControlSample) -> Unit)? = null
+    var onActionPressed: ((Int) -> Unit)? = null
+    /** false=tap USE, true=held USE: requests passenger intent if applicable. */
+    var onUseRequested: ((Boolean) -> Unit)? = null
 
     private data class ActionButton(
         val label: String,
@@ -177,6 +195,7 @@ private class NativeControlPadView(context: Context) : View(context) {
         ActionButton("DUCK", NativeHeldAction.CROUCH)
     )
     private val actionPointers = mutableMapOf<Int, Int>()
+    private val actionDownAtMs = mutableMapOf<Int, Long>()
 
     private var stickCenterX = 0f
     private var stickCenterY = 0f
@@ -186,12 +205,13 @@ private class NativeControlPadView(context: Context) : View(context) {
     private var movePointerId = MotionEvent.INVALID_POINTER_ID
     private var lookPointerId = MotionEvent.INVALID_POINTER_ID
     private var lastLookX = 0f
+    private var lastLookY = 0f
     private var moveX = 0f
     private var moveY = 0f
 
     init {
         isClickable = true
-        contentDescription = "Kontrol touch native SampDroid: joystick, look, lompat, lari, tembak, aim, dan use."
+        contentDescription = "Kontrol touch native SampDroid: joystick, look, lompat, lari, tembak, aim, use, dan tahan use untuk meminta kursi penumpang."
         setBackgroundColor(Color.rgb(16, 29, 40))
     }
 
@@ -253,7 +273,7 @@ private class NativeControlPadView(context: Context) : View(context) {
         paint.textSize = dp(11f)
         paint.color = Color.rgb(189, 223, 239)
         canvas.drawText("GERAK", stickCenterX - dp(22f), stickCenterY - stickRadius - dp(10f), paint)
-        canvas.drawText("geser area kosong kanan untuk LOOK", width * 0.43f, dp(22f), paint)
+        canvas.drawText("geser area kanan: yaw/pitch LOOK · tahan USE = penumpang", width * 0.30f, dp(22f), paint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -293,6 +313,10 @@ private class NativeControlPadView(context: Context) : View(context) {
         when {
             button != null -> {
                 actionPointers[pointerId] = button.action
+                actionDownAtMs[pointerId] = event.eventTime
+                // USE is dispatched on release so a hold can carry explicit
+                // passenger intent without first accidentally sending driver.
+                if (button.action != NativeHeldAction.USE) onActionPressed?.invoke(button.action)
                 haptic()
                 emit()
             }
@@ -305,6 +329,7 @@ private class NativeControlPadView(context: Context) : View(context) {
             lookPointerId == MotionEvent.INVALID_POINTER_ID -> {
                 lookPointerId = pointerId
                 lastLookX = x
+                lastLookY = y
             }
         }
         invalidate()
@@ -312,24 +337,33 @@ private class NativeControlPadView(context: Context) : View(context) {
 
     private fun handleMove(event: MotionEvent) {
         var lookDelta = 0f
+        var lookPitchDelta = 0f
         for (index in 0 until event.pointerCount) {
             val pointerId = event.getPointerId(index)
             val x = event.getX(index)
             val y = event.getY(index)
             if (pointerId == movePointerId) updateStick(x, y)
             if (pointerId == lookPointerId) {
-                // Relative horizontal swipe only. The native mapper bounds a
-                // malicious/bad sample again before accumulating heading.
+                // Relative yaw/pitch only. Native clamps both again before
+                // heading/pitch accumulation; this cannot set a transform.
                 lookDelta += ((x - lastLookX) * 0.25f).coerceIn(-90f, 90f)
+                lookPitchDelta += ((lastLookY - y) * 0.25f).coerceIn(-90f, 90f)
                 lastLookX = x
+                lastLookY = y
             }
         }
-        emit(lookDelta)
+        emit(lookDelta, lookPitchDelta)
     }
 
     private fun handlePointerUp(event: MotionEvent, index: Int) {
         val pointerId = event.getPointerId(index)
-        actionPointers.remove(pointerId)
+        val releasedAction = actionPointers.remove(pointerId)
+        val pressedAtMs = actionDownAtMs.remove(pointerId)
+        if (releasedAction == NativeHeldAction.USE) {
+            val passengerIntent = pressedAtMs != null &&
+                event.eventTime - pressedAtMs >= USE_PASSENGER_HOLD_MS
+            onUseRequested?.invoke(passengerIntent)
+        }
         if (pointerId == movePointerId) {
             movePointerId = MotionEvent.INVALID_POINTER_ID
             moveX = 0f
@@ -337,7 +371,11 @@ private class NativeControlPadView(context: Context) : View(context) {
             knobX = stickCenterX
             knobY = stickCenterY
         }
-        if (pointerId == lookPointerId) lookPointerId = MotionEvent.INVALID_POINTER_ID
+        if (pointerId == lookPointerId) {
+            lookPointerId = MotionEvent.INVALID_POINTER_ID
+            lastLookX = 0f
+            lastLookY = 0f
+        }
         performClick()
         emit()
         invalidate()
@@ -359,8 +397,11 @@ private class NativeControlPadView(context: Context) : View(context) {
 
     private fun resetPointers() {
         actionPointers.clear()
+        actionDownAtMs.clear()
         movePointerId = MotionEvent.INVALID_POINTER_ID
         lookPointerId = MotionEvent.INVALID_POINTER_ID
+        lastLookX = 0f
+        lastLookY = 0f
         moveX = 0f
         moveY = 0f
         knobX = stickCenterX
@@ -370,12 +411,13 @@ private class NativeControlPadView(context: Context) : View(context) {
 
     private fun heldActionMask(): Int = actionPointers.values.fold(0) { mask, action -> mask or action }
 
-    private fun emit(lookDelta: Float = 0f) {
+    private fun emit(lookDelta: Float = 0f, lookPitchDelta: Float = 0f) {
         onControlSample?.invoke(
             ControlSample(
                 moveX = moveX,
                 moveY = moveY,
                 lookDeltaDegrees = lookDelta,
+                lookPitchDeltaDegrees = lookPitchDelta,
                 heldActions = heldActionMask()
             )
         )
@@ -397,4 +439,8 @@ private class NativeControlPadView(context: Context) : View(context) {
     }
 
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
+
+    private companion object {
+        const val USE_PASSENGER_HOLD_MS = 500L
+    }
 }
