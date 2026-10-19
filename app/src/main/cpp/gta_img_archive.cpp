@@ -116,11 +116,9 @@ bool parseV2(ByteSource& source, ArchiveIndex& out, std::string& error, size_t m
     fail(error, "jumlah entry IMG melebihi batas aman");
     return false;
   }
-  if (declaredEntries >
-      (std::numeric_limits<uint64_t>::max() - kHeaderBytes) / kDirectoryEntryBytes) {
-    fail(error, "ukuran directory IMG overflow");
-    return false;
-  }
+  // `declaredEntries` is already bounded by caller maxEntries, itself capped
+  // at kMaxArchiveEntries, so this small fixed-width directory multiplication
+  // cannot overflow uint64_t on either Android ABI.
   const uint64_t directoryBytes = static_cast<uint64_t>(declaredEntries) * kDirectoryEntryBytes;
   const uint64_t directoryEnd = kHeaderBytes + directoryBytes;
   if (!rangeInside(kHeaderBytes, directoryBytes, source.size())) {

@@ -1778,6 +1778,7 @@ internal data class WorldFrame(
         }
     }
 }
+}
 
 /** One copied world-space origin used by radar/GLES while spectator is active. */
 internal data class WorldSceneAnchor(
