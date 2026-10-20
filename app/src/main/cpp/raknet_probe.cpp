@@ -108,6 +108,19 @@ enum : uint8_t {
   ID_RECEIVED_STATIC_DATA = 41,
 };
 
+std::string describeOpenConnectionReply(uint8_t id, size_t bytes) {
+  if (id == ID_NO_FREE_INCOMING_CONNECTIONS) {
+    return "server penuh sebelum open connection";
+  }
+  if (handshake::isTerminalSessionControlId(id)) {
+    return "server menolak sebelum open connection (RakNet id " +
+           std::to_string(static_cast<unsigned>(id)) + ")";
+  }
+  return "balasan RakNet tak dikenal sebelum open connection (id " +
+         std::to_string(static_cast<unsigned>(id)) + ", " +
+         std::to_string(bytes) + " byte)";
+}
+
 struct Net {
   int fd = -1;
   sockaddr_in to{};
@@ -2118,12 +2131,40 @@ WorldSnapshot worldSnapshotFrom(const LiveSession* session) {
 static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int timeoutMs,
                                        bool retainSession, const std::string& requestedNickname) {
   ProbeResult res;
+  // Android invokes this from an IO coroutine, but a dead UDP endpoint must not
+  // hold the connect action for every historical retry/read loop. Keep each
+  // receive caller-configurable within a sane range and cap the complete
+  // open/auth/post-accept bootstrap independently. A retained session takes
+  // over any later PlayerInit waiting through its normal short poll cadence.
+  const int receiveTimeoutMs = std::clamp(timeoutMs, 25, 1500);
+  const int connectionBudgetMs = std::clamp(receiveTimeoutMs * 8, 1000, 12000);
+  const auto connectionDeadline = std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(connectionBudgetMs);
+  bool connectionDeadlineReached = false;
   auto ownedNet = std::make_unique<Net>();
   Net& net = *ownedNet;
-  if (!net.open(ip, port, timeoutMs)) {
+  if (!net.open(ip, port, receiveTimeoutMs)) {
     res.error = "socket error / invalid ip";
     return res;
   }
+  const auto receiveDuringConnect = [&](std::vector<uint8_t>& out) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= connectionDeadline) {
+      out.clear();
+      connectionDeadlineReached = true;
+      return -1;
+    }
+    const int remainingMs = static_cast<int>(std::max<int64_t>(
+        1, std::chrono::duration_cast<std::chrono::milliseconds>(connectionDeadline - now).count()));
+    if (!net.setTimeout(std::min(receiveTimeoutMs, remainingMs))) {
+      out.clear();
+      return -1;
+    }
+    return net.recv(out);
+  };
+  const auto connectionDeadlineError = [&]() {
+    return "batas waktu handshake native habis (" + std::to_string(connectionBudgetMs) + " ms)";
+  };
   if (!handshake::isValidNickname(requestedNickname)) {
     res.error = "nickname harus 3-24 karakter ASCII tanpa spasi";
     return res;
@@ -2136,9 +2177,10 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   // ---- 1. probe tanpa cookie ------------------------------------------------
   logln(res, "[1] OPEN_CONNECTION_REQUEST (probe)");
   net.send(wrap_packet({ID_OPEN_CONNECTION_REQUEST, 0x00, 0x00}, port));
-  if (net.recv(resp) <= 0) {
-    res.error = "timeout: server tidak membalas sama sekali";
-    logln(res, "    timeout");
+  if (receiveDuringConnect(resp) <= 0) {
+    res.error = connectionDeadlineReached ? connectionDeadlineError()
+                                          : "timeout: server tidak membalas sama sekali";
+    logln(res, "    " + res.error);
     return res;
   }
   logln(res, "    <- " + hex(resp));
@@ -2167,7 +2209,7 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
                                   static_cast<uint8_t>(x >> 8)};
         logln(res, std::string("[2] echo cookie (") + names[i] + ")");
         net.send(wrap_packet(p, port));
-        if (net.recv(resp) <= 0) continue;
+        if (receiveDuringConnect(resp) <= 0) continue;
         logln(res, "    <- " + hex(resp));
         if (resp[0] == ID_OPEN_CONNECTION_REPLY) {
           got = true;
@@ -2181,17 +2223,23 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
           newCookie = true;
           std::snprintf(cbuf, sizeof(cbuf), "    cookie baru 0x%04X", cookie);
           logln(res, cbuf);
+        } else if (handshake::isTerminalSessionControlId(resp[0])) {
+          res.error = describeOpenConnectionReply(resp[0], resp.size());
+          logln(res, "    " + res.error);
+          return res;
+        } else {
+          logln(res, "    " + describeOpenConnectionReply(resp[0], resp.size()));
         }
       }
     }
     if (!got) {
-      res.error = "cookie challenge gagal";
-      logln(res, "    cookie ditolak server");
+      res.error = connectionDeadlineReached ? connectionDeadlineError() : "cookie challenge gagal";
+      logln(res, "    " + res.error);
       return res;
     }
   } else {
-    res.error = "unexpected reply";
-    logln(res, "    unexpected packet id " + std::to_string(resp[0]));
+    res.error = describeOpenConnectionReply(resp[0], resp.size());
+    logln(res, "    " + res.error);
     return res;
   }
 
@@ -2219,7 +2267,7 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   raknet::SplitReassembler reassembler;
   raknet::ReliableOrderedGate inboundOrdered;
   for (int i = 0; i < 20 && !res.accepted; ++i) {
-    if (net.recv(resp) <= 0) {
+    if (receiveDuringConnect(resp) <= 0) {
       if (!resendTrackedReliableDue(net, handshakePending, res.error)) return res;
       continue;
     }
@@ -2300,7 +2348,8 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   }
 
   if (!res.accepted) {
-    res.error = gotChallenge ? "AUTH_KEY dijawab tapi ACCEPTED tidak datang"
+    res.error = connectionDeadlineReached ? connectionDeadlineError()
+              : gotChallenge ? "AUTH_KEY dijawab tapi ACCEPTED tidak datang"
                              : "tidak menerima AUTH_KEY challenge";
     return res;
   }
@@ -2346,7 +2395,7 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   bool postAcceptReady = false;
   constexpr int kMaxPostAcceptReadinessPolls = 8;
   for (int attempt = 0; attempt < kMaxPostAcceptReadinessPolls && !postAcceptReady; ++attempt) {
-    if (net.recv(resp) <= 0) {
+    if (receiveDuringConnect(resp) <= 0) {
       if (!resendTrackedReliableDue(net, handshakePending, res.error)) return res;
       continue;
     }
@@ -2408,7 +2457,8 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     if (!postAcceptReady && !resendTrackedReliableDue(net, handshakePending, res.error)) return res;
   }
   if (!postAcceptReady) {
-    res.error = "server tidak mengonfirmasi post-accept sebelum ClientJoin";
+    res.error = connectionDeadlineReached ? connectionDeadlineError()
+                                          : "server tidak mengonfirmasi post-accept sebelum ClientJoin";
     return res;
   }
 
@@ -2441,9 +2491,14 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   std::string rpcSummary;
   std::string stateSummary;
   state::WorldState world;
-  for (int i = 0; i < 20; ++i) {
-    if (net.recv(resp) <= 0) {
-      if (!resendTrackedReliableDue(net, handshakePending, res.error)) break;
+  // A retained session must return control to Android promptly even if a
+  // compatible server is quiet after ClientJoin. Further PlayerInit/world
+  // packets are consumed by lifecycle polling rather than monopolising this
+  // one connect coroutine for twenty full socket timeouts.
+  constexpr int kMaxInitialSessionReadPolls = 4;
+  for (int i = 0; i < kMaxInitialSessionReadPolls && !connectionDeadlineReached; ++i) {
+    if (receiveDuringConnect(resp) <= 0) {
+      if (connectionDeadlineReached || !resendTrackedReliableDue(net, handshakePending, res.error)) break;
       continue;
     }
     raknet::Datagram dg = raknet::decodeDatagram(resp);

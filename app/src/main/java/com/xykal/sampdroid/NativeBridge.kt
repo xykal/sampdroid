@@ -208,7 +208,8 @@ object NativeBridge {
 
     /**
      * Explicit user-initiated persistent native session. Calls must run on
-     * Dispatchers.IO; this owns a UDP socket until nativeSessionDisconnect().
+     * Dispatchers.IO; native bounds open/cookie/auth/post-accept before it
+     * retains the UDP socket for normal lifecycle polling.
      */
     external fun nativeSessionConnect(
         ip: String,

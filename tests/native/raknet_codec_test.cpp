@@ -5609,6 +5609,142 @@ void appendLoopbackReliableOrderedFrame(samp::raknet::BitWriter& writer,
   writer.writeAlignedBytes(payload.data(), payload.size());
 }
 
+// A minimal raw-open peer used to lock the Android-facing error path and the
+// connection-wide deadline. It intentionally does not need to decode the
+// client's obfuscated OPEN request: once the loopback source endpoint is
+// observed, legacy server replies are ordinary plain RakNet bytes.
+struct LoopbackOpenReplyPeer {
+  std::atomic<bool> ready{false};
+  uint16_t port = 0;
+  std::vector<uint8_t> reply;
+  std::chrono::milliseconds keepOpenFor{0};
+  std::string error;
+  std::thread worker;
+
+  void start() { worker = std::thread([this] { run(); }); }
+  void join() {
+    if (worker.joinable()) worker.join();
+  }
+
+  void run() {
+    const int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+      error = "open-reply socket";
+      ready = true;
+      return;
+    }
+    sockaddr_in local{};
+    local.sin_family = AF_INET;
+    local.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    local.sin_port = 0;
+    if (::bind(fd, reinterpret_cast<const sockaddr*>(&local), sizeof(local)) != 0) {
+      error = "open-reply bind";
+      ::close(fd);
+      ready = true;
+      return;
+    }
+    socklen_t localLength = sizeof(local);
+    if (::getsockname(fd, reinterpret_cast<sockaddr*>(&local), &localLength) != 0) {
+      error = "open-reply getsockname";
+      ::close(fd);
+      ready = true;
+      return;
+    }
+    port = ntohs(local.sin_port);
+    ready = true;
+
+    fd_set readable;
+    FD_ZERO(&readable);
+    FD_SET(fd, &readable);
+    timeval wait{1, 0};
+    if (::select(fd + 1, &readable, nullptr, nullptr, &wait) <= 0) {
+      error = "open-reply receive timeout";
+      ::close(fd);
+      return;
+    }
+    uint8_t wire[256]{};
+    sockaddr_in peer{};
+    socklen_t peerLength = sizeof(peer);
+    const ssize_t received = ::recvfrom(fd, wire, sizeof(wire), 0,
+                                        reinterpret_cast<sockaddr*>(&peer), &peerLength);
+    if (received <= 0 || reply.empty()) {
+      error = "open-reply receive";
+      ::close(fd);
+      return;
+    }
+    if (::sendto(fd, reply.data(), reply.size(), 0,
+                 reinterpret_cast<const sockaddr*>(&peer), peerLength) !=
+        static_cast<ssize_t>(reply.size())) {
+      error = "open-reply send";
+      ::close(fd);
+      return;
+    }
+    if (keepOpenFor.count() > 0) std::this_thread::sleep_for(keepOpenFor);
+    ::close(fd);
+  }
+};
+
+void testBoundedConnectErrors() {
+  {
+    LoopbackOpenReplyPeer peer;
+    peer.reply = {31u};  // ID_NO_FREE_INCOMING_CONNECTIONS before cookie/auth.
+    peer.start();
+    for (int attempt = 0; attempt < 200 && !peer.ready; ++attempt) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    expect(peer.ready && peer.port != 0u && peer.error.empty(),
+           "open-refusal peer did not initialize");
+    const samp::SessionSnapshot refused =
+        samp::raknet_session_connect("127.0.0.1", peer.port, 100, "LoopbackRefused");
+    peer.join();
+    const samp::SessionSnapshot closed = samp::raknet_session_disconnect();
+    expect(!refused.active && refused.error == "server penuh sebelum open connection" &&
+               peer.error.empty() && !closed.active,
+           "pre-cookie server-full reply must remain actionable in Android session status");
+  }
+
+  {
+    LoopbackOpenReplyPeer peer;
+    peer.reply = {99u, 0xAAu};  // Unknown raw-open reply must stay diagnosable.
+    peer.start();
+    for (int attempt = 0; attempt < 200 && !peer.ready; ++attempt) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    expect(peer.ready && peer.port != 0u && peer.error.empty(),
+           "open-unknown peer did not initialize");
+    const samp::SessionSnapshot unknown =
+        samp::raknet_session_connect("127.0.0.1", peer.port, 100, "LoopbackUnknown");
+    peer.join();
+    const samp::SessionSnapshot closed = samp::raknet_session_disconnect();
+    expect(!unknown.active && unknown.error.find("id 99, 2 byte") != std::string::npos &&
+               peer.error.empty() && !closed.active,
+           "unknown pre-cookie reply must preserve RakNet ID and byte count for diagnosis");
+  }
+
+  {
+    LoopbackOpenReplyPeer peer;
+    peer.reply = {26u, 0x34u, 0x12u};  // Valid cookie, then deliberately silent.
+    peer.keepOpenFor = std::chrono::milliseconds(1400);
+    peer.start();
+    for (int attempt = 0; attempt < 200 && !peer.ready; ++attempt) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    expect(peer.ready && peer.port != 0u && peer.error.empty(),
+           "cookie-stall peer did not initialize");
+    const auto began = std::chrono::steady_clock::now();
+    const samp::SessionSnapshot stalled =
+        samp::raknet_session_connect("127.0.0.1", peer.port, 100, "LoopbackDeadline");
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - began).count();
+    peer.join();
+    const samp::SessionSnapshot closed = samp::raknet_session_disconnect();
+    expect(!stalled.active && stalled.error.find("batas waktu handshake native habis") !=
+               std::string::npos &&
+               elapsed >= 600 && elapsed < 3000 && peer.error.empty() && !closed.active,
+           "connect-wide deadline must stop a silent cookie path without a long UI wait");
+  }
+}
+
 struct LoopbackClassBootstrapPeer {
   std::atomic<bool> ready{false};
   std::atomic<bool> sawClientJoin{false};
@@ -7775,6 +7911,7 @@ int main() {
   testObjectEditReducer();
   testAttachedObjectEditReducer();
   testSessionSafetyWithoutSocket();
+  testBoundedConnectErrors();
   testRetainedSessionInitialClassBootstrap();
   testRetainedSessionLargeOrderedBootstrap();
   testRenderableWorldBoundary();

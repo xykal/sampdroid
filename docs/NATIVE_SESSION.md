@@ -25,6 +25,23 @@ user pilih server
 Tombol **Spawn** sekarang menjalankan handshake native eksplisit, bukan spawn
 otomatis saat connect. Ia tetap bukan kontrol gameplay atau renderer.
 
+### Batas waktu connect dan error pre-cookie
+
+Satu aksi connect dibatasi secara menyeluruh: receive socket diklem ke
+**25–1.500 ms**, sementara fase open/cookie/auth/post-accept total mendapat
+anggaran `8 × receive`, minimum **1 detik** dan maksimum **12 detik**. Ini
+mencegah endpoint UDP diam menahan coroutine UI Android puluhan detik lewat
+rantai retry lama. Setelah `ClientJoin`, core hanya melakukan maksimal empat
+read sinkron; bila `PlayerInit` belum datang, socket tetap diserahkan ke poll
+lifecycle normal, bukan ditutup atau diblokir menunggu 20 timeout.
+
+Penolakan yang sudah dikenal sebelum cookie—misalnya `ID_NO_FREE_INCOMING_CONNECTIONS`
+—ditampilkan sebagai **server penuh**. Balasan lain yang belum dikenal sekarang
+membawa ID RakNet dan panjang byte ke status native agar user/developer dapat
+membedakan server penuh, penolakan, dan jawaban protocol tak dikenal. Tidak ada
+retry otomatis/agresif: user tetap memilih percobaan berikutnya setelah membaca
+status server.
+
 ### Kontrol RakPeer sesudah accept
 
 Untuk parity source offline dengan jalur client RakPeer 2.52 yang diaudit,

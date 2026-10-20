@@ -691,8 +691,10 @@ struct SessionSnapshot {
 
 // Establishes and retains one explicit, user-initiated Android-native session.
 // `nickname` is a user-selected legacy identity (3-24 printable ASCII bytes),
-// never a bundled/shared bot name. Handshake retries can require multiple
-// timeout windows; always call off the UI thread.
+// never a bundled/shared bot name. Per-receive timeout is clamped 25–1500 ms;
+// open/cookie/auth/post-accept is capped at 8x that value (1–12 s), then a
+// quiet post-ClientJoin socket hands off to normal polling. Always call off the
+// UI thread.
 SessionSnapshot raknet_session_connect(const std::string& ip, uint16_t port,
                                       int timeoutMs, const std::string& nickname);
 

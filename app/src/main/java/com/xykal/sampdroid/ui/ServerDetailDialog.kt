@@ -277,6 +277,7 @@ object ServerDetailDialog {
             val spawnPending = snapshot.optBoolean("spawnRequestPending") ||
                 (snapshot.optBoolean("spawnConfirmationSent") &&
                     !snapshot.optBoolean("spawnConfirmationAcked"))
+            val transportError = snapshot.optString("error").trim()
             btnQuickConnect.text = if (active) "Sesi native aktif" else "Hubungkan native"
             btnOpenWorld.isEnabled = active
             btnClassZero.isEnabled = active && playerInit && classCount > 0L && !classPending && !spawnPending
@@ -290,8 +291,10 @@ object ServerDetailDialog {
             btnSpawn.isEnabled = active && playerInit && snapshot.optBoolean("classSelectionKnown") &&
                 snapshot.optBoolean("classSelectable") && !spawnPending
             connectionHint.text = when {
-                !snapshot.optBoolean("active") -> "Sesi belum aktif. Hubungkan native untuk memulai handshake."
-                !snapshot.optBoolean("playerInit") -> "Transport aktif; menunggu PlayerInit dari server sebelum class/spawn."
+                !active && transportError.isNotEmpty() ->
+                    "Handshake native berhenti: $transportError. Periksa server/koneksi lalu coba lagi manual."
+                !active -> "Sesi belum aktif. Hubungkan native untuk memulai handshake."
+                !playerInit -> "Transport aktif; menunggu PlayerInit dari server sebelum class/spawn."
                 snapshot.optBoolean("spawnConfirmationAcked") ->
                     "Spawn dikonfirmasi transport. Buka Dunia untuk kontrol, chat, dan HUD native."
                 snapshot.optBoolean("spawnConfirmationSent") ->
