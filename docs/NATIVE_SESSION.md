@@ -62,12 +62,14 @@ Parity ini sudah punya vector regresi host. Probe native SampDroid mengonfirmasi
 accepted, readiness post-accept, dan ACK transport untuk ClientJoin UIF; probe
 RakNet referensi yang read-only dengan `ClientJoin` R2/channel 2 menerima
 `PlayerInit` UIF tanpa class/spawn. Pada 2026-10-20, satu sesi SampDroid native
-baru yang dibatasi (tanpa spawn, sync, chat, command, atau input gameplay)
-berakhir pada `unexpected reply` sebelum accepted/`PlayerInit`; sesi lokal
-kemudian dibersihkan dan tidak ada klaim class/spawn. Hasil itu bukan regresi yang
-dapat disimpulkan sendiri maupun bukti gameplay SampDroid: drain bootstrap,
-class/spawn, sync, dan perilaku client-facing masih perlu validasi APK/device
-yang terukur.
+awal yang dibatasi berhenti pada `unexpected reply` sebelum accepted/`PlayerInit`.
+Sesudah path error diberi ID/ukuran reply dan batas waktu, satu sesi bounded
+berikutnya mencapai `accepted` dan socket retained pasca-ClientJoin; ia melihat
+8 packet/7 RPC tetapi belum menerima `PlayerInit` dalam empat poll pendek lalu
+menjalankan disconnect bersih. Kedua percobaan tidak mengirim spawn, sync, chat,
+command, atau input gameplay. Hasil itu bukan regresi yang dapat disimpulkan
+sendiri maupun bukti gameplay SampDroid: drain bootstrap, class/spawn, sync, dan
+perilaku client-facing masih perlu validasi APK/device yang terukur.
 
 ## Static GTA world filter dari server (RPC 43)
 

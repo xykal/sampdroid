@@ -14,9 +14,11 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 - [x] Retain socket setelah ClientJoin dan kirim class/spawn flow lewat session native.
 - [~] UIF read-only evidence: ClientJoin SampDroid menerima ACK transport dan
   RakNet reference dengan ClientJoin R2/SyncRPC channel 2 menerima PlayerInit.
-  Pada 2026-10-20, satu sesi SampDroid native bounded berhenti `unexpected reply`
-  sebelum accepted/PlayerInit (tanpa action gameplay); PlayerInit/class/spawn
-  SampDroid pada APK/device dan server lain masih pending.
+  Pada 2026-10-20, satu sesi SampDroid native awal berhenti `unexpected reply`
+  sebelum accepted/PlayerInit; sesi bounded berikutnya mencapai accepted + retained
+  pasca-ClientJoin (8 packet/7 RPC), namun belum PlayerInit dalam empat poll
+  pendek dan ditutup tanpa action gameplay. PlayerInit/class/spawn SampDroid
+  pada APK/device dan server lain masih pending.
 - [x] Decode player StreamIn/StreamOut, exact non-DL `SetPlayerSkin` (153), dan
   broadcast remote `PlayerFootSync` (207) ke state entity bounded; model snapshot
   menuju renderer DFF/proxy bounded ada, tetapi animasi/capture nyata belum.

@@ -90,12 +90,15 @@ RequestClass `#0` pada channel yang benar. Peer itu juga mengirim 256 RPC ordere
 valid sebelum `PlayerInit` lalu `PlayerInit` duplikat untuk mengunci hand-off retained
 dan memastikan bootstrap class tetap tepat satu kali, termasuk penolakan server
 penuh pre-cookie serta deadline connect saat cookie berhenti. Build GitHub Actions
-`39470595264` lulus untuk Kotlin/GLES, NDK packaging, dan kedua ABI; artifact
+`39475012329` lulus untuk Kotlin/GLES, NDK packaging, dan kedua ABI; artifact
 debug internalnya lolos cek ZIP/ELF `armeabi-v7a` + `arm64-v8a`. Itu **bukan**
 bukti kompatibilitas gameplay/live server: pada 2026-10-20, satu sesi native
-UIF yang dibatasi dan tanpa action gameplay berhenti pada `unexpected reply`
-sebelum accepted/`PlayerInit`, lalu sesi lokal dibersihkan. Tidak ada klaim
-class/spawn atau gameplay UIF; validasi APK/device terukur tetap pending.
+UIF awal yang dibatasi berhenti pada `unexpected reply` sebelum accepted/`PlayerInit`.
+Sesudah diagnosa error dibatasi, satu sesi berikutnya mencapai accepted + retained
+setelah ClientJoin dan melihat 8 packet/7 RPC, tetapi belum menerima `PlayerInit`
+dalam window empat poll pendek lalu ditutup bersih—tanpa class, spawn, sync, chat,
+atau input gameplay. Tidak ada klaim class/spawn atau gameplay UIF; validasi
+APK/device terukur tetap pending.
 Workspace ini tidak memiliki Gradle/Kotlin/Android SDK lokal; build APK tetap
 hanya boleh lewat GitHub Actions sesuai gate rilis.
 
