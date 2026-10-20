@@ -2036,7 +2036,7 @@ void testLegacyHandshakeBuilders() {
   using samp::handshake::buildInternalPing;
   using samp::handshake::buildNewIncoming;
   using samp::handshake::generateLegacySerial;
-  using samp::handshake::isPostAcceptReadyControlId;
+  using samp::handshake::isPostAcceptControlId;
   using samp::handshake::isTerminalSessionControlId;
   using samp::handshake::isValidLegacySerial;
   using samp::handshake::isValidNickname;
@@ -2055,9 +2055,9 @@ void testLegacyHandshakeBuilders() {
              isTerminalSessionControlId(37u) && !isTerminalSessionControlId(12u) &&
              !isTerminalSessionControlId(34u) && !isTerminalSessionControlId(41u),
          "terminal legacy RakNet control classification changed");
-  expect(isPostAcceptReadyControlId(6u) && isPostAcceptReadyControlId(41u) &&
-             !isPostAcceptReadyControlId(20u) && !isPostAcceptReadyControlId(30u),
-         "post-accept ClientJoin readiness controls changed");
+  expect(isPostAcceptControlId(6u) && isPostAcceptControlId(41u) &&
+             !isPostAcceptControlId(20u) && !isPostAcceptControlId(30u),
+         "post-accept transport-control classification changed");
 
   const std::string authText = "6C407EC29DE59E2";
   std::vector<uint8_t> authChallenge = {12u, static_cast<uint8_t>(authText.size() + 1u)};
@@ -2121,10 +2121,15 @@ void testLegacyHandshakeBuilders() {
   // same stream. A live UIF capture independently returns its RPC frames on 2.
   static_assert(samp::clientrpc::kReliableOrderedChannel == 2u,
                 "SyncRPC ordering channel changed");
+  // RakPeer's accepted-path schedule consumes messages 2/3/4 for
+  // NEW_INCOMING/internal-ping/static-data, so its first game RPC is message 5.
   const auto framedJoin = samp::raknet::buildReliableOrdered(
-      3u, samp::clientrpc::kReliableOrderedChannel, 0u, join);
+      5u, samp::clientrpc::kReliableOrderedChannel, 0u, join);
+  // Independently emitted by FakeBots' vendored RakNet with RAKNET_LEGACY=1
+  // for these same fields. Keep this byte fixture separate from a merely
+  // self-decoded assertion: the 0x48 header carries legacy reliability=9.
   expect(framedJoin == std::vector<uint8_t>({
-             0x01u, 0x80u, 0x48u, 0x80u, 0x00u, 0x01u, 0x00u, 0x10u,
+             0x02u, 0x80u, 0x48u, 0x80u, 0x00u, 0x01u, 0x00u, 0x10u,
              0x14u, 0x19u, 0xD9u, 0x0Fu, 0x00u, 0x00u, 0x01u, 0x09u,
              0x4Eu, 0x61u, 0x74u, 0x69u, 0x76u, 0x65u, 0x5Fu, 0x30u,
              0x31u, 0x78u, 0x56u, 0x34u, 0x12u, 0x03u, 0x33u, 0x45u,
@@ -2133,11 +2138,50 @@ void testLegacyHandshakeBuilders() {
          }), "ClientJoin SyncRPC-channel wire vector changed");
   const auto decoded = samp::raknet::decodeDatagram(framedJoin);
   expect(decoded.ok && decoded.packets.size() == 1u &&
-             decoded.packets[0].messageNumber == 3u &&
+             decoded.packets[0].messageNumber == 5u &&
              decoded.packets[0].reliability == samp::raknet::kReliabilityReliableOrdered &&
              decoded.packets[0].orderingChannel == samp::clientrpc::kReliableOrderedChannel &&
              decoded.packets[0].orderingIndex == 0u && decoded.packets[0].payload == join,
          "ClientJoin reliable ordered channel/index framing changed");
+
+  // RakPeer's sender coalesces the accepted-path control records plus the
+  // high-priority PlayerConnect RPC into one no-ACK datagram on an ordinary
+  // network tick. This entire 70-byte fixture was also emitted independently
+  // by FakeBots' legacy BitStream (same IP/port/time/name/serial inputs).
+  const auto bootstrap = samp::raknet::buildCoalescedDatagram({
+      {2u, samp::raknet::kReliabilityReliable, 0u, 0u,
+       buildNewIncoming({94u, 23u, 145u, 137u}, 7776u)},
+      {3u, samp::raknet::kReliabilityUnreliable, 0u, 0u,
+       buildInternalPing(0x12345678u)},
+      {4u, samp::raknet::kReliabilityReliable, 0u, 0u, buildEmptyStaticData()},
+      {5u, samp::raknet::kReliabilityReliableOrdered,
+       samp::clientrpc::kReliableOrderedChannel, 0u, join},
+  });
+  expect(bootstrap == std::vector<uint8_t>({
+             0x01u, 0x00u, 0x42u, 0x38u, 0x1Eu, 0x5Eu, 0x17u, 0x91u, 0x89u,
+             0x60u, 0x1Eu, 0x03u, 0x00u, 0x64u, 0x50u, 0x06u, 0x78u, 0x56u,
+             0x34u, 0x12u, 0x04u, 0x00u, 0x87u, 0x00u, 0x29u, 0x05u, 0x00u,
+             0x91u, 0x00u, 0x00u, 0x02u, 0x00u, 0x20u, 0x14u, 0x19u, 0xD9u,
+             0x0Fu, 0x00u, 0x00u, 0x01u, 0x09u, 0x4Eu, 0x61u, 0x74u, 0x69u,
+             0x76u, 0x65u, 0x5Fu, 0x30u, 0x31u, 0x78u, 0x56u, 0x34u, 0x12u,
+             0x03u, 0x33u, 0x45u, 0x39u, 0x08u, 0x30u, 0x2Eu, 0x33u, 0x2Eu,
+             0x37u, 0x2Du, 0x52u, 0x32u,
+         }), "source-equivalent coalesced post-accept bootstrap changed");
+  const auto decodedBootstrap = samp::raknet::decodeDatagram(bootstrap);
+  expect(decodedBootstrap.ok && decodedBootstrap.packets.size() == 4u &&
+             decodedBootstrap.packets[0].messageNumber == 2u &&
+             decodedBootstrap.packets[0].payload == buildNewIncoming({94u, 23u, 145u, 137u}, 7776u) &&
+             decodedBootstrap.packets[1].messageNumber == 3u &&
+             decodedBootstrap.packets[1].reliability == samp::raknet::kReliabilityUnreliable &&
+             decodedBootstrap.packets[1].payload == buildInternalPing(0x12345678u) &&
+             decodedBootstrap.packets[2].messageNumber == 4u &&
+             decodedBootstrap.packets[2].payload == buildEmptyStaticData() &&
+             decodedBootstrap.packets[3].messageNumber == 5u &&
+             decodedBootstrap.packets[3].reliability == samp::raknet::kReliabilityReliableOrdered &&
+             decodedBootstrap.packets[3].orderingChannel == samp::clientrpc::kReliableOrderedChannel &&
+             decodedBootstrap.packets[3].orderingIndex == 0u &&
+             decodedBootstrap.packets[3].payload == join,
+         "coalesced post-accept bootstrap did not retain individual frames");
 }
 
 void testReliableAndAck() {
@@ -5747,7 +5791,14 @@ void testBoundedConnectErrors() {
 
 struct LoopbackClassBootstrapPeer {
   std::atomic<bool> ready{false};
+  // Test-only loss switch: the peer ignores the first source-coalesced burst
+  // so the client must recover each tracked reliable frame independently.
+  bool dropInitialSourceBootstrap = false;
+  std::atomic<bool> droppedSourceBootstrap{false};
+  std::atomic<unsigned> bootstrapRetryMask{0u};
+  std::atomic<bool> sawSourceBootstrapDatagram{false};
   std::atomic<bool> sawClientJoin{false};
+  std::atomic<bool> sawPostAcceptPong{false};
   std::atomic<bool> sawInitialClass{false};
   std::atomic<unsigned> initialClassRequestMessages{0u};
   // Optional in-order, bodyless server RPCs placed before PlayerInit. They
@@ -5842,6 +5893,52 @@ struct LoopbackClassBootstrapPeer {
         error = "loopback datagram decode";
         break;
       }
+      // The source peer's accepted path puts its three controls and ClientJoin
+      // in one normal no-ACK datagram. Keep this end-to-end assertion here so
+      // a future direct-send refactor cannot silently undo the byte fixture.
+      bool sourceBootstrapDatagram = false;
+      if (datagram.packets.size() == 4u) {
+        const auto& first = datagram.packets[0];
+        const auto& second = datagram.packets[1];
+        const auto& third = datagram.packets[2];
+        const auto& fourth = datagram.packets[3];
+        sourceBootstrapDatagram =
+            first.messageNumber == 2u && first.reliability == samp::raknet::kReliabilityReliable &&
+            first.payload.size() == 7u && first.payload[0] == 30u &&
+            second.messageNumber == 3u && second.reliability == samp::raknet::kReliabilityUnreliable &&
+            second.payload.size() == 5u && second.payload[0] == 6u &&
+            third.messageNumber == 4u && third.reliability == samp::raknet::kReliabilityReliable &&
+            third.payload == std::vector<uint8_t>({41u}) &&
+            fourth.messageNumber == 5u && fourth.reliability == samp::raknet::kReliabilityReliableOrdered &&
+            fourth.orderingChannel == samp::clientrpc::kReliableOrderedChannel &&
+            fourth.orderingIndex == 0u && fourth.payload.size() >= 2u &&
+            fourth.payload[0] == 20u && fourth.payload[1] == 25u;
+      }
+      if (sourceBootstrapDatagram) {
+        sawSourceBootstrapDatagram = true;
+        // Suppress transport ACKs and semantic handling only once. The retry
+        // path must then retain msg 2/4/5 individually; unreliable ping msg 3
+        // is intentionally not resent.
+        if (dropInitialSourceBootstrap && !droppedSourceBootstrap.exchange(true)) continue;
+      }
+      if (droppedSourceBootstrap && datagram.packets.size() == 1u) {
+        const auto& retried = datagram.packets.front();
+        if (retried.messageNumber == 2u &&
+            retried.reliability == samp::raknet::kReliabilityReliable &&
+            retried.payload.size() == 7u && retried.payload[0] == 30u) {
+          bootstrapRetryMask.fetch_or(1u);
+        } else if (retried.messageNumber == 4u &&
+                   retried.reliability == samp::raknet::kReliabilityReliable &&
+                   retried.payload == std::vector<uint8_t>({41u})) {
+          bootstrapRetryMask.fetch_or(2u);
+        } else if (retried.messageNumber == 5u &&
+                   retried.reliability == samp::raknet::kReliabilityReliableOrdered &&
+                   retried.orderingChannel == samp::clientrpc::kReliableOrderedChannel &&
+                   retried.orderingIndex == 0u && retried.payload.size() >= 2u &&
+                   retried.payload[0] == 20u && retried.payload[1] == 25u) {
+          bootstrapRetryMask.fetch_or(4u);
+        }
+      }
       for (const samp::raknet::IncomingPacket& packet : datagram.packets) {
         const bool reliable = packet.reliability == samp::raknet::kReliabilityReliable ||
                               packet.reliability == samp::raknet::kReliabilityReliableOrdered ||
@@ -5864,11 +5961,11 @@ struct LoopbackClassBootstrapPeer {
           };
           (void)sendServer(samp::raknet::buildReliable(1u, accepted));
           sentAccepted = true;
-        } else if (id == 30u && sentAccepted && !sentPostAcceptPing) {
-          // This is sent only after NEW_INCOMING, exactly the readiness signal
-          // the native handshake waits for before sending ClientJoin.
-          (void)sendServer(samp::raknet::buildUnreliable(2u, {6u, 1u, 2u, 3u, 4u}));
-          sentPostAcceptPing = true;
+        } else if (id == 30u && sentAccepted) {
+          // RakPeer receives NEW_INCOMING before the peer's game thread sends
+          // PlayerConnect. Deliberately withhold the server ping here: a source
+          // client emits local NEW_INCOMING/ping/static as message 2/3/4 and
+          // ClientJoin as message 5 without waiting for inbound metadata.
         } else if (id == 20u && packet.payload.size() >= 2u && packet.payload[1] == 25u) {
           if (packet.reliability != samp::raknet::kReliabilityReliableOrdered ||
               packet.orderingChannel != samp::clientrpc::kReliableOrderedChannel ||
@@ -5876,7 +5973,17 @@ struct LoopbackClassBootstrapPeer {
             error = "ClientJoin must use SyncRPC channel 2/index 0";
             break;
           }
+          if (packet.messageNumber != 5u) {
+            error = "ClientJoin must preserve RakPeer post-accept message number 5";
+            break;
+          }
           sawClientJoin = true;
+          if (!sentPostAcceptPing) {
+            // The normal server control still arrives and must be answered, but
+            // only after ClientJoin has kept the source's counter progression.
+            (void)sendServer(samp::raknet::buildUnreliable(2u, {6u, 1u, 2u, 3u, 4u}));
+            sentPostAcceptPing = true;
+          }
           if (!sentPlayerInit) {
             uint16_t serverMessageNumber = 3u;
             uint16_t serverOrderingIndex = 0u;
@@ -5917,6 +6024,15 @@ struct LoopbackClassBootstrapPeer {
             }
             sentPlayerInit = true;
           }
+        } else if (id == 9u && sentPostAcceptPing) {
+          if (packet.reliability != samp::raknet::kReliabilityUnreliable ||
+              packet.messageNumber != 6u || packet.payload.size() != 9u ||
+              packet.payload[1] != 1u || packet.payload[2] != 2u ||
+              packet.payload[3] != 3u || packet.payload[4] != 4u) {
+            error = "post-ClientJoin internal ping must receive source-numbered pong";
+            break;
+          }
+          sawPostAcceptPong = true;
         } else if (packet.payload == std::vector<uint8_t>({20u, 128u, 0u, 0u})) {
           if (packet.reliability != samp::raknet::kReliabilityReliableOrdered ||
               packet.orderingChannel != samp::clientrpc::kReliableOrderedChannel ||
@@ -5967,9 +6083,41 @@ void testRetainedSessionInitialClassBootstrap() {
              !world.spawnResponseKnown && !world.spawnAllowed && !world.spawnRequestPending &&
              !world.spawnConfirmationSent && !world.spawnConfirmationAcked,
          "world snapshot must mirror the native pre-spawn input gate");
-  expect(peer.sawClientJoin && peer.sawInitialClass && peer.error.empty(),
-         "retained session must send source-ordered ClientJoin then initial RequestClass");
+  expect(peer.sawSourceBootstrapDatagram && peer.sawClientJoin && peer.sawPostAcceptPong &&
+             peer.sawInitialClass && peer.error.empty(),
+         "retained session must coalesce source bootstrap, then pong and initial RequestClass");
   expect(!closed.active, "loopback retained session must close cleanly");
+}
+
+void testRetainedSessionCoalescedBootstrapRetriesIndividually() {
+  LoopbackClassBootstrapPeer peer;
+  peer.dropInitialSourceBootstrap = true;
+  peer.start();
+  for (int attempt = 0; attempt < 200 && !peer.ready; ++attempt) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  expect(peer.ready && peer.port != 0u && peer.error.empty(),
+         "retry loopback peer did not initialize");
+
+  samp::SessionSnapshot session =
+      samp::raknet_session_connect("127.0.0.1", peer.port, 250, "LoopbackRetry");
+  // A retry becomes due at 750 ms. Let retained polling consume a late
+  // PlayerInit on unusually slow host schedulers without extending the server
+  // fixture beyond its fixed four-second deadline.
+  for (int attempt = 0; attempt < 8 && !session.playerInit && session.error.empty(); ++attempt) {
+    session = samp::raknet_session_poll(80);
+  }
+  peer.join();
+  const samp::SessionSnapshot closed = samp::raknet_session_disconnect();
+
+  expect(session.active && session.accepted && session.playerInit && session.joined &&
+             session.classRequestPending && session.error.empty(),
+         "individually retried bootstrap must still retain an initialized session");
+  expect(peer.sawSourceBootstrapDatagram && peer.droppedSourceBootstrap &&
+             peer.bootstrapRetryMask.load() == 0x7u && peer.sawClientJoin &&
+             peer.sawPostAcceptPong && peer.sawInitialClass && peer.error.empty(),
+         "loss of the coalesced burst must retry reliable msg 2/4/5 separately with original identity");
+  expect(!closed.active, "retried bootstrap session must close cleanly");
 }
 
 // A busy server can send far more than the synchronous handshake's bounded
@@ -6008,8 +6156,8 @@ void testRetainedSessionLargeOrderedBootstrap() {
          "large ordered bootstrap must reach PlayerInit and retain initial RequestClass");
   expect(session.receivedRpcs >= static_cast<int>(kBootstrapRpcCount + 2u),
          "large ordered bootstrap lost valid ordered RPCs before PlayerInit");
-  expect(peer.sawClientJoin && peer.sawInitialClass &&
-             peer.sentPrePlayerInitOrderedFrames == kBootstrapRpcCount &&
+  expect(peer.sawSourceBootstrapDatagram && peer.sawClientJoin && peer.sawPostAcceptPong &&
+             peer.sawInitialClass && peer.sentPrePlayerInitOrderedFrames == kBootstrapRpcCount &&
              peer.initialClassRequestMessages == 1u && peer.error.empty(),
          "large ordered bootstrap must preserve SyncRPC order and request class exactly once");
   expect(!closed.active, "large ordered bootstrap retained session must close cleanly");
@@ -7921,6 +8069,7 @@ int main() {
   testSessionSafetyWithoutSocket();
   testBoundedConnectErrors();
   testRetainedSessionInitialClassBootstrap();
+  testRetainedSessionCoalescedBootstrapRetriesIndividually();
   testRetainedSessionLargeOrderedBootstrap();
   testRenderableWorldBoundary();
   testSetVehicleParamsReducer();

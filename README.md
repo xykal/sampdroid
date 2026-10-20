@@ -63,14 +63,14 @@ live-server penuh setara PC.
 |---|---:|---|
 | Browser + query server | ✅ | info, rules, player list, ping native |
 | RakNet 2.x open/cookie/auth | ✅ | diverifikasi terhadap server live |
-| `CONNECTION_REQUEST_ACCEPTED` + ClientJoin | 🧪 | builder/vector SyncRPC channel 2, ACK/retry, dan gate post-accept source-backed diuji host. UIF menerima transport ClientJoin dalam probe native; PlayerInit SampDroid + class/spawn end-to-end masih pending |
+| `CONNECTION_REQUEST_ACCEPTED` + ClientJoin | 🧪 | frame ClientJoin msg=5/SyncRPC channel 2 **dan** burst post-accept 2/3/4/5 70-byte dalam satu datagram no-ACK byte-identical dengan BitStream legacy FakeBots; reliable tetap punya ACK/retry masing-masing; peer loopback memastikan empat frame itu keluar bersama-sama dan, saat burst pertama sengaja dibuang, msg 2/4/5 diretry terpisah dengan identitas asli. UIF belum memberi `PlayerInit`/class/spawn; coalescing baru tervalidasi host, bukan receipt semantik/live admission |
 | ACK reliable + multi-packet datagram | ✅ | retransmisi tetap di-ACK lalu gate receipt `u16` bounded membuang duplikat sebelum split/reducer |
 | Split reassembly | ✅ | fragment disusun sebelum RPC didecode |
 | State pemain dasar | ✅ | `PlayerInit`, Join/Quit/Name/Color, StreamIn/Out, roster score/ping RPC 155, policy nametag `ShowNameTags`/jarak + RPC 80 per-player, dan local spawn/posisi/vitals → model native bounded |
 | Native chat state | 🧪 | chat broadcast/HUD tail bounded + composer chat/`/command` reliable native (tombol CHAT di scene/radar, keyboard `T` atau `/`, dan controller Start) dengan IME **Kirim**, serta `SetPlayerChatBubble` server dengan expiry native bounded; bukan log saja |
 | Checkpoint state | ✅ | normal + race checkpoint reducer dengan marker di radar + scene GPU |
 | Class/spawn packet core | ✅ | `PlayerInit` memicu RequestClass #0 bootstrap native; class lain → RequestSpawn → PlayerSpawn confirmation + ACK gate native |
-| Persistent native session | 🧪 | connect open/cookie/auth/post-accept dibatasi total 1–12 dtk lalu ClientJoin hanya warmup empat read sebelum socket retained; auto-poll foreground 40 ms, peer filter, satu receive blocking lalu—bila tidak timeout—maksimal 15 receive ready nonblocking (16 attempt total), ACK/retry bounded, gate receipt reliable window 4.096 nomor sebelum split, inbound `RELIABLE_ORDERED` per-channel gate (buffer bounded/overflow menutup sesi), keepalive transport reliable + internal pong. Saat app background, maintenance dibatasi 200/100 ms tanpa presentasi dialog/menu server; reconnect belum |
+| Persistent native session | 🧪 | connect open/cookie/auth/bootstrap dibatasi total 1–12 dtk. Sesudah accept, urutan source RakPeer 2/3/4/5 (`NEW_INCOMING`/ping/static-data/ClientJoin) dikirim bersama sebagai satu datagram no-ACK lalu maksimal delapan read awal sebelum socket retained; auto-poll foreground 40 ms, peer filter, satu receive blocking lalu—bila tidak timeout—maksimal 15 receive ready nonblocking (16 attempt total), ACK/retry bounded per reliable frame, gate receipt reliable window 4.096 nomor sebelum split, inbound `RELIABLE_ORDERED` per-channel gate (buffer bounded/overflow menutup sesi), keepalive transport reliable + internal pong. Saat app background, maintenance dibatasi 200/100 ms tanpa presentasi dialog/menu server; reconnect belum |
 | OnFootSync core | 🧪 | encoder packet-207 client→server vector-tested, USeq channel-1 dengan counter sequenced terpisah dari SyncRPC channel-2, rate/spawn gate; surface dunia radar/GPU menjalankan tick gerak **hanya** dari collision GTA yang telah tersedia lalu rate-gated send. Exterior grounding + sweep silinder sisi dasar terhadap COL box/sphere/mesh wall sudah ada, bersama raycast statik box/sphere/mesh bounded (interior exact, ≤256 unit) yang hanya dapat memberi `HitPos` absolut dekat pada Packet-206 `HitType=None` tanpa target/damage; RPC `SetPlayerInterior` memilih batch IPL dan query COL dengan ID interior yang persis sama, sedangkan RPC 17 `SetWorldBounds` menahan prediction on-foot/driver **exterior** di rectangle server tanpa menebak push-back. Transisi/ubah envelope mereset prediksi lalu tick hanya lanjut bila floor matching tersedia. Renderer placement interior bounded sudah ada bila IPL user termuat; physics GTA penuh dan capture/live validation tetap belum |
 | AimSync + no-target fire core | 🧪 | Packet-203 `PlayerAimSync` client→server fixed 32-byte, vector-tested, USeq channel-1 dengan counter sequenced terpisah dari SyncRPC channel-2 dan rate `WeaponRate` sendiri. Hanya aktif on-foot saat semantic **AIM** ditahan, transform collision-grounded + heading/yaw dan pitch native bounded valid, serta armed weapon/ammo diketahui dari RPC server. Saat **AIM+FIRE**, Packet-206 client 41-byte `HitType=None` rate-capped juga dapat dikirim dari pose kamera yang sama. Layout no-`PlayerID` ini diaudit terhadap reader + generator NPC open.mp commit `3d20f3dc`; `LagCompensation=0` menahan sender fail-closed dan server legacy/anticheat live belum divalidasi. Ia tidak dapat membawa target ID, entity raycast/impact, offset, damage, reward, atau ammo decrement lokal; hanya ray COL statik dekat dari data user yang boleh mengisi `HitPos` absolut tetap dengan `HitType=None`. Camera mode compatible, packed `CamZoom:6 | WeaponState:2`, serta gate spawn/ACK/freeze/vehicle/kamera-server tetap diverifikasi |
 | Remote on-foot bridge | 🧪 | decoder broadcast packet-207 server→client + lifecycle StreamIn/Out → state entity native bounded; RPC 166 hanya memberi cue `WASTED` remote singkat, bukan death/respawn lokal |
@@ -84,30 +84,41 @@ live-server penuh setara PC.
 | World/game bridge Android | 🧪 | radar/entity surface, scene GPU, HUD, dialog, touch overlay, runtime collision, parser mesh DFF/material, decoder TXD, placement-aware DFF batch per-ID interior, sampai empat overlay TXD bounded untuk placement/dynamic model, serta resolver `cars`/`peds` stock → streamed vehicle/skin DFF bounded sudah ada; session hanya mengirim gerak yang tervalidasi oleh floor + side sweep COL pada interior server yang cocok. Resolver map/texture/LOD penuh, material/texture vehicle, collision/streaming multi-IMG penuh, physics GTA lengkap, dan gameplay server lengkap belum |
 
 Suite regresi C++ host terbaru lulus untuk codec/state sekaligus builder handshake
-legacy (ClientJoin SyncRPC-2, NewIncoming, post-accept internal ping/static-data),
-jalur ACK/retry bounded, dan peer loopback yang membuktikan `PlayerInit` memicu
-RequestClass `#0` pada channel yang benar. Peer itu juga mengirim 256 RPC ordered
-valid sebelum `PlayerInit` lalu `PlayerInit` duplikat untuk mengunci hand-off retained
-dan memastikan bootstrap class tetap tepat satu kali, termasuk penolakan server
-penuh pre-cookie serta deadline connect saat cookie berhenti. Build GitHub Actions
+legacy: frame ClientJoin SyncRPC-2 msg=5, fixture burst 2/3/4/5 70-byte yang
+byte-identical dengan BitStream FakeBots, ACK/retry bounded per reliable frame,
+dan peer loopback yang membuktikan jalur session mengirim keempat frame bootstrap
+dalam **satu** datagram, lalu bila burst itu sengaja hilang meretry reliable msg
+2/4/5 terpisah dengan identitas asli, sebelum `PlayerInit` memicu RequestClass
+`#0` pada channel yang benar. Peer itu juga mengirim 256 RPC ordered valid sebelum `PlayerInit`
+lalu `PlayerInit` duplikat untuk mengunci hand-off retained dan memastikan
+bootstrap class tetap tepat satu kali, termasuk penolakan server penuh pre-cookie
+serta deadline connect saat cookie berhenti. Build GitHub Actions
 `39475012329` lulus untuk Kotlin/GLES, NDK packaging, dan kedua ABI; artifact
-debug internalnya lolos cek ZIP/ELF `armeabi-v7a` + `arm64-v8a`. Itu **bukan**
-bukti kompatibilitas gameplay/live server: pada 2026-10-20, satu sesi native
-UIF awal yang dibatasi berhenti pada `unexpected reply` sebelum accepted/`PlayerInit`.
-Sesudah diagnosa error dibatasi, satu sesi berikutnya mencapai accepted + retained
-setelah ClientJoin dan melihat 8 packet/7 RPC, tetapi belum menerima `PlayerInit`
-dalam window empat poll pendek lalu ditutup bersih—tanpa class, spawn, sync, chat,
-atau input gameplay. Tidak ada klaim class/spawn atau gameplay UIF; validasi
-APK/device terukur tetap pending.
+debug internalnya lolos cek ZIP/ELF `armeabi-v7a` + `arm64-v8a`.
+
+Itu **bukan** bukti kompatibilitas gameplay/live UIF. Dua observasi native yang
+berbeda pada 2026-10-20 dicatat agar tidak tercampur: (1) sebelum koreksi urutan
+source 2/3/4/5, sesi sembilan detik accepted/aktif menerima 36 packet/34 RPC
+broadcast tanpa `PlayerInit`, class, atau spawn; (2) satu konfirmasi bounded
+sesudah koreksi urutan itu—**sebelum** implementasi coalescing saat ini—menerima
+38 packet/33 RPC, satu pong, serta tidak melihat retransmit/error, namun tetap
+tanpa `PlayerInit`, class, atau spawn. Tidak ada traffic UIF lagi setelah
+coalescing ditambahkan. Tidak satu pun observasi membuktikan ACK/receipt semantik
+ClientJoin, class/spawn, atau gameplay UIF; tidak ada sync, chat, command, atau
+input gameplay dikirim. Coalescing hanya bukti fidelity source + regresi host,
+bukan perbaikan admission UIF. Validasi APK/device terukur tetap pending.
 Workspace ini tidak memiliki Gradle/Kotlin/Android SDK lokal; build APK tetap
 hanya boleh lewat GitHub Actions sesuai gate rilis.
 
-Saat ini tombol **Probe RakNet** di detail server membuktikan alur nyata:
+Tombol **Probe RakNet** di detail server memberi observability alur transport,
+bukan bukti gameplay:
 
 ```text
-open → cookie → auth → accepted → ClientJoin → stream RPC → state pemain
-(remote Packet 207 siap didecode saat server membroadcast sync)
+open → cookie → auth → accepted → ClientJoin → stream RPC (bila server mengirim)
 ```
+
+State pemain hanya direduce setelah RPC valid benar-benar diterima; accepted atau
+broadcast saja tidak dipresentasikan sebagai world playable.
 
 ## Kompatibilitas
 

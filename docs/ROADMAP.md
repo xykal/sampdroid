@@ -12,13 +12,17 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 - [x] Client `PlayerRequestClass` / `PlayerRequestSpawn` / `PlayerSpawn` builder,
   response decoder dual legacy/open.mp, dan transport-ACK gate.
 - [x] Retain socket setelah ClientJoin dan kirim class/spawn flow lewat session native.
-- [~] UIF read-only evidence: ClientJoin SampDroid menerima ACK transport dan
-  RakNet reference dengan ClientJoin R2/SyncRPC channel 2 menerima PlayerInit.
-  Pada 2026-10-20, satu sesi SampDroid native awal berhenti `unexpected reply`
-  sebelum accepted/PlayerInit; sesi bounded berikutnya mencapai accepted + retained
-  pasca-ClientJoin (8 packet/7 RPC), namun belum PlayerInit dalam empat poll
-  pendek dan ditutup tanpa action gameplay. PlayerInit/class/spawn SampDroid
-  pada APK/device dan server lain masih pending.
+- [~] UIF read-only evidence (bukan admission): burst post-accept source RakPeer
+  2/3/4/5 sekarang satu datagram no-ACK 70-byte yang byte-identical dengan
+  BitStream FakeBots dan diverifikasi loopback (termasuk retry terpisah msg 2/4/5 saat burst hilang), tetapi belum diuji ulang ke UIF.
+  Pada 2026-10-20, sebelum koreksi urutan source, sesi sembilan detik
+  accepted/aktif menerima 36 packet/34 RPC broadcast tanpa PlayerInit/class/spawn.
+  Satu konfirmasi bounded sesudah koreksi urutan—sebelum coalescing saat ini—
+  menerima 38 packet/33 RPC dan satu pong tanpa retransmit/error, tetapi juga
+  tanpa PlayerInit/class/spawn. Tidak ada traffic UIF lagi sesudah coalescing;
+  reference RakNet read-only yang mendapat PlayerInit hanya comparator, bukan
+  bukti path SampDroid. PlayerInit/class/spawn SampDroid pada APK/device dan
+  server lain masih pending.
 - [x] Decode player StreamIn/StreamOut, exact non-DL `SetPlayerSkin` (153), dan
   broadcast remote `PlayerFootSync` (207) ke state entity bounded; model snapshot
   menuju renderer DFF/proxy bounded ada, tetapi animasi/capture nyata belum.

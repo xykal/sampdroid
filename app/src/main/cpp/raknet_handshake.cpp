@@ -108,7 +108,7 @@ bool isTerminalSessionControlId(uint8_t id) {
          id == kIdInvalidPassword;
 }
 
-bool isPostAcceptReadyControlId(uint8_t id) {
+bool isPostAcceptControlId(uint8_t id) {
   return id == kIdInternalPing || id == kIdReceivedStaticData;
 }
 

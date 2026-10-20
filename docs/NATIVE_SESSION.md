@@ -9,7 +9,7 @@ Ini bukan wrapper `samp.exe`, bukan Wine/Winlator, dan bukan runtime modpack PC.
 user pilih server
   → native UDP socket
   → open/cookie/auth/accepted
-  → NEW_INCOMING_CONNECTION → internal ping → empty static-data → ClientJoin
+  → satu datagram no-ACK: NEW_INCOMING_CONNECTION → internal ping → empty static-data → ClientJoin
   → socket + message counters + gate receipt reliable + split reassembler + gate reliable-ordered TETAP hidup
   → poll datagram / ACK reliable / retry bounded / reply ping/static-data request / reduce RPC world state
   → reliable transport keepalive otomatis saat idle
@@ -40,10 +40,10 @@ input sesudah gate ini.
 ### Batas waktu connect dan error pre-cookie
 
 Satu aksi connect dibatasi secara menyeluruh: receive socket diklem ke
-**25–1.500 ms**, sementara fase open/cookie/auth/post-accept total mendapat
+**25–1.500 ms**, sementara fase open/cookie/auth/bootstrap total mendapat
 anggaran `8 × receive`, minimum **1 detik** dan maksimum **12 detik**. Ini
 mencegah endpoint UDP diam menahan coroutine UI Android puluhan detik lewat
-rantai retry lama. Setelah `ClientJoin`, core hanya melakukan maksimal empat
+rantai retry lama. Setelah `ClientJoin`, core hanya melakukan maksimal delapan
 read sinkron; bila `PlayerInit` belum datang, socket tetap diserahkan ke poll
 lifecycle normal, bukan ditutup atau diblokir menunggu 20 timeout.
 
@@ -56,32 +56,59 @@ status server.
 
 ### Kontrol RakPeer sesudah accept
 
-Untuk parity source offline dengan jalur client RakPeer 2.52 yang diaudit,
-setelah `ID_CONNECTION_REQUEST_ACCEPTED` core mengirim, dalam urutan transport,
-`ID_NEW_INCOMING_CONNECTION` reliable, `ID_INTERNAL_PING` unreliable dengan
-RakNetTime lokal, lalu `ID_RECEIVED_STATIC_DATA` reliable dengan payload lokal
-kosong. Core lalu menunggu `ID_INTERNAL_PING` atau `ID_RECEIVED_STATIC_DATA` dari
-server sebagai bukti source-defined bahwa server sudah memproses NEW_INCOMING,
-baru mengirim `ClientJoin` pada SyncRPC channel 2. Semua reliable sejak
-`CONNECTION_REQUEST` dicatat pada antrean kecil ACK/retry (750 ms, maksimal lima
-retransmit), dan record yang belum di-ACK dipindahkan ke session retained—tidak
-hilang di batas probe/session.
-`ID_REQUEST_STATIC_DATA` dari peer dibalas payload kosong yang sama; static data
-peer tidak diperlakukan sebagai data GTA/world. Ini berasal dari perilaku
-`RakPeer::PingInternal`/`SendStaticDataInternal`, bukan tebakan format payload.
+Audit source `RakPeer.cpp` legacy menunjukkan urutan klien yang tepat setelah
+`ID_CONNECTION_REQUEST_ACCEPTED`: peer klien sendiri lebih dahulu menjadi
+`CONNECTED`, mengirim `ID_NEW_INCOMING_CONNECTION` reliable **msg=2**,
+`ID_INTERNAL_PING` unreliable **msg=3**, lalu `ID_RECEIVED_STATIC_DATA` kosong
+reliable **msg=4**. Callback game kemudian mengirim `ClientJoin`/PlayerConnect
+sebagai `RELIABLE_ORDERED` SyncRPC channel 2/index 0 pada **msg=5**. Ia **tidak**
+menunggu `ID_INTERNAL_PING` atau static-data dari server sebelum ClientJoin.
+Jika ping server datang sesudah itu, pong klien memakai nomor berikutnya
+(**msg=6** dalam fixture regresi).
 
-Parity ini sudah punya vector regresi host. Probe native SampDroid mengonfirmasi
-accepted, readiness post-accept, dan ACK transport untuk ClientJoin UIF; probe
-RakNet referensi yang read-only dengan `ClientJoin` R2/channel 2 menerima
-`PlayerInit` UIF tanpa class/spawn. Pada 2026-10-20, satu sesi SampDroid native
-awal yang dibatasi berhenti pada `unexpected reply` sebelum accepted/`PlayerInit`.
-Sesudah path error diberi ID/ukuran reply dan batas waktu, satu sesi bounded
-berikutnya mencapai `accepted` dan socket retained pasca-ClientJoin; ia melihat
-8 packet/7 RPC tetapi belum menerima `PlayerInit` dalam empat poll pendek lalu
-menjalankan disconnect bersih. Kedua percobaan tidak mengirim spawn, sync, chat,
-command, atau input gameplay. Hasil itu bukan regresi yang dapat disimpulkan
-sendiri maupun bukti gameplay SampDroid: drain bootstrap, class/spawn, sync, dan
-perilaku client-facing masih perlu validasi APK/device yang terukur.
+SampDroid menjaga urutan dan counter tersebut, termasuk bentuk datagram-nya:
+empat frame 2/3/4/5 dibangun sebagai **satu** legacy RakNet datagram dengan satu
+bit `hasAcks=false` di depan. Ini meniru tick normal sender RakPeer, bukan empat
+UDP send terpisah. Tiga reliable frame (msg 2, 4, dan 5) tetap punya record
+ACK/retry individual; bila hilang, retry legal dapat keluar sendiri dengan
+message/order identity asli. Kontrol ping/static-data inbound tetap diproses
+sesudah ClientJoin pada receive path awal/retained; ia dibalas atau diabaikan
+sebagai metadata transport yang semestinya, bukan data GTA/world. Delapan read
+awal yang dibatasi mencakup ACK terpisah dari bootstrap sebelum socket diserahkan
+ke poll lifecycle. Semua reliable sejak `CONNECTION_REQUEST` dicatat pada antrean
+kecil ACK/retry (750 ms, maksimal lima retransmit), dan record belum di-ACK
+dipindahkan ke session retained—tidak hilang di batas connect/session.
+`ID_REQUEST_STATIC_DATA` dari peer dibalas payload kosong yang sama.
+
+Fixture host mematok frame `RELIABLE_ORDERED` msg=5 ClientJoin ke
+`02 80 48 80 00 01 00 10 14 19 ...`, serta burst 2/3/4/5 lengkap 70 byte yang
+berawal `01 00 42 38 1E 5E 17 91 89 60 1E 03 00 64 50 ...`. Keduanya dibandingkan
+langsung terhadap BitStream FakeBots dengan `RAKNET_LEGACY=1`. Peer loopback
+menahan ping server sampai setelah ClientJoin dan memastikan jalur session
+benar-benar menerima empat frame bootstrap itu dalam satu datagram. Fixture loss
+juga membuang burst pertama dengan sengaja lalu mengunci retry individual reliable
+msg 2/4/5 beserta identity aslinya, sebelum mengunci ClientJoin msg=5, pong msg=6,
+dan bootstrap RequestClass berikutnya.
+
+### Catatan validasi UIF yang terpisah
+
+Pada 2026-10-20 terdapat **dua** observasi native UIF yang tidak boleh
+digabungkan atau dipromosikan menjadi admission/gameplay:
+
+1. Sebelum koreksi urutan source 2/3/4/5, sesi sembilan detik mencapai transport
+   accepted/aktif dan menerima 36 packet/34 RPC broadcast, tetapi tidak menerima
+   `PlayerInit`, pemilihan class, atau izin spawn.
+2. Satu konfirmasi bounded sesudah koreksi urutan itu—**sebelum** implementasi
+   coalescing di atas—mencapai accepted/aktif, menerima 38 packet/33 RPC dan
+   satu pong tanpa retransmit/error, tetapi lagi-lagi tanpa `PlayerInit`, class,
+   atau spawn.
+
+Tidak ada traffic UIF lagi setelah coalescing ditambahkan. Hasil kedua tidak
+memberi bukti langsung receipt semantik ClientJoin meski tidak tampak retransmit;
+keduanya hanya menunjukkan transport/broadcast yang aktif. Probe RakNet
+referensi read-only memang melihat `InitGame`, tetapi itu comparator compatibility,
+bukan bukti path SampDroid. Tidak ada spawn, sync, chat, command, atau input
+gameplay yang dikirim pada observasi UIF mana pun.
 
 ## Static GTA world filter dari server (RPC 43)
 

@@ -290,15 +290,48 @@ void ReliableOrderedGate::clear() {
   overflowed_ = false;
 }
 
-std::vector<uint8_t> buildUnreliable(uint16_t messageNumber, const std::vector<uint8_t>& payload) {
-  BitWriter writer;
-  writer.writeBit(false);  // hasAcks
-  writer.writeBits(messageNumber, 16);
-  writer.writeBits(kReliabilityUnreliable, 4);
+namespace {
+
+bool isOrderedReliability(uint8_t reliability) {
+  return reliability == kReliabilityUnreliableSequenced ||
+         reliability == kReliabilityReliableOrdered ||
+         reliability == kReliabilityReliableSequenced;
+}
+
+bool appendUnsplitFrame(BitWriter& writer, const OutgoingPacket& packet) {
+  if (packet.payload.empty() || packet.payload.size() > UINT16_MAX / 8u ||
+      packet.reliability < kReliabilityUnreliable ||
+      packet.reliability > kReliabilityReliableSequenced) {
+    return false;
+  }
+  if (isOrderedReliability(packet.reliability) && packet.orderingChannel >= 32u) return false;
+
+  writer.writeBits(packet.messageNumber, 16);
+  writer.writeBits(packet.reliability, 4);
+  if (isOrderedReliability(packet.reliability)) {
+    writer.writeBits(packet.orderingChannel, 5);
+    writer.writeBits(packet.orderingIndex, 16);
+  }
   writer.writeBit(false);  // isSplit
-  writer.writeCompressedU16(static_cast<uint16_t>(payload.size() * 8));
-  writer.writeAlignedBytes(payload.data(), payload.size());
+  writer.writeCompressedU16(static_cast<uint16_t>(packet.payload.size() * 8u));
+  writer.writeAlignedBytes(packet.payload.data(), packet.payload.size());
+  return true;
+}
+
+}  // namespace
+
+std::vector<uint8_t> buildCoalescedDatagram(const std::vector<OutgoingPacket>& packets) {
+  if (packets.empty()) return {};
+  BitWriter writer;
+  writer.writeBit(false);  // hasAcks; one marker prefixes the whole datagram.
+  for (const OutgoingPacket& packet : packets) {
+    if (!appendUnsplitFrame(writer, packet)) return {};
+  }
   return writer.buffer;
+}
+
+std::vector<uint8_t> buildUnreliable(uint16_t messageNumber, const std::vector<uint8_t>& payload) {
+  return buildCoalescedDatagram({OutgoingPacket{messageNumber, kReliabilityUnreliable, 0u, 0u, payload}});
 }
 
 std::vector<uint8_t> buildUnreliableSequenced(uint16_t messageNumber, uint8_t orderingChannel,

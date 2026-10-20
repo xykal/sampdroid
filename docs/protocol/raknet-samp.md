@@ -213,7 +213,7 @@ independensi kedua counter.
 | Reliability datagram | ✅ **byte-identical** dengan BitStream RakNet; inbound `RELIABLE_ORDERED` kini juga dirilis per-channel hanya setelah run index kontigu (buffer bounded/overflow → close session) |
 | Connection request accepted | ✅ **diterima dari server live** |
 | AUTH_KEY challenge/response | ✅ 256 entri tabel, lookup runtime |
-| ClientJoin / PlayerConnect RPC 25 | 🧪 exact builder/SyncRPC-channel-2 vector + ACK/retry/post-accept gate. UIF ACK transport untuk ClientJoin SampDroid; reference RakNet read-only menerima PlayerInit. PlayerInit/class/spawn APK SampDroid end-to-end masih pending |
+| ClientJoin / PlayerConnect RPC 25 | 🧪 frame msg=5/SyncRPC channel 2 dan burst post-accept 2/3/4/5 lengkap 70-byte byte-identical dengan BitStream legacy FakeBots; reliable ACK/retry tetap per-frame dan loopback memverifikasi burst keluar sebagai satu datagram. UIF SampDroid belum menerima PlayerInit/class/spawn; coalescing belum diuji lagi live dan tidak membuktikan receipt ClientJoin |
 | ACK reliable | ✅ setiap fragment reliable di-ACK; outbound sort/dedupe serta range contiguous non-wrap bounded |
 | Multi-paket datagram + split reassembly | ✅ sebelum RPC diserahkan ke decoder |
 | PlayerInit RPC 139 | ✅ decoder wire format + test vector; observability di UI |
@@ -242,10 +242,10 @@ membandingkan output byte-per-byte.
 
 ### Urutan wire yang diimplementasikan
 
-Berikut urutan outbound saat ini setelah `CONNECTION_REQUEST_ACCEPTED`. Angka
-channel dan framing dikunci host regression; nomor message ClientJoin bergantung
-pada apakah pong post-accept mengonsumsi satu nomor global. Ini **bukan** klaim
-bahwa SampDroid sudah lolos sesi gameplay server tertentu.
+Berikut urutan outbound setelah `CONNECTION_REQUEST_ACCEPTED`, yang dikunci
+oleh source `RakPeer.cpp`, fixture BitStream FakeBots `RAKNET_LEGACY=1`, dan
+regresi host. Ini **bukan** klaim bahwa SampDroid sudah lolos sesi gameplay
+server tertentu.
 
 ```text
 C -> S  [18 00 00]                     OPEN_CONNECTION_REQUEST (probe)
@@ -257,15 +257,42 @@ S -> C  ACK untuk msg=0
 S -> C  reliable {0C 11 "challenge"}  AUTH_KEY challenge
 C -> S  reliable msg=1 {0C 28 "reply"} AUTH_KEY response
 S -> C  reliable {22 ...}              CONNECTION_REQUEST_ACCEPTED
-C -> S  reliable msg=2 {1E ip4 port}   NEW_INCOMING_CONNECTION (7 byte)
-C -> S  unreliable msg=3 {06 time32}   INTERNAL_PING
-C -> S  reliable msg=4 {29}            empty static-data record
-S -> C  INTERNAL_PING atau static-data  bukti post-accept server sudah CONNECTED
-C -> S  jika ping: pong unreliable msg=5
-C -> S  reliable ordered msg>=5,
+C -> S  satu datagram normal, hasAcks=false:
+        reliable msg=2 {1E ip4 port}   NEW_INCOMING_CONNECTION (7 byte)
+        unreliable msg=3 {06 time32}   INTERNAL_PING
+        reliable msg=4 {29}            empty static-data record
+        reliable ordered msg=5,
         channel=2 index=0 {14 19 ...}  PlayerConnect / ClientJoin SyncRPC 25
+S -> C  INTERNAL_PING/static-data       post-accept transport metadata
+C -> S  jika ping: pong unreliable msg=6
 S -> C  reliable RPC stream             PlayerJoin, time, PlayerInit, world RPC, dst.
 ```
+
+`ClientJoin` tidak menunggu ping/static-data inbound. Menunggu dan membalas ping
+lebih dahulu akan menggesernya ke msg=6, tidak sama dengan jalur RakPeer yang
+diaudit. RakPeer mengirim empat frame source-ordered itu bersama dalam satu
+normal datagram; SampDroid juga hanya menaruh satu `hasAcks=false` di depannya,
+sambil mempertahankan record retry terpisah untuk reliable msg 2/4/5. Dengan
+payload fixture `Native_01` dan serial `3E9`, frame msg=5 harus tepat dimulai
+`02 80 48 80 00 01 00 10 14 19 D9 0F ...`; pembandingan langsung terhadap
+`BitStream` FakeBots menghasilkan 42 byte yang sama. Burst lengkapnya berukuran
+70 byte dan dimulai `01 00 42 38 1E 5E 17 91 89 60 1E 03 00 64 50 ...`; fixture
+dan peer loopback mengunci baik byte maupun fakta bahwa session path mengirimnya
+sebagai satu datagram. Fixture loss membuang datagram pertama lalu memverifikasi
+retry individual reliable msg 2/4/5 dengan nomor/order asli; ping msg 3 memang
+tidak diretry. Ping inbound tetap dibalas sesudah join oleh receive loop yang
+retained.
+
+### Observasi UIF (bukan bukti admission)
+
+Dua observasi native UIF pada 2026-10-20 perlu dipisahkan: sebelum koreksi urutan
+2/3/4/5, sesi sembilan detik accepted/aktif menerima 36 packet/34 RPC broadcast
+tanpa `PlayerInit`/class/spawn. Satu konfirmasi bounded sesudah koreksi urutan
+itu—**sebelum** coalescing yang sekarang—menerima 38 packet/33 RPC, satu pong,
+dan tidak melihat retransmit/error, namun tetap tanpa `PlayerInit`/class/spawn.
+Tidak ada traffic UIF lagi sesudah coalescing. Jadi fixture/coalescing adalah
+fidelity source dan bukti host saja; tidak boleh disebut perbaikan admission,
+ACK/receipt semantik ClientJoin, atau gameplay UIF.
 
 Setiap paket reliable yang diterima segera di-ACK, termasuk **setiap fragment**
 dari split packet. Sesudah ACK, gate receipt transport yang dibatasi 4.096 nomor

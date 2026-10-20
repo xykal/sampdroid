@@ -205,9 +205,9 @@ struct PendingReliable {
 // CONNECTION_REQUEST, not only after a UI-owned session is retained. Keep this
 // small bounded equivalent during the synchronous connection phase, then move
 // any still-outstanding records into LiveSession at hand-off.
-bool sendTrackedReliable(Net& net, uint16_t port, std::vector<PendingReliable>& pending,
-                         const std::vector<uint8_t>& packet, uint16_t messageNumber,
-                         ReliablePurpose purpose = ReliablePurpose::Generic) {
+bool queueTrackedReliable(uint16_t port, std::vector<PendingReliable>& pending,
+                          const std::vector<uint8_t>& packet, uint16_t messageNumber,
+                          ReliablePurpose purpose = ReliablePurpose::Generic) {
   constexpr size_t kMaxHandshakePendingReliable = 8u;
   if (packet.empty() || pending.size() >= kMaxHandshakePendingReliable) return false;
   PendingReliable record;
@@ -215,9 +215,17 @@ bool sendTrackedReliable(Net& net, uint16_t port, std::vector<PendingReliable>& 
   record.purpose = purpose;
   record.wrappedPacket = wrap_packet(packet, port);
   record.lastSent = std::chrono::steady_clock::now();
-  if (!net.send(record.wrappedPacket)) return false;
   pending.push_back(std::move(record));
   return true;
+}
+
+bool sendTrackedReliable(Net& net, uint16_t port, std::vector<PendingReliable>& pending,
+                         const std::vector<uint8_t>& packet, uint16_t messageNumber,
+                         ReliablePurpose purpose = ReliablePurpose::Generic) {
+  if (!queueTrackedReliable(port, pending, packet, messageNumber, purpose)) return false;
+  if (net.send(pending.back().wrappedPacket)) return true;
+  pending.pop_back();
+  return false;
 }
 
 void consumeTrackedReliableAcks(std::vector<PendingReliable>& pending,
@@ -2361,113 +2369,23 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     return res;
   }
 
-  // ---- 5. RakPeer post-accept control + ClientJoin ------------------------
-  // RakPeer.cpp emits NEW_INCOMING, an immediate internal ping, and an empty
-  // static-data record before application traffic. All reliable records are
-  // tracked from this point too; this avoids a one-shot ClientJoin that a lossy
-  // mobile UDP path can silently strand after the transport accepts us.
+  // ---- 5. RakPeer post-accept controls + ClientJoin ------------------------
+  // RakPeer.cpp marks the initiating peer CONNECTED when ACCEPTED is decoded,
+  // then immediately emits NEW_INCOMING, an internal ping, and an empty
+  // static-data record before the game thread dispatches ClientJoin. Preserve
+  // that source ordering and message-number progression: ClientJoin follows
+  // those three outbound records directly. An inbound ping/static-data record
+  // is processed during the initial/retained receive path below; it is not a
+  // prerequisite invented between the source peer's static-data and ClientJoin.
   const auto* targetBytes = reinterpret_cast<const uint8_t*>(&net.to.sin_addr.s_addr);
   const auto incoming = handshake::buildNewIncoming(
       {targetBytes[0], targetBytes[1], targetBytes[2], targetBytes[3]}, port);
   const uint16_t incomingMessageNumber = msgNo++;
-  if (!sendTrackedReliable(net, port, handshakePending,
-                           raknet::buildReliable(incomingMessageNumber, incoming),
-                           incomingMessageNumber)) {
-    res.error = "gagal mengirim NEW_INCOMING";
-    return res;
-  }
-
   const uint16_t pingMessageNumber = msgNo++;
-  const auto internalPing = raknet::buildUnreliable(
-      pingMessageNumber, handshake::buildInternalPing(monotonicMilliseconds32()));
-  if (internalPing.empty() || !net.send(wrap_packet(internalPing, port))) {
-    res.error = "gagal mengirim INTERNAL_PING";
-    return res;
-  }
-
+  const std::vector<uint8_t> internalPingPayload =
+      handshake::buildInternalPing(monotonicMilliseconds32());
   const uint16_t staticDataMessageNumber = msgNo++;
-  if (!sendTrackedReliable(net, port, handshakePending,
-                           raknet::buildReliable(staticDataMessageNumber,
-                                                 handshake::buildEmptyStaticData()),
-                           staticDataMessageNumber)) {
-    res.error = "gagal mengirim static-data RakNet";
-    return res;
-  }
-
-  // Do not send PlayerConnect in the same burst as NEW_INCOMING. RakPeer
-  // changes its server-side connection mode only while handling NEW_INCOMING;
-  // an early application RPC can be transport-ACKed but ignored before that
-  // transition. The stock peer then emits an internal ping and static-data
-  // record. Seeing either is the bounded, source-defined readiness signal.
-  bool postAcceptReady = false;
-  constexpr int kMaxPostAcceptReadinessPolls = 8;
-  for (int attempt = 0; attempt < kMaxPostAcceptReadinessPolls && !postAcceptReady; ++attempt) {
-    if (receiveDuringConnect(resp) <= 0) {
-      if (!resendTrackedReliableDue(net, handshakePending, res.error)) return res;
-      continue;
-    }
-    raknet::Datagram datagram = raknet::decodeDatagram(resp);
-    consumeTrackedReliableAcks(handshakePending, datagram.receivedAckMessageNumbers);
-    if (!datagram.ackMessageNumbers.empty()) {
-      net.send(wrap_packet(raknet::buildAck(datagram.ackMessageNumbers), port));
-    }
-    for (const auto& raw : datagram.packets) {
-      if (isReliableTransport(raw.reliability) && !inboundReliable.accept(raw.messageNumber)) {
-        continue;
-      }
-      auto reassembled = reassembler.push(raw);
-      if (reassembler.overflowed()) {
-        res.error = "reassembly post-accept melebihi batas aman";
-        return res;
-      }
-      for (auto packet : reassembled) {
-        auto delivered = applyInboundReliableOrder(inboundOrdered, std::move(packet));
-        if (inboundOrdered.overflowed()) {
-          res.error = "antrean reliable-ordered post-accept melebihi batas aman";
-          return res;
-        }
-        for (const auto& ready : delivered) {
-          if (ready.payload.empty()) continue;
-          const uint8_t id = ready.payload[0];
-          if (handshake::isTerminalSessionControlId(id)) {
-            res.error = "server menolak atau memutus sebelum ClientJoin (RakNet id " +
-                        std::to_string(static_cast<unsigned>(id)) + ")";
-            return res;
-          }
-          if (handshake::isPostAcceptReadyControlId(id)) {
-            if (id == ID_INTERNAL_PING) {
-              if (!reply_to_internal_ping(net, port, msgNo, ready.payload)) {
-                res.error = "gagal membalas internal ping post-accept";
-                return res;
-              }
-              logln(res, "    post-accept ready: INTERNAL_PING server");
-            } else {
-              logln(res, "    post-accept ready: static-data server");
-            }
-            postAcceptReady = true;
-            continue;
-          }
-          if (id == ID_REQUEST_STATIC_DATA) {
-            const uint16_t responseMessageNumber = msgNo++;
-            if (!sendTrackedReliable(net, port, handshakePending,
-                                     raknet::buildReliable(responseMessageNumber,
-                                                           handshake::buildEmptyStaticData()),
-                                     responseMessageNumber)) {
-              res.error = "gagal membalas request static-data post-accept";
-              return res;
-            }
-            continue;
-          }
-        }
-      }
-    }
-    if (!postAcceptReady && !resendTrackedReliableDue(net, handshakePending, res.error)) return res;
-  }
-  if (!postAcceptReady) {
-    res.error = connectionDeadlineReached ? connectionDeadlineError()
-                                          : "server tidak mengonfirmasi post-accept sebelum ClientJoin";
-    return res;
-  }
+  const std::vector<uint8_t> staticDataPayload = handshake::buildEmptyStaticData();
 
   const uint32_t challengeResponse = token ^ handshake::kLegacyNetGameVersion;
   const std::string serial = handshake::generateLegacySerial();
@@ -2479,12 +2397,43 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   // Legacy/open.mp client RPC uses the ordered SyncRPC stream on channel 2.
   // ClientJoin consumes index zero, so retained session RPCs continue at one.
   const uint16_t joinMessageNumber = msgNo++;
-  if (!sendTrackedReliable(net, port, handshakePending,
-                           raknet::buildReliableOrdered(joinMessageNumber, clientrpc::kReliableOrderedChannel, 0, join),
-                           joinMessageNumber)) {
-    res.error = "gagal mengirim ClientJoin";
+
+  const auto incomingFrame = raknet::buildReliable(incomingMessageNumber, incoming);
+  const auto pingFrame = raknet::buildUnreliable(pingMessageNumber, internalPingPayload);
+  const auto staticDataFrame = raknet::buildReliable(staticDataMessageNumber, staticDataPayload);
+  const auto joinFrame = raknet::buildReliableOrdered(
+      joinMessageNumber, clientrpc::kReliableOrderedChannel, 0, join);
+  const auto bootstrap = raknet::buildCoalescedDatagram({
+      {incomingMessageNumber, raknet::kReliabilityReliable, 0u, 0u, incoming},
+      {pingMessageNumber, raknet::kReliabilityUnreliable, 0u, 0u, internalPingPayload},
+      {staticDataMessageNumber, raknet::kReliabilityReliable, 0u, 0u, staticDataPayload},
+      {joinMessageNumber, raknet::kReliabilityReliableOrdered,
+       clientrpc::kReliableOrderedChannel, 0u, join},
+  });
+  if (incomingFrame.empty() || pingFrame.empty() || staticDataFrame.empty() ||
+      joinFrame.empty() || bootstrap.empty()) {
+    res.error = "bootstrap RakNet lokal tidak valid";
     return res;
   }
+
+  // RakPeer's normal update tick coalesces these source-ordered records into
+  // one no-ACK datagram. Keep individual reliable copies for retransmission:
+  // loss recovery may legally send a later frame alone without changing its
+  // message/order identity.
+  const size_t pendingBeforeBootstrap = handshakePending.size();
+  if (!queueTrackedReliable(port, handshakePending, incomingFrame, incomingMessageNumber) ||
+      !queueTrackedReliable(port, handshakePending, staticDataFrame, staticDataMessageNumber) ||
+      !queueTrackedReliable(port, handshakePending, joinFrame, joinMessageNumber)) {
+    handshakePending.resize(pendingBeforeBootstrap);
+    res.error = "antrian reliable bootstrap penuh";
+    return res;
+  }
+  if (!net.send(wrap_packet(bootstrap, port))) {
+    handshakePending.resize(pendingBeforeBootstrap);
+    res.error = "gagal mengirim bootstrap RakNet + ClientJoin";
+    return res;
+  }
+
   char jb[160];
   std::snprintf(jb, sizeof(jb), "[5] post-accept RakPeer + ClientJoin (nick %s, cr %u)",
                 requestedNickname.c_str(), challengeResponse);
@@ -2501,8 +2450,10 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   // A retained session must return control to Android promptly even if a
   // compatible server is quiet after ClientJoin. Further PlayerInit/world
   // packets are consumed by lifecycle polling rather than monopolising this
-  // one connect coroutine for twenty full socket timeouts.
-  constexpr int kMaxInitialSessionReadPolls = 4;
+  // one connect coroutine for twenty full socket timeouts. Eight bounded reads
+  // cover the source-equivalent 2/3/4/5 bootstrap's separate transport ACKs
+  // before its first game-layer frame without turning connect into a long wait.
+  constexpr int kMaxInitialSessionReadPolls = 8;
   for (int i = 0; i < kMaxInitialSessionReadPolls && !connectionDeadlineReached; ++i) {
     if (receiveDuringConnect(resp) <= 0) {
       if (connectionDeadlineReached || !resendTrackedReliableDue(net, handshakePending, res.error)) break;

@@ -30,11 +30,10 @@ std::optional<std::string> parseAuthChallenge(const std::vector<uint8_t>& payloa
 // every transport phase from turning an explicit refusal into a timeout.
 bool isTerminalSessionControlId(uint8_t id);
 
-// After a client sends NEW_INCOMING, legacy RakPeer transitions the peer into
-// CONNECTED and emits an internal ping plus static-data record. ClientJoin must
-// wait until either record is observed; sending it in the same burst can make a
-// server inspect PlayerConnect before it has processed NEW_INCOMING.
-bool isPostAcceptReadyControlId(uint8_t id);
+// Legacy RakPeer emits these transport controls after processing NEW_INCOMING.
+// They are post-accept metadata handled by the receive path, not a prerequisite
+// between the source peer's own NEW_INCOMING/ping/static sequence and ClientJoin.
+bool isPostAcceptControlId(uint8_t id);
 
 // Produces the raw legacy RPC ClientJoin payload [ID_RPC, RPC=25, fields].
 // The outer RakNet reliable-ordered frame is intentionally owned by the
