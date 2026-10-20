@@ -77,11 +77,32 @@ jobs:
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$PATH"
 
           yes | sdkmanager --licenses > /dev/null 2>&1 || true
-          sdkmanager --install \
-            "platforms;android-34" \
-            "build-tools;34.0.0" \
-            "ndk;26.1.10909125" \
-            "cmake;3.22.1"
+
+          # Google-hosted SDK archives occasionally arrive truncated on a fresh
+          # runner (notably CMake's ZIP). Retry each package independently and
+          # clear only its partial install plus the sdkmanager download cache,
+          # so a transient archive failure cannot masquerade as an app failure.
+          install_sdk_package() {
+            package="$1"
+            install_path="$2"
+            for attempt in 1 2 3; do
+              if sdkmanager --install "$package"; then
+                return 0
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "::error::Gagal memasang $package setelah $attempt percobaan"
+                return 1
+              fi
+              echo "SDK package $package gagal/korup; membersihkan partial lalu retry $attempt/3"
+              rm -rf "$install_path" "$ANDROID_HOME/.temp" "$HOME/.android/cache"
+              sleep "$((attempt * 3))"
+            done
+          }
+
+          install_sdk_package "platforms;android-34" "$ANDROID_HOME/platforms/android-34"
+          install_sdk_package "build-tools;34.0.0" "$ANDROID_HOME/build-tools/34.0.0"
+          install_sdk_package "ndk;26.1.10909125" "$ANDROID_HOME/ndk/26.1.10909125"
+          install_sdk_package "cmake;3.22.1" "$ANDROID_HOME/cmake/3.22.1"
 
           echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
