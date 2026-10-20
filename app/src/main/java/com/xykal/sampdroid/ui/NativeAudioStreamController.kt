@@ -7,6 +7,7 @@ import android.media.MediaPlayer
 import android.net.Uri
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import org.json.JSONObject
 import java.util.Locale
@@ -120,7 +121,9 @@ internal class NativeAudioStreamController(
     private var player: MediaPlayer? = null
     private var appliedRevision = Long.MIN_VALUE
     private var failedRevision = Long.MIN_VALUE
-    private var foreground = true
+    // Match the visible gameplay surface: presentation must not restart while
+    // an Activity is merely STARTED but not actually foreground/resumed.
+    private var foreground = activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
     private var desired = WorldAudioStream()
     private var lastFrame = WorldFrame()
     private var pausedForFocus = false
@@ -163,7 +166,10 @@ internal class NativeAudioStreamController(
     fun submit(frame: WorldFrame) {
         lastFrame = frame
         val stream = frame.audioStream
-        val shouldPlay = foreground && stream.active && stream.playable && stream.revision > 0L
+        // A retained world snapshot can outlive its UDP peer by one UI frame.
+        // Never let an old RPC-41 directive keep playing after the native
+        // session has ended, even when that directive itself remains active.
+        val shouldPlay = foreground && frame.active && stream.active && stream.playable && stream.revision > 0L
         if (!shouldPlay) {
             // An inactive/blocked new revision must silence the previous stream.
             if (player != null || appliedRevision != stream.revision) stopPlayback(keepRevision = true)
@@ -182,7 +188,7 @@ internal class NativeAudioStreamController(
         applyVolume()
     }
 
-    override fun onStart(owner: LifecycleOwner) {
+    override fun onResume(owner: LifecycleOwner) {
         foreground = true
         // The next retained snapshot starts a fresh player for the current
         // directive. No stream survives an app background transition.
@@ -190,7 +196,7 @@ internal class NativeAudioStreamController(
         failedRevision = Long.MIN_VALUE
     }
 
-    override fun onStop(owner: LifecycleOwner) {
+    override fun onPause(owner: LifecycleOwner) {
         foreground = false
         stopPlayback(keepRevision = false)
     }

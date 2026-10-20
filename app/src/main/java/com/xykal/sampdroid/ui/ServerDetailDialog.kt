@@ -26,6 +26,11 @@ import java.util.Locale
 // The native side drains only a capped ready-datagram burst after this wait.
 private const val SESSION_POLL_TIMEOUT_MS = 40
 private const val SESSION_POLL_YIELD_MS = 4L
+// A retained explicit session may keep its transport alive while the app is
+// briefly hidden, but it must not burn the foreground gameplay cadence or
+// present server-driven UI in background.
+private const val BACKGROUND_SESSION_POLL_TIMEOUT_MS = 200
+private const val BACKGROUND_SESSION_POLL_YIELD_MS = 100L
 // Poll transport promptly, but avoid rebuilding a full JSON world/UI more often
 // than the renderer's own immutable-frame cadence.
 private const val SESSION_PRESENTATION_INTERVAL_NANOS = 100_000_000L
@@ -37,6 +42,9 @@ object ServerDetailDialog {
         val header: TextView = view.findViewById(R.id.tvHeader)
         val body: TextView = view.findViewById(R.id.tvBody)
         val log: TextView = view.findViewById(R.id.tvLog)
+        val connectionHint: TextView = view.findViewById(R.id.tvConnectionHint)
+        val btnQuickConnect: Button = view.findViewById(R.id.btnQuickConnect)
+        val btnOpenWorld: Button = view.findViewById(R.id.btnOpenWorld)
         val btnInfo: Button = view.findViewById(R.id.btnQueryInfo)
         val btnRules: Button = view.findViewById(R.id.btnRules)
         val btnPlayers: Button = view.findViewById(R.id.btnPlayers)
@@ -66,9 +74,17 @@ object ServerDetailDialog {
             .setNegativeButton("Tutup", null)
             .create()
         var sessionPollJob: Job? = null
+        var sessionConnectJob: Job? = null
+        var sessionDisconnectJob: Job? = null
         // Cursor is a UI hint only. Native rechecks PlayerInit's raw class
         // count and serializes one reliable class request at a time.
         var classCursor = 0
+        // The player flow starts locked rather than making a first tap fail as
+        // a developer-style error. Live snapshots below unlock each step only
+        // after the server has supplied the required authority.
+        btnOpenWorld.isEnabled = false
+        btnClassZero.isEnabled = false
+        btnSpawn.isEnabled = false
 
         fun run(block: () -> String) {
             log.text = "…"
@@ -81,10 +97,10 @@ object ServerDetailDialog {
         }
 
         fun formatSession(o: JSONObject): String = buildString {
-            append("=== SESI NATIVE (EKSPERIMEN) ===\n")
-            append("Soket ini native Android, bukan Winlator/samp.exe.\n")
-            append("Spawn/local + sync remote native; scene GPU punya collision on-foot, driver Packet-200, AimSync Packet-203, serta Packet-206 HitType=None saat AIM+FIRE. Target/hit/damage/ammo lokal tetap tidak diklaim. Gameplay GTA penuh belum.\n")
-            append("Saat aktif, stream dipoll otomatis sampai sesi diputus/dialog ditutup.\n\n")
+            append("=== STATUS SESI NATIVE ===\n")
+            append("Android native tanpa Winlator/samp.exe. Stream dipoll otomatis selama sesi ini terbuka.\n")
+            append("Pilih class dan Spawn sesuai respons server; Dunia menyediakan HUD/kontrol native setelah gate spawn/ACK. " +
+                "Hit/damage/ammo lokal dan gameplay GTA penuh belum diklaim.\n\n")
             append("aktif           : ").append(o.optBoolean("active")).append('\n')
             append("accepted        : ").append(o.optBoolean("accepted")).append('\n')
             append("ClientJoin stream: ").append(o.optBoolean("joined")).append('\n')
@@ -252,6 +268,38 @@ object ServerDetailDialog {
             append("status           : ").append(o.optString("error").ifBlank { "ok" })
         }
 
+        fun updateConnectionHint(snapshot: JSONObject) {
+            val active = snapshot.optBoolean("active")
+            val playerInit = snapshot.optBoolean("playerInit")
+            val classCount = snapshot.optLong("spawnClassCount")
+            val classPending = snapshot.optBoolean("classRequestPending")
+            val spawnPending = snapshot.optBoolean("spawnRequestPending") ||
+                (snapshot.optBoolean("spawnConfirmationSent") &&
+                    !snapshot.optBoolean("spawnConfirmationAcked"))
+            btnQuickConnect.text = if (active) "Sesi native aktif" else "Hubungkan native"
+            btnOpenWorld.isEnabled = active
+            btnClassZero.isEnabled = active && playerInit && classCount > 0L && !classPending && !spawnPending
+            btnSpawn.isEnabled = active && playerInit && snapshot.optBoolean("classSelectionKnown") &&
+                snapshot.optBoolean("classSelectable") && !spawnPending
+            connectionHint.text = when {
+                !snapshot.optBoolean("active") -> "Sesi belum aktif. Hubungkan native untuk memulai handshake."
+                !snapshot.optBoolean("playerInit") -> "Transport aktif; menunggu PlayerInit dari server sebelum class/spawn."
+                snapshot.optBoolean("spawnConfirmationAcked") ->
+                    "Spawn dikonfirmasi transport. Buka Dunia untuk kontrol, chat, dan HUD native."
+                snapshot.optBoolean("spawnConfirmationSent") ->
+                    "PlayerSpawn sudah dikirim; menunggu ACK transport server."
+                snapshot.optBoolean("spawnResponseKnown") && !snapshot.optBoolean("spawnAllowed") ->
+                    "Server menolak spawn saat ini. Pilih class lain atau ikuti instruksi server."
+                snapshot.optBoolean("classRequestPending") ->
+                    "Meminta class ke server; tunggu responsnya sebelum Spawn."
+                snapshot.optBoolean("classSelectionKnown") ->
+                    "Class diterima. Tekan Spawn untuk meminta izin spawn dari server."
+                snapshot.optLong("spawnClassCount") > 0L ->
+                    "Pilih class (tombol Class), lalu tekan Spawn setelah server memberi respons."
+                else -> "Sesi siap, tetapi server belum mengumumkan class yang dapat dipilih."
+            }
+        }
+
         fun stopSessionPolling() {
             sessionPollJob?.cancel()
             sessionPollJob = null
@@ -261,39 +309,76 @@ object ServerDetailDialog {
             if (sessionPollJob?.isActive == true) return
             sessionPollJob = activity.lifecycleScope.launch {
                 var lastPresentationNanos = 0L
+                var wasForeground = activity.lifecycle.currentState.isAtLeast(
+                    androidx.lifecycle.Lifecycle.State.RESUMED
+                )
                 while (isActive && dialog.isShowing) {
                     try {
-                        // This is the hot path: it advances UDP/ACK/retry work
-                        // frequently, while snapshot JSON/UI stays bounded below.
-                        val raw = withContext(Dispatchers.IO) {
-                            NativeBridge.nativeSessionPoll(SESSION_POLL_TIMEOUT_MS)
+                        val foreground = activity.lifecycle.currentState.isAtLeast(
+                            androidx.lifecycle.Lifecycle.State.RESUMED
+                        )
+                        if (wasForeground && !foreground) {
+                            // Presentation is lifecycle-bound even though the
+                            // explicit socket receives a brief low-power grace.
+                            NativeServerDialogController.clear()
+                            NativeServerMenuController.clear()
                         }
+                        wasForeground = foreground
+                        // Keep only bounded transport ACK/retry maintenance alive
+                        // while hidden. Foreground remains low-latency for sync;
+                        // background is deliberately slower and never opens
+                        // server-directed dialog/menu presentation.
+                        val timeoutMs = if (foreground) {
+                            SESSION_POLL_TIMEOUT_MS
+                        } else {
+                            BACKGROUND_SESSION_POLL_TIMEOUT_MS
+                        }
+                        val raw = withContext(Dispatchers.IO) {
+                            NativeBridge.nativeSessionPoll(timeoutMs)
+                        }
+                        if (!dialog.isShowing) break
                         val snapshot = JSONObject(raw)
                         val nowNanos = System.nanoTime()
-                        if (lastPresentationNanos == 0L ||
-                            nowNanos - lastPresentationNanos >= SESSION_PRESENTATION_INTERVAL_NANOS ||
-                            !snapshot.optBoolean("active")
-                        ) {
-                            val worldRaw = withContext(Dispatchers.IO) {
-                                NativeBridge.nativeSessionWorldSnapshot()
-                            }
+                        val presentationDue = lastPresentationNanos == 0L ||
+                            nowNanos - lastPresentationNanos >= SESSION_PRESENTATION_INTERVAL_NANOS
+                        if ((foreground && presentationDue) || !snapshot.optBoolean("active")) {
                             log.text = formatSession(snapshot)
-                            runCatching {
-                                val frame = WorldFrame.from(JSONObject(worldRaw))
-                                NativeServerDialogController.submit(activity, frame)
-                                NativeServerMenuController.submit(activity, frame)
+                            updateConnectionHint(snapshot)
+                            if (foreground && snapshot.optBoolean("active")) {
+                                val worldRaw = withContext(Dispatchers.IO) {
+                                    NativeBridge.nativeSessionWorldSnapshot()
+                                }
+                                if (dialog.isShowing && activity.lifecycle.currentState.isAtLeast(
+                                        androidx.lifecycle.Lifecycle.State.RESUMED
+                                    )) {
+                                    runCatching {
+                                        val frame = WorldFrame.from(JSONObject(worldRaw))
+                                        NativeServerDialogController.submit(activity, frame)
+                                        NativeServerMenuController.submit(activity, frame)
+                                    }
+                                }
                             }
-                            lastPresentationNanos = nowNanos
+                            if (foreground) lastPresentationNanos = nowNanos
                         }
-                        if (!snapshot.optBoolean("active")) break
+                        if (!snapshot.optBoolean("active")) {
+                            // A terminal native event (including PlayerClose or
+                            // ConnectionRejected) may arrive while this detail
+                            // surface, rather than a world surface, is visible.
+                            // Do not leave a retained server dialog/menu tappable
+                            // after its owning UDP session is gone.
+                            NativeServerDialogController.clear()
+                            NativeServerMenuController.clear()
+                            break
+                        }
                     } catch (t: Throwable) {
-                        log.text = "Sesi native berhenti: ${t.message}"
+                        if (dialog.isShowing) log.text = "Sesi native berhenti: ${t.message}"
                         break
                     }
-                    // The native poll blocks only briefly, then drains a
-                    // bounded ready-datagram burst. Yield enough for UI work
-                    // without starving active remote sync on busy servers.
-                    delay(SESSION_POLL_YIELD_MS)
+                    // A foreground poll drains promptly; hidden transport gets
+                    // a bounded, low-power cadence until the Activity resumes.
+                    delay(if (activity.lifecycle.currentState.isAtLeast(
+                            androidx.lifecycle.Lifecycle.State.RESUMED
+                        )) SESSION_POLL_YIELD_MS else BACKGROUND_SESSION_POLL_YIELD_MS)
                 }
             }
         }
@@ -366,25 +451,58 @@ object ServerDetailDialog {
                 log.text = "Sesi native sudah aktif dan sedang polling otomatis."
                 return@setOnClickListener
             }
+            if (sessionConnectJob?.isActive == true) {
+                log.text = "Handshake native masih berjalan…"
+                return@setOnClickListener
+            }
+            if (sessionDisconnectJob?.isActive == true) {
+                log.text = "Menutup sesi lama dulu…"
+                return@setOnClickListener
+            }
             log.text = "Membuka sesi native…"
-            activity.lifecycleScope.launch {
+            connectionHint.text = "Membuka socket native dan menjalankan handshake server…"
+            sessionConnectJob = activity.lifecycleScope.launch {
                 try {
                     val raw = withContext(Dispatchers.IO) {
                         val prior = JSONObject(NativeBridge.nativeSessionStatus())
                         if (prior.optBoolean("active")) {
                             NativeBridge.nativeSessionPoll(SESSION_POLL_TIMEOUT_MS)
                         } else {
-                            NativeBridge.nativeSessionConnect(server.ip, server.port, 1000)
+                            NativeBridge.nativeSessionConnect(
+                                server.ip,
+                                server.port,
+                                1000,
+                                PlayerProfile.nickname(activity)
+                            )
                         }
                     }
                     val snapshot = JSONObject(raw)
+                    if (!dialog.isShowing) {
+                        withContext(Dispatchers.IO) { NativeBridge.nativeSessionDisconnect() }
+                        return@launch
+                    }
                     log.text = formatSession(snapshot)
+                    updateConnectionHint(snapshot)
                     if (snapshot.optBoolean("active")) startSessionPolling()
                 } catch (t: Throwable) {
-                    log.text = "Gagal membuka sesi native: ${t.message}"
+                    if (dialog.isShowing) {
+                        log.text = "Gagal membuka sesi native: ${t.message}"
+                        connectionHint.text = "Handshake gagal. Cek koneksi/server lalu coba lagi; jangan ulangi percobaan malformed."
+                    }
+                } finally {
+                    sessionConnectJob = null
                 }
             }
         }
+
+        btnQuickConnect.setOnClickListener {
+            if (sessionPollJob?.isActive == true) {
+                log.text = "Sesi native sudah aktif. Ikuti status class/spawn di atas atau buka Dunia."
+            } else {
+                btnSession.performClick()
+            }
+        }
+        btnOpenWorld.setOnClickListener { btnWorld.performClick() }
 
         fun requestClass(step: Int) {
             activity.lifecycleScope.launch {
@@ -409,8 +527,9 @@ object ServerDetailDialog {
                         if (snapshot.optBoolean("classRequestPending")) {
                             classCursor = (requested + 1) % count
                         }
-                        btnClassZero.text = "Class ${classCursor + 1}/$count"
+                        btnClassZero.text = "Class ${requested + 1}/$count"
                         log.text = formatSession(snapshot)
+                        updateConnectionHint(snapshot)
                         if (snapshot.optBoolean("active")) startSessionPolling()
                     }
                 } catch (t: Throwable) {
@@ -432,6 +551,7 @@ object ServerDetailDialog {
                     }
                     val snapshot = JSONObject(raw)
                     log.text = formatSession(snapshot)
+                    updateConnectionHint(snapshot)
                     if (snapshot.optBoolean("active")) startSessionPolling()
                 } catch (t: Throwable) {
                     log.text = "Gagal meminta spawn: ${t.message}"
@@ -483,7 +603,10 @@ object ServerDetailDialog {
                         log.text = "Buka Sesi native dulu sebelum membuka Dunia native."
                     } else {
                         startSessionPolling()
-                        NativeWorldDialog.show(activity)
+                        // A player-facing world entry prefers the actual GLES
+                        // scene; the scene routes older GLES devices to the
+                        // native radar fallback itself.
+                        NativeWorldSceneDialog.show(activity)
                     }
                 } catch (t: Throwable) {
                     log.text = "Gagal membuka Dunia native: ${t.message}"
@@ -492,11 +615,33 @@ object ServerDetailDialog {
         }
 
         btnSessionDisconnect.setOnClickListener {
+            if (sessionDisconnectJob?.isActive == true) {
+                log.text = "Menutup sesi native…"
+                return@setOnClickListener
+            }
             stopSessionPolling()
+            val connecting = sessionConnectJob
+            connecting?.cancel()
             NativeServerDialogController.clear()
             NativeServerMenuController.clear()
-            run {
-                formatSession(JSONObject(NativeBridge.nativeSessionDisconnect()))
+            sessionDisconnectJob = activity.lifecycleScope.launch {
+                try {
+                    val raw = withContext(Dispatchers.IO) {
+                        // Native connect is a bounded blocking UDP operation and
+                        // cannot be interrupted safely from Java. Wait for it to
+                        // unwind before disconnecting so it cannot recreate a
+                        // hidden socket after the player chose Disconnect.
+                        connecting?.join()
+                        NativeBridge.nativeSessionDisconnect()
+                    }
+                    if (dialog.isShowing) {
+                        val snapshot = JSONObject(raw)
+                        updateConnectionHint(snapshot)
+                        log.text = formatSession(snapshot)
+                    }
+                } finally {
+                    sessionDisconnectJob = null
+                }
             }
         }
 
@@ -534,10 +679,20 @@ object ServerDetailDialog {
         // connection behind while a renderer/sync loop is still under development.
         dialog.setOnDismissListener {
             stopSessionPolling()
+            val connecting = sessionConnectJob
+            connecting?.cancel()
             NativeServerDialogController.clear()
             NativeServerMenuController.clear()
-            activity.lifecycleScope.launch(Dispatchers.IO) {
-                runCatching { NativeBridge.nativeSessionDisconnect() }
+            if (sessionDisconnectJob?.isActive != true) {
+                sessionDisconnectJob = activity.lifecycleScope.launch(Dispatchers.IO) {
+                    // Serialize teardown behind a possibly in-flight native
+                    // connect; otherwise a late handshake return could retain
+                    // a socket after this player-facing dialog disappears.
+                    runCatching {
+                        connecting?.join()
+                        NativeBridge.nativeSessionDisconnect()
+                    }
+                }
             }
         }
         dialog.show()

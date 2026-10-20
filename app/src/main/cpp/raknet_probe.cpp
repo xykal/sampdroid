@@ -8,6 +8,7 @@
 #include "local_gameplay_bridge.h"
 #include "local_player_sync.h"
 #include "raknet_codec.h"
+#include "raknet_handshake.h"
 #include "raknet_session.h"
 #include "raknet_session_policy.h"
 #include "sync_policy.h"
@@ -93,6 +94,7 @@ enum : uint8_t {
   // Values match the SA-MP-compatible RakNet 2.52 identifier table.
   ID_INTERNAL_PING = 6,
   ID_CONNECTED_PONG = 9,
+  ID_REQUEST_STATIC_DATA = 10,
   ID_CONNECTION_REQUEST = 11,
   ID_AUTH_KEY = 12,
   ID_DETECT_LOST_CONNECTIONS = 23,
@@ -103,6 +105,7 @@ enum : uint8_t {
   ID_NO_FREE_INCOMING_CONNECTIONS = 31,
   ID_DISCONNECTION_NOTIFICATION = 32,
   ID_CONNECTION_REQUEST_ACCEPTED = 34,
+  ID_RECEIVED_STATIC_DATA = 41,
 };
 
 struct Net {
@@ -185,6 +188,55 @@ struct PendingReliable {
   uint8_t retries = 0;
 };
 
+// The real RakPeer reliability layer tracks transport ACKs from the very first
+// CONNECTION_REQUEST, not only after a UI-owned session is retained. Keep this
+// small bounded equivalent during the synchronous connection phase, then move
+// any still-outstanding records into LiveSession at hand-off.
+bool sendTrackedReliable(Net& net, uint16_t port, std::vector<PendingReliable>& pending,
+                         const std::vector<uint8_t>& packet, uint16_t messageNumber,
+                         ReliablePurpose purpose = ReliablePurpose::Generic) {
+  constexpr size_t kMaxHandshakePendingReliable = 8u;
+  if (packet.empty() || pending.size() >= kMaxHandshakePendingReliable) return false;
+  PendingReliable record;
+  record.messageNumber = messageNumber;
+  record.purpose = purpose;
+  record.wrappedPacket = wrap_packet(packet, port);
+  record.lastSent = std::chrono::steady_clock::now();
+  if (!net.send(record.wrappedPacket)) return false;
+  pending.push_back(std::move(record));
+  return true;
+}
+
+void consumeTrackedReliableAcks(std::vector<PendingReliable>& pending,
+                                const std::vector<uint16_t>& messageNumbers) {
+  if (pending.empty() || messageNumbers.empty()) return;
+  pending.erase(std::remove_if(pending.begin(), pending.end(), [&](const PendingReliable& record) {
+    return std::find(messageNumbers.begin(), messageNumbers.end(), record.messageNumber) !=
+           messageNumbers.end();
+  }), pending.end());
+}
+
+bool resendTrackedReliableDue(Net& net, std::vector<PendingReliable>& pending,
+                              std::string& error) {
+  constexpr auto kResendAfter = std::chrono::milliseconds(750);
+  constexpr uint8_t kMaxRetries = 5u;
+  const auto now = std::chrono::steady_clock::now();
+  for (PendingReliable& record : pending) {
+    if (now - record.lastSent < kResendAfter) continue;
+    if (record.retries >= kMaxRetries) {
+      error = "reliable handshake tidak di-ACK server";
+      return false;
+    }
+    if (!net.send(record.wrappedPacket)) {
+      error = "gagal mengirim ulang reliable handshake";
+      return false;
+    }
+    record.lastSent = now;
+    ++record.retries;
+  }
+  return true;
+}
+
 // One explicit session is retained for the Android shell. It intentionally
 // contains only network/state ownership: rendering and input live above this
 // boundary, and a new connection replaces the old one atomically under mutex.
@@ -192,9 +244,9 @@ struct LiveSession {
   std::unique_ptr<Net> net;
   uint16_t port = 0;
   uint16_t nextMessageNumber = 0;
-  // RakNet ordering counters are independent per ordering channel. RPC traffic
-  // stays on channel 2; movement sync uses channel 1 and must never consume the
-  // RPC stream's index.
+  // Compatible clients use numeric channel 0 for both reliable RPC and USeq
+  // sync. RakNet owns separate ordered/sequenced per-channel counters, so the
+  // two local counters below must remain independent despite that same channel.
   syncpolicy::OrderingCounters orderingCounters;
   bool accepted = false;
   bool joined = false;
@@ -293,7 +345,14 @@ struct LiveSession {
   std::string stateSummary;
   std::string error;
   std::vector<PendingReliable> pendingReliable;
+  // First-stage RakNet receipt history drops retransmitted reliable message
+  // numbers before a duplicate can re-enter split assembly or control paths.
+  raknet::ReliableMessageGate inboundReliable;
   raknet::SplitReassembler reassembler;
+  // Packet ACK proves transport receipt, not that packets arrived in order.
+  // Keep reliable RPCs behind the bounded ordered gate before WorldState sees
+  // them; USeq sync keeps its separate stale-frame gate below.
+  raknet::ReliableOrderedGate inboundOrdered;
   raknet::SequencedPacketGate inboundSequenced;
   state::WorldState world;
 };
@@ -310,23 +369,28 @@ bool parse_accepted(const std::vector<uint8_t>& payload, uint32_t& token) {
   return true;
 }
 
-// RPC PlayerConnect (ClientJoin): id 20 / rpc 25
-std::vector<uint8_t> build_client_join(uint32_t challengeResponse, const std::string& nick) {
-  BitWriter w;
-  w.writeBits(20, 8);   // ID_RPC
-  w.writeBits(25, 8);   // RPC_ClientJoin / PlayerConnect
-  w.writeBits(4057, 32);  // VersionNumber (0.3.7)
-  w.writeBits(1, 8);      // Modded
-  w.writeBits(static_cast<uint32_t>(nick.size()), 8);
-  w.writeBytes(reinterpret_cast<const uint8_t*>(nick.data()), nick.size());
-  w.writeBits(challengeResponse, 32);
-  static const char kKey[] = "1234567890123456789012345678901234567890";  // 40 hex
-  w.writeBits(40, 8);
-  w.writeBytes(reinterpret_cast<const uint8_t*>(kKey), 40);
-  static const char kVer[] = "0.3.7-R5";
-  w.writeBits(9, 8);
-  w.writeBytes(reinterpret_cast<const uint8_t*>(kVer), 9);
-  return w.buffer;
+// ClientJoin and the exact seven-byte NEW_INCOMING record are built by the
+// isolated handshake module so host regressions can prove their wire layout.
+
+uint32_t currentMonotonicMilliseconds32() {
+  const auto elapsed = std::chrono::steady_clock::now().time_since_epoch();
+  return static_cast<uint32_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+}
+
+bool reply_to_internal_ping(Net& net, uint16_t port, uint16_t& nextMessageNumber,
+                            const std::vector<uint8_t>& payload) {
+  if (payload.size() != 5u || payload[0] != ID_INTERNAL_PING) return false;
+  BitWriter pong;
+  pong.writeBits(ID_CONNECTED_PONG, 8);
+  pong.writeBits(static_cast<uint32_t>(payload[1]) |
+                     (static_cast<uint32_t>(payload[2]) << 8u) |
+                     (static_cast<uint32_t>(payload[3]) << 16u) |
+                     (static_cast<uint32_t>(payload[4]) << 24u),
+                 32);
+  pong.writeBits(currentMonotonicMilliseconds32(), 32);
+  const auto frame = raknet::buildUnreliable(nextMessageNumber++, pong.buffer);
+  return !frame.empty() && net.send(wrap_packet(frame, port));
 }
 
 std::string hex(const std::vector<uint8_t>& v, size_t max = 24) {
@@ -411,8 +475,8 @@ void consumeRemoteAcks(LiveSession& session, const std::vector<uint16_t>& messag
         : static_cast<uint32_t>((static_cast<uint64_t>(session.smoothedReliableRttMs) * 7u +
                                  rttMs) / 8u);
     if (it->purpose == ReliablePurpose::SpawnConfirmation) {
-      // The server has transport-ACKed RPC PlayerSpawn, so channel-1 movement
-      // can no longer race in ahead of the server's spawned-state transition.
+      // The server has transport-ACKed RPC PlayerSpawn, so channel-0 USeq
+      // movement can no longer race in ahead of that spawned-state transition.
       session.spawnConfirmationAcked = true;
       appendBounded(session.stateSummary, "PlayerSpawn ACK", 240);
     }
@@ -476,6 +540,15 @@ void replyToInternalPing(LiveSession& session, const std::vector<uint8_t>& paylo
   ++session.connectedPongs;
 }
 
+bool sendEmptyStaticData(LiveSession& session) {
+  if (!session.net || session.net->fd < 0) return false;
+  const uint16_t messageNumber = session.nextMessageNumber++;
+  return sendSessionReliable(session,
+                             raknet::buildReliable(messageNumber,
+                                                   handshake::buildEmptyStaticData()),
+                             messageNumber);
+}
+
 void sendDueReliableKeepalive(LiveSession& session) {
   if (!session.net || session.net->fd < 0) return;
   const auto now = std::chrono::steady_clock::now();
@@ -498,7 +571,7 @@ bool sendSpawnConfirmation(LiveSession& session) {
   const uint16_t messageNumber = session.nextMessageNumber++;
   const uint16_t orderingIndex = session.orderingCounters.takeRpc();
   const auto packet = raknet::buildReliableOrdered(
-      messageNumber, 2, orderingIndex, clientrpc::buildPlayerSpawn());
+      messageNumber, clientrpc::kReliableOrderedChannel, orderingIndex, clientrpc::buildPlayerSpawn());
   if (!sendSessionReliable(session, packet, messageNumber, ReliablePurpose::SpawnConfirmation)) {
     session.error = "gagal mengirim PlayerSpawn";
     return false;
@@ -940,6 +1013,20 @@ PassengerSendOutcome sendPassengerLocked(LiveSession& session,
   return PassengerSendOutcome::Sent;
 }
 
+bool isReliableTransport(uint8_t reliability) {
+  return reliability == raknet::kReliabilityReliable ||
+         reliability == raknet::kReliabilityReliableOrdered ||
+         reliability == raknet::kReliabilityReliableSequenced;
+}
+
+std::vector<raknet::IncomingPacket> applyInboundReliableOrder(
+    raknet::ReliableOrderedGate& ordered, raknet::IncomingPacket packet) {
+  if (packet.reliability != raknet::kReliabilityReliableOrdered) {
+    return {std::move(packet)};
+  }
+  return ordered.push(std::move(packet));
+}
+
 void processSessionDatagram(LiveSession& session, const std::vector<uint8_t>& bytes) {
   // Net has already peer-filtered this UDP datagram. Count any peer traffic as
   // transport liveness even if its application payload is malformed; protocol
@@ -952,201 +1039,292 @@ void processSessionDatagram(LiveSession& session, const std::vector<uint8_t>& by
   }
 
   for (const auto& raw : datagram.packets) {
+    // ACKs above intentionally include retransmissions. RakNet then suppresses
+    // the duplicate reliable message number before split/order/application
+    // handling; otherwise a repeated non-ordered control packet could replay.
+    if (isReliableTransport(raw.reliability) &&
+        !session.inboundReliable.accept(raw.messageNumber)) {
+      continue;
+    }
     if (raw.split) ++session.splitFragments;
-    for (const auto& packet : session.reassembler.push(raw)) {
-      if (packet.payload.empty()) continue;
-      ++session.receivedPackets;
-      if (packet.reassembled) ++session.reassembledPackets;
-      if (packet.reliability == raknet::kReliabilityUnreliableSequenced &&
-          !session.inboundSequenced.accept(packet.orderingChannel, packet.orderingIndex)) {
-        // A late sync datagram must not roll a remote entity back in time.
-        continue;
-      }
-
-      const uint8_t id = packet.payload[0];
-      if (id == ID_DISCONNECTION_NOTIFICATION) {
-        session.error = "server memutus sesi";
+    auto reassembled = session.reassembler.push(raw);
+    if (session.reassembler.overflowed()) {
+      // ACKs are generated before reassembly so every reliable fragment gets
+      // transport acknowledgement. Once the bounded assembly budget is hit,
+      // retaining the session could otherwise lose an ordered parent forever.
+      session.error = "reassembly split inbound melebihi batas aman";
+      session.net->close();
+      return;
+    }
+    for (auto packet : reassembled) {
+      auto delivered = applyInboundReliableOrder(session.inboundOrdered, std::move(packet));
+      if (session.inboundOrdered.overflowed()) {
+        // The datagram was transport-ACKed before application ordering. Do
+        // not pretend a dropped ordered RPC can recover after this bound;
+        // close cleanly and require a fresh session instead.
+        session.error = "antrean reliable-ordered inbound melebihi batas aman";
         session.net->close();
         return;
       }
-      if (id == ID_INTERNAL_PING) {
-        replyToInternalPing(session, packet.payload);
-        continue;
-      }
-      if (id == syncdecode::kPlayerAimSyncPacketId) {
-        syncdecode::RemoteAimSync remote;
-        if (syncdecode::decodeRemoteAimBroadcast(packet.payload, remote,
-                                                 packet.payloadBitLength)) {
-          ++session.remoteAimPackets;
-          appendBounded(session.syncSummary, syncdecode::summarize(remote), 320);
-          state::RpcEvent event;
-          if (session.world.applyRemoteAim(remote, event)) {
-            appendBounded(session.stateSummary, event.summary, 240);
-          }
+      for (const auto& packet : delivered) {
+        if (packet.payload.empty()) continue;
+        ++session.receivedPackets;
+        if (packet.reassembled) ++session.reassembledPackets;
+        if ((packet.reliability == raknet::kReliabilityUnreliableSequenced ||
+             packet.reliability == raknet::kReliabilityReliableSequenced) &&
+            !session.inboundSequenced.accept(packet.orderingChannel, packet.orderingIndex)) {
+          // A late sync datagram must not roll a remote entity back in time.
+          continue;
         }
-        continue;
-      }
-      if (id == syncdecode::kPlayerBulletSyncPacketId) {
-        syncdecode::RemoteBulletSync remote;
-        if (syncdecode::decodeRemoteBulletBroadcast(packet.payload, remote,
-                                                    packet.payloadBitLength)) {
-          ++session.remoteBulletPackets;
-          appendBounded(session.syncSummary, syncdecode::summarize(remote), 320);
-          state::RpcEvent event;
-          if (session.world.applyRemoteBullet(remote, event)) {
-            appendBounded(session.stateSummary, event.summary, 240);
-          }
-        }
-        continue;
-      }
-      if (id == syncdecode::kPlayerFootSyncPacketId) {
-        syncdecode::RemoteOnFootSync remote;
-        if (syncdecode::decodeRemoteOnFootBroadcast(packet.payload, remote,
-                                                    packet.payloadBitLength)) {
-          ++session.remoteOnFootPackets;
-          appendBounded(session.syncSummary, syncdecode::summarize(remote), 320);
-          state::RpcEvent event;
-          if (session.world.applyRemoteOnFoot(remote, event)) {
-            appendBounded(session.stateSummary, event.summary, 240);
-          }
-        }
-        continue;
-      }
-      if (id == syncdecode::kPlayerPassengerSyncPacketId) {
-        syncdecode::RemotePassengerSync remote;
-        if (syncdecode::decodeRemotePassengerBroadcast(packet.payload, remote,
-                                                        packet.payloadBitLength)) {
-          ++session.remoteVehiclePackets;
-          appendBounded(session.syncSummary, syncdecode::summarize(remote), 320);
-          state::RpcEvent event;
-          if (session.world.applyRemotePassenger(remote, event)) {
-            appendBounded(session.stateSummary, event.summary, 240);
-          }
-        }
-        continue;
-      }
-      if (id == syncdecode::kPlayerVehicleSyncPacketId ||
-          id == syncdecode::kPlayerUnoccupiedSyncPacketId) {
-        syncdecode::RemoteVehicleSync remote;
-        if (syncdecode::decodeRemoteVehicleBroadcast(packet.payload, remote,
-                                                      packet.payloadBitLength)) {
-          ++session.remoteVehiclePackets;
-          appendBounded(session.syncSummary, syncdecode::summarize(remote), 320);
-          state::RpcEvent event;
-          if (session.world.applyRemoteVehicle(remote, event)) {
-            appendBounded(session.stateSummary, event.summary, 240);
-            const state::LocalPlayer& local = session.world.localPlayer();
-            if (local.vehicleKnown && local.inVehicle && event.playerId == local.vehicleId) {
-              // A received transform for the local assigned vehicle is an
-              // authoritative correction over the kinematic prediction.
-              invalidateLocalGameplay(session);
-            }
-          }
-        }
-        continue;
-      }
-      // Transport control frames are handled above or require no app-level
-      // reducer action. Game RPC state starts at ID_RPC (20).
-      if (id != 20 || packet.payload.size() < 2) continue;
 
-      ++session.receivedRpcs;
-      appendBounded(session.rpcSummary, rpc::summarize(packet.payload), 320);
-      state::RpcEvent event;
-      if (session.world.applyRpc(packet.payload, event)) {
-        appendBounded(session.stateSummary, event.summary, 240);
-        if (event.kind == state::RpcEventKind::ClassSelection) {
-          // Both a class reply and ForcePlayerClassSelection supersede every
-          // prior spawn handshake. A RakNet ACK for old PlayerSpawn is not a
-          // server grant to keep syncing after the server returns to classes.
-          session.classRequestPending = false;
-          session.spawnRequestPending = false;
-          session.spawnConfirmationSent = false;
-          session.spawnConfirmationAcked = false;
+        const uint8_t id = packet.payload[0];
+        if (handshake::isTerminalSessionControlId(id)) {
           session.controls.reset();
           invalidateLocalGameplay(session);
+          // No inactive snapshot may retain prior server world/audio/dialog
+          // facts after a transport-level refusal/disconnect.
+          session.world = {};
+          session.joined = false;
+          session.error = "server memutus atau menolak sesi native (RakNet id " +
+                          std::to_string(static_cast<unsigned>(id)) + ")";
+          session.net->close();
+          return;
         }
-        if (event.localFacingUpdated) {
-          session.controls.synchronizeHeading(session.world.localPlayer().angle);
+        if (id == ID_INTERNAL_PING) {
+          replyToInternalPing(session, packet.payload);
+          continue;
         }
-        if (event.kind == state::RpcEventKind::CameraChanged ||
-            event.kind == state::RpcEventKind::WeaponStateChanged) {
-          // Do not leave a prior Packet-203 candidate shown as ready across a
-          // camera or authoritative weapon/ammo transition. The next gameplay
-          // tick rebuilds it only from the newly reduced server facts.
-          session.aimPreviewReady = false;
+        if (id == ID_REQUEST_STATIC_DATA) {
+          // RakPeer answers the connected peer's explicit static-data request
+          // with its (empty) local-static-data payload on reliable transport.
+          // SampDroid intentionally exposes no arbitrary app static data.
+          if (!sendEmptyStaticData(session)) {
+            session.error = "gagal mengirim static-data RakNet";
+          }
+          continue;
         }
-        if (event.localPositionUpdated || event.localVelocityUpdated ||
-            event.localInteriorUpdated || event.worldGravityUpdated || event.worldBoundsUpdated ||
-            event.localSpectateUpdated) {
-          // SetSpawnInfo/SetPlayerPos is authoritative over a locally
-          // predicted collision step. A server velocity requires a dedicated
-          // physics bridge; an interior transition changes the exact IPL/COL
-          // query partition; a gravity update changes airborne acceleration;
-          // RPC-17 bounds replace the exterior movement envelope; spectator
-          // state revokes local movement authority. Each therefore
-          // drops prediction, while health or armour-only
-          // events deliberately do not trigger this reset.
-          invalidateLocalGameplay(session);
+        if (id == ID_RECEIVED_STATIC_DATA) {
+          // The legacy peer may send its own static record after acceptance.
+          // It is transport metadata, not GTA/world data and is deliberately not
+          // surfaced to Java or allowed to alter gameplay state.
+          continue;
         }
-        const state::LocalPlayer& localAfterRpc = session.world.localPlayer();
-        if (event.localSpectateUpdated && localAfterRpc.spectatingKnown &&
-            localAfterRpc.spectating) {
-          // Clear semantic holds immediately at the RPC boundary rather than
-          // waiting for the next renderer-owned gameplay tick. The separate
-          // send gates remain mandatory in case a caller races this reducer.
-          session.controls.reset();
-          invalidateLocalGameplay(session);
-        }
-        if ((event.kind == state::RpcEventKind::VehicleStreamedIn ||
-             event.kind == state::RpcEventKind::VehicleStreamedOut ||
-             event.kind == state::RpcEventKind::VehicleChanged) &&
-            localAfterRpc.vehicleKnown && localAfterRpc.inVehicle &&
-            event.playerId == localAfterRpc.vehicleId) {
-          // Server vehicle mutators and stream lifecycle are authoritative over
-          // any local driver prediction for this same raw vehicle ID.
-          invalidateLocalGameplay(session);
-        }
-        if (event.kind == state::RpcEventKind::SpawnInfoChanged ||
-            event.kind == state::RpcEventKind::LocalPlayerChanged) {
-          if (serverMarkedDead(localAfterRpc)) {
-            // Stop held semantic input at the same serialized reducer boundary
-            // as SetPlayerHealth(0), rather than waiting for a renderer tick.
-            session.controls.reset();
-            invalidateLocalGameplay(session);
-          } else if (localAfterRpc.controllableKnown && !localAfterRpc.controllable) {
-            session.controls.reset();
-            invalidateLocalGameplay(session);
-          } else if (event.localVehicleUpdated) {
-            // Enter/exit is server authority. Clear potentially held walking
-            // input, then let the next Android touch sample seed driver input.
-            session.controls.reset();
-            invalidateLocalGameplay(session);
-            if (localAfterRpc.inVehicle && localAfterRpc.vehicleSeat == 0) {
-              const state::Vehicle* vehicle = session.world.findVehicle(localAfterRpc.vehicleId);
-              if (vehicle != nullptr) session.controls.synchronizeHeading(vehicle->angle);
+        if (id == syncdecode::kPlayerAimSyncPacketId) {
+          syncdecode::RemoteAimSync remote;
+          if (syncdecode::decodeRemoteAimBroadcast(packet.payload, remote,
+                                                   packet.payloadBitLength)) {
+            ++session.remoteAimPackets;
+            appendBounded(session.syncSummary, syncdecode::summarize(remote), 320);
+            state::RpcEvent event;
+            if (session.world.applyRemoteAim(remote, event)) {
+              appendBounded(session.stateSummary, event.summary, 240);
             }
           }
-          rebuildLocalOnFootPreview(session);
+          continue;
         }
-        if (event.kind == state::RpcEventKind::SpawnResponse) {
-          // This is the authoritative response to the current request. Clear
-          // the UI/retry gate before potentially queuing the separate
-          // PlayerSpawn confirmation RPC below.
-          session.spawnRequestPending = false;
-          if (session.world.spawnAllowed()) {
-            // PlayerRequestSpawn is only permission. The legacy protocol
-            // requires the client to follow it with empty RPC PlayerSpawn (52).
-            sendSpawnConfirmation(session);
-          } else {
+        if (id == syncdecode::kPlayerBulletSyncPacketId) {
+          syncdecode::RemoteBulletSync remote;
+          if (syncdecode::decodeRemoteBulletBroadcast(packet.payload, remote,
+                                                      packet.payloadBitLength)) {
+            ++session.remoteBulletPackets;
+            appendBounded(session.syncSummary, syncdecode::summarize(remote), 320);
+            state::RpcEvent event;
+            if (session.world.applyRemoteBullet(remote, event)) {
+              appendBounded(session.stateSummary, event.summary, 240);
+            }
+          }
+          continue;
+        }
+        if (id == syncdecode::kPlayerFootSyncPacketId) {
+          syncdecode::RemoteOnFootSync remote;
+          if (syncdecode::decodeRemoteOnFootBroadcast(packet.payload, remote,
+                                                      packet.payloadBitLength)) {
+            ++session.remoteOnFootPackets;
+            appendBounded(session.syncSummary, syncdecode::summarize(remote), 320);
+            state::RpcEvent event;
+            if (session.world.applyRemoteOnFoot(remote, event)) {
+              appendBounded(session.stateSummary, event.summary, 240);
+            }
+          }
+          continue;
+        }
+        if (id == syncdecode::kPlayerPassengerSyncPacketId) {
+          syncdecode::RemotePassengerSync remote;
+          if (syncdecode::decodeRemotePassengerBroadcast(packet.payload, remote,
+                                                          packet.payloadBitLength)) {
+            ++session.remoteVehiclePackets;
+            appendBounded(session.syncSummary, syncdecode::summarize(remote), 320);
+            state::RpcEvent event;
+            if (session.world.applyRemotePassenger(remote, event)) {
+              appendBounded(session.stateSummary, event.summary, 240);
+            }
+          }
+          continue;
+        }
+        if (id == syncdecode::kPlayerTrailerSyncPacketId) {
+          syncdecode::RemoteTrailerSync remote;
+          if (syncdecode::decodeRemoteTrailerBroadcast(packet.payload, remote,
+                                                        packet.payloadBitLength)) {
+            ++session.remoteVehiclePackets;
+            appendBounded(session.syncSummary, syncdecode::summarize(remote), 320);
+            state::RpcEvent event;
+            if (session.world.applyRemoteTrailer(remote, event)) {
+              appendBounded(session.stateSummary, event.summary, 240);
+            }
+          }
+          continue;
+        }
+        if (id == syncdecode::kPlayerVehicleSyncPacketId ||
+            id == syncdecode::kPlayerUnoccupiedSyncPacketId) {
+          syncdecode::RemoteVehicleSync remote;
+          if (syncdecode::decodeRemoteVehicleBroadcast(packet.payload, remote,
+                                                        packet.payloadBitLength)) {
+            ++session.remoteVehiclePackets;
+            appendBounded(session.syncSummary, syncdecode::summarize(remote), 320);
+            state::RpcEvent event;
+            if (session.world.applyRemoteVehicle(remote, event)) {
+              appendBounded(session.stateSummary, event.summary, 240);
+              const state::LocalPlayer& local = session.world.localPlayer();
+              if (local.vehicleKnown && local.inVehicle && event.playerId == local.vehicleId) {
+                // A received transform for the local assigned vehicle is an
+                // authoritative correction over the kinematic prediction.
+                invalidateLocalGameplay(session);
+              }
+            }
+          }
+          continue;
+        }
+        // Transport control frames are handled above or require no app-level
+        // reducer action. Game RPC state starts at ID_RPC (20).
+        if (id != 20 || packet.payload.size() < 2) continue;
+
+        ++session.receivedRpcs;
+        appendBounded(session.rpcSummary, rpc::summarize(packet.payload), 320);
+        state::RpcEvent event;
+        if (session.world.applyRpc(packet.payload, event)) {
+          appendBounded(session.stateSummary, event.summary, 240);
+          if (event.kind == state::RpcEventKind::SessionCloseRequested) {
+            // PlayerClose/ConnectionRejected are exact server lifecycle
+            // instructions. Stop all held semantic input and local prediction
+            // before closing, rather than leaving a stale playable-looking
+            // renderer/sync gate after a restart or explicit rejection.
+            session.controls.reset();
+            invalidateLocalGameplay(session);
+            session.classRequestPending = false;
+            session.spawnRequestPending = false;
             session.spawnConfirmationSent = false;
             session.spawnConfirmationAcked = false;
+            session.joined = false;
+            // The terminal reason lives in SessionSnapshot.error; clear the
+            // server-derived reducer state so an inactive world snapshot cannot
+            // retain stale audio, dialogs, menus, entities, or gameplay facts.
+            session.world = {};
+            session.error = "server mengakhiri sesi native (" + event.summary + ")";
+            if (session.net) session.net->close();
+            return;
+          }
+          if (event.kind == state::RpcEventKind::ClassSelection) {
+            // Both a class reply and ForcePlayerClassSelection supersede every
+            // prior spawn handshake. A RakNet ACK for old PlayerSpawn is not a
+            // server grant to keep syncing after the server returns to classes.
+            session.classRequestPending = false;
+            session.spawnRequestPending = false;
+            session.spawnConfirmationSent = false;
+            session.spawnConfirmationAcked = false;
+            session.controls.reset();
             invalidateLocalGameplay(session);
+          }
+          if (event.localFacingUpdated) {
+            session.controls.synchronizeHeading(session.world.localPlayer().angle);
+          }
+          if (event.kind == state::RpcEventKind::CameraChanged ||
+              event.kind == state::RpcEventKind::WeaponStateChanged) {
+            // Do not leave a prior Packet-203 candidate shown as ready across a
+            // camera or authoritative weapon/ammo transition. The next gameplay
+            // tick rebuilds it only from the newly reduced server facts.
+            session.aimPreviewReady = false;
+          }
+          if (event.localPositionUpdated || event.localVelocityUpdated ||
+              event.localInteriorUpdated || event.worldGravityUpdated || event.worldBoundsUpdated ||
+              event.localSpectateUpdated ||
+              event.kind == state::RpcEventKind::BuildingRemovalChanged) {
+            // SetSpawnInfo/SetPlayerPos is authoritative over a locally
+            // predicted collision step. A server velocity requires a dedicated
+            // physics bridge; an interior transition changes the exact IPL/COL
+            // query partition; gravity/RPC-17 can change the movement envelope;
+            // RPC-43 may remove the exact floor/wall used by the current step;
+            // spectator state revokes local movement authority. Each therefore
+            // drops prediction, while health or armour-only events deliberately
+            // do not trigger this reset.
+            invalidateLocalGameplay(session);
+          }
+          const state::LocalPlayer& localAfterRpc = session.world.localPlayer();
+          if (event.localSpectateUpdated && localAfterRpc.spectatingKnown &&
+              localAfterRpc.spectating) {
+            // Clear semantic holds immediately at the RPC boundary rather than
+            // waiting for the next renderer-owned gameplay tick. The separate
+            // send gates remain mandatory in case a caller races this reducer.
+            session.controls.reset();
+            invalidateLocalGameplay(session);
+          }
+          if ((event.kind == state::RpcEventKind::VehicleStreamedIn ||
+               event.kind == state::RpcEventKind::VehicleStreamedOut ||
+               (event.kind == state::RpcEventKind::VehicleChanged &&
+                !event.vehicleParametersUpdated)) &&
+              localAfterRpc.vehicleKnown && localAfterRpc.inVehicle &&
+              event.playerId == localAfterRpc.vehicleId) {
+            // Transform/velocity mutators, including implicit-local RPC-91
+            // SetVehicleVelocity, and stream lifecycle are authoritative over
+            // any local driver prediction for this same raw vehicle ID. RPC-24
+            // parameter facts carry no transform; preserving the current pilot
+            // lets its next bounded step apply manual-engine throttle gating
+            // without a needless position snap.
+            invalidateLocalGameplay(session);
+          }
+          if (event.kind == state::RpcEventKind::SpawnInfoChanged ||
+              event.kind == state::RpcEventKind::LocalPlayerChanged) {
+            if (serverMarkedDead(localAfterRpc)) {
+              // Stop held semantic input at the same serialized reducer boundary
+              // as SetPlayerHealth(0), rather than waiting for a renderer tick.
+              session.controls.reset();
+              invalidateLocalGameplay(session);
+            } else if (localAfterRpc.controllableKnown && !localAfterRpc.controllable) {
+              session.controls.reset();
+              invalidateLocalGameplay(session);
+            } else if (event.localVehicleUpdated) {
+              // Enter/exit is server authority. Clear potentially held walking
+              // input, then let the next Android touch sample seed driver input.
+              session.controls.reset();
+              invalidateLocalGameplay(session);
+              if (localAfterRpc.inVehicle && localAfterRpc.vehicleSeat == 0) {
+                const state::Vehicle* vehicle = session.world.findVehicle(localAfterRpc.vehicleId);
+                if (vehicle != nullptr) session.controls.synchronizeHeading(vehicle->angle);
+              }
+            }
+            rebuildLocalOnFootPreview(session);
+          }
+          if (event.kind == state::RpcEventKind::SpawnResponse) {
+            // This is the authoritative response to the current request. Clear
+            // the UI/retry gate before potentially queuing the separate
+            // PlayerSpawn confirmation RPC below.
+            session.spawnRequestPending = false;
+            if (session.world.spawnAllowed()) {
+              // PlayerRequestSpawn is only permission. The legacy protocol
+              // requires the client to follow it with empty RPC PlayerSpawn (52).
+              sendSpawnConfirmation(session);
+            } else {
+              session.spawnConfirmationSent = false;
+              session.spawnConfirmationAcked = false;
+              invalidateLocalGameplay(session);
+            }
           }
         }
       }
     }
   }
-  session.joined = session.receivedPackets > 0;
+  // Broadcast RPCs alone do not prove ClientJoin completed.  Keep the session
+  // explicitly in its initializing state until the server supplied InitGame.
+  session.joined = session.world.initialized();
 }
 
 SessionSnapshot snapshotFrom(const LiveSession* session) {
@@ -1636,19 +1814,39 @@ WorldSnapshot worldSnapshotFrom(const LiveSession* session) {
     view.y = vehicle.y;
     view.z = vehicle.z;
     view.angle = vehicle.angle;
+    view.attitudeKnown = vehicle.attitudeKnown;
+    view.rotationX = vehicle.rotationX;
+    view.rotationY = vehicle.rotationY;
+    view.rotationZ = vehicle.rotationZ;
+    view.parametersKnown = vehicle.parameters.known;
+    view.parameters = vehicle.parameters.values;
     view.health = vehicle.health;
     snapshot.vehicles.push_back(std::move(view));
   }
-  if (vehiclePrediction) {
+  // Even before COL/prediction is ready, retain the current local seated
+  // vehicle inside the bounded presentation budget. This guarantees server
+  // engine/lights/siren facts are visible after an RPC-24 correction instead
+  // of disappearing merely because lower raw IDs filled the generic list.
+  const bool localVehiclePresentationRequired =
+      local.vehicleKnown && local.inVehicle && local.vehicleId != 0u;
+  if (localVehiclePresentationRequired) {
     const auto existing = std::find_if(snapshot.vehicles.begin(), snapshot.vehicles.end(),
                                        [&local](const WorldVehicleSnapshot& view) {
                                          return view.id == local.vehicleId;
                                        });
     if (existing != snapshot.vehicles.end()) {
-      existing->x = session->localGameplay.vehicleMotion.position.x;
-      existing->y = session->localGameplay.vehicleMotion.position.y;
-      existing->z = session->localGameplay.vehicleMotion.position.z;
-      existing->angle = session->localGameplay.vehicleMotion.headingDegrees;
+      if (vehiclePrediction) {
+        existing->x = session->localGameplay.vehicleMotion.position.x;
+        existing->y = session->localGameplay.vehicleMotion.position.y;
+        existing->z = session->localGameplay.vehicleMotion.position.z;
+        existing->angle = session->localGameplay.vehicleMotion.headingDegrees;
+        // The current bounded local driver pilot has yaw only. Do not retain a
+        // stale remote Packet-200 roll/pitch while its predicted transform wins.
+        existing->attitudeKnown = false;
+        existing->rotationX = 0.0f;
+        existing->rotationY = 0.0f;
+        existing->rotationZ = existing->angle;
+      }
     } else if (const state::Vehicle* vehicle = session->world.findVehicle(local.vehicleId)) {
       WorldVehicleSnapshot localView;
       localView.id = vehicle->id;
@@ -1659,15 +1857,31 @@ WorldSnapshot worldSnapshotFrom(const LiveSession* session) {
       localView.colour1 = vehicle->colour1;
       localView.colour2 = vehicle->colour2;
       localView.paintjob = vehicle->paintjob;
-      localView.x = session->localGameplay.vehicleMotion.position.x;
-      localView.y = session->localGameplay.vehicleMotion.position.y;
-      localView.z = session->localGameplay.vehicleMotion.position.z;
-      localView.angle = session->localGameplay.vehicleMotion.headingDegrees;
+      localView.x = vehicle->x;
+      localView.y = vehicle->y;
+      localView.z = vehicle->z;
+      localView.angle = vehicle->angle;
+      localView.attitudeKnown = vehicle->attitudeKnown;
+      localView.rotationX = vehicle->rotationX;
+      localView.rotationY = vehicle->rotationY;
+      localView.rotationZ = vehicle->rotationZ;
+      if (vehiclePrediction) {
+        localView.x = session->localGameplay.vehicleMotion.position.x;
+        localView.y = session->localGameplay.vehicleMotion.position.y;
+        localView.z = session->localGameplay.vehicleMotion.position.z;
+        localView.angle = session->localGameplay.vehicleMotion.headingDegrees;
+        localView.attitudeKnown = false;
+        localView.rotationX = 0.0f;
+        localView.rotationY = 0.0f;
+        localView.rotationZ = localView.angle;
+      }
+      localView.parametersKnown = vehicle->parameters.known;
+      localView.parameters = vehicle->parameters.values;
       localView.health = vehicle->health;
       if (snapshot.vehicles.size() < 64u) {
         snapshot.vehicles.push_back(std::move(localView));
       } else if (!snapshot.vehicles.empty()) {
-        // Retain the player-owned driver vehicle inside the existing bounded
+        // Keep the player-owned occupied vehicle inside the existing bounded
         // renderer budget even when lower IDs filled the generic export first.
         snapshot.vehicles.back() = std::move(localView);
       }
@@ -1829,18 +2043,44 @@ WorldSnapshot worldSnapshotFrom(const LiveSession* session) {
     chat.text = line.text;
     snapshot.chat.push_back(std::move(chat));
   }
+  // Resolve each short-lived global feed row against facts that already belong
+  // to this WorldState copy. Unknown/non-streamed IDs remain explicit labels;
+  // a UI must not invent player identity from nearby entities.
+  const auto deathName = [&session](uint16_t id) {
+    if (session->world.initialized() && id == session->world.playerInit().playerId) {
+      return std::string("YOU");
+    }
+    if (const state::Player* player = session->world.findPlayer(id)) {
+      if (!player->name.empty()) return player->name;
+    }
+    return std::string("#") + std::to_string(id);
+  };
+  for (const state::DeathMessage& message : session->world.recentDeathMessages()) {
+    WorldDeathMessageSnapshot death;
+    death.hasKiller = message.hasKiller;
+    death.killerId = message.killerId;
+    death.victimId = message.victimId;
+    death.reason = message.reason;
+    if (message.hasKiller) death.killerName = deathName(message.killerId);
+    death.victimName = deathName(message.victimId);
+    snapshot.deathMessages.push_back(std::move(death));
+  }
   return snapshot;
 }
 
 }  // namespace
 
 static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int timeoutMs,
-                                       bool retainSession) {
+                                       bool retainSession, const std::string& requestedNickname) {
   ProbeResult res;
   auto ownedNet = std::make_unique<Net>();
   Net& net = *ownedNet;
   if (!net.open(ip, port, timeoutMs)) {
     res.error = "socket error / invalid ip";
+    return res;
+  }
+  if (!handshake::isValidNickname(requestedNickname)) {
+    res.error = "nickname harus 3-24 karakter ASCII tanpa spasi";
     return res;
   }
 
@@ -1911,60 +2151,107 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   }
 
   // ---- 3. connection request ----------------------------------------------
-  logln(res, "[3] CONNECTION_REQUEST (reliable, msg=1)");
-  net.send(wrap_packet(raknet::buildReliable(1, {ID_CONNECTION_REQUEST}), port));
+  // RakNet starts its reliable message-number space at zero.  Beginning at
+  // one can appear to transport packets, but leaves strict legacy peers with
+  // a permanent hole before NEW_INCOMING / ClientJoin.
+  logln(res, "[3] CONNECTION_REQUEST (reliable, msg=0)");
+  std::vector<PendingReliable> handshakePending;
+  if (!sendTrackedReliable(net, port, handshakePending,
+                           raknet::buildReliable(0, {ID_CONNECTION_REQUEST}), 0)) {
+    res.error = "gagal mengirim CONNECTION_REQUEST";
+    return res;
+  }
 
   // ---- 4. AUTH_KEY -> ACCEPTED --------------------------------------------
-  uint16_t msgNo = 2;
+  uint16_t msgNo = 1;
   uint32_t token = 0;
   bool gotChallenge = false;
-  // One reassembler is kept for the entire session: a server can legally
-  // split an RPC over more than one UDP datagram.
+  std::string answeredAuthChallenge;
+  // These transport gates remain alive through the synchronous handshake and
+  // the retained session hand-off. A server can split or reorder an RPC across
+  // datagrams before the UI gets its first snapshot.
+  raknet::ReliableMessageGate inboundReliable;
   raknet::SplitReassembler reassembler;
+  raknet::ReliableOrderedGate inboundOrdered;
   for (int i = 0; i < 20 && !res.accepted; ++i) {
-    if (net.recv(resp) <= 0) continue;
+    if (net.recv(resp) <= 0) {
+      if (!resendTrackedReliableDue(net, handshakePending, res.error)) return res;
+      continue;
+    }
     raknet::Datagram dg = raknet::decodeDatagram(resp);
+    consumeTrackedReliableAcks(handshakePending, dg.receivedAckMessageNumbers);
     if (!dg.ackMessageNumbers.empty()) {
       net.send(wrap_packet(raknet::buildAck(dg.ackMessageNumbers), port));
     }
     for (const auto& raw : dg.packets) {
-      for (const auto& pkt : reassembler.push(raw)) {
-        if (pkt.payload.empty()) continue;
-        const uint8_t id = pkt.payload[0];
-        if (id == ID_AUTH_KEY && pkt.payload.size() >= 3) {
-          const uint8_t len = pkt.payload[1];
-          std::string challenge(reinterpret_cast<const char*>(pkt.payload.data()) + 2,
-                                len > 0 ? len - 1 : 0);
-          logln(res, "    AUTH_KEY challenge: " + challenge);
-          const char* answer = auth_lookup(challenge);
-          if (!answer) {
-            logln(res, "    challenge tidak ada di tabel ini");
-            continue;
-          }
-          res.authenticated = true;
-          std::vector<uint8_t> pl = {ID_AUTH_KEY,
-                                     static_cast<uint8_t>(std::strlen(answer))};
-          pl.insert(pl.end(), answer, answer + std::strlen(answer));
-          net.send(wrap_packet(raknet::buildReliable(msgNo++, pl), port));
-          logln(res, std::string("[4] AUTH_KEY response: ") + answer);
-          gotChallenge = true;
-        } else if (id == ID_CONNECTION_REQUEST_ACCEPTED) {
-          if (parse_accepted(pkt.payload, token)) {
-            res.accepted = true;
-            char buf[64];
-            std::snprintf(buf, sizeof(buf), "    token server 0x%08X", token);
-            logln(res, "    === CONNECTION REQUEST ACCEPTED ===");
-            logln(res, buf);
-          }
-        } else if (id == ID_NO_FREE_INCOMING_CONNECTIONS) {
-          res.error = "server penuh";
+      if (isReliableTransport(raw.reliability) && !inboundReliable.accept(raw.messageNumber)) {
+        continue;
+      }
+      auto reassembled = reassembler.push(raw);
+      if (reassembler.overflowed()) {
+        res.error = "reassembly split inbound melebihi batas aman";
+        return res;
+      }
+      for (auto packet : reassembled) {
+        auto delivered = applyInboundReliableOrder(inboundOrdered, std::move(packet));
+        if (inboundOrdered.overflowed()) {
+          res.error = "antrean reliable-ordered inbound melebihi batas aman";
           return res;
-        } else if (id == ID_DISCONNECTION_NOTIFICATION) {
-          res.error = "server memutus koneksi";
-          return res;
+        }
+        for (const auto& pkt : delivered) {
+          if (pkt.payload.empty()) continue;
+          const uint8_t id = pkt.payload[0];
+          if (id == ID_AUTH_KEY) {
+            const auto challenge = handshake::parseAuthChallenge(pkt.payload);
+            if (!challenge) {
+              logln(res, "    AUTH_KEY malformed diabaikan");
+              continue;
+            }
+            logln(res, "    AUTH_KEY challenge: " + *challenge);
+            // A dropped reliable response makes RakPeer retransmit this exact
+            // challenge. Our tracked packet will retry with the same message
+            // number, so do not create a competing fresh ordered/reliable slot.
+            if (!answeredAuthChallenge.empty() && *challenge == answeredAuthChallenge) {
+              gotChallenge = true;
+              continue;
+            }
+            const char* answer = auth_lookup(*challenge);
+            if (!answer) {
+              logln(res, "    challenge tidak ada di tabel ini");
+              continue;
+            }
+            res.authenticated = true;
+            std::vector<uint8_t> pl = {ID_AUTH_KEY,
+                                       static_cast<uint8_t>(std::strlen(answer))};
+            pl.insert(pl.end(), answer, answer + std::strlen(answer));
+            const uint16_t authMessageNumber = msgNo++;
+            if (!sendTrackedReliable(net, port, handshakePending,
+                                     raknet::buildReliable(authMessageNumber, pl), authMessageNumber)) {
+              res.error = "gagal mengirim AUTH_KEY response";
+              return res;
+            }
+            answeredAuthChallenge = *challenge;
+            logln(res, std::string("[4] AUTH_KEY response: ") + answer);
+            gotChallenge = true;
+          } else if (id == ID_CONNECTION_REQUEST_ACCEPTED) {
+            if (parse_accepted(pkt.payload, token)) {
+              res.accepted = true;
+              char buf[64];
+              std::snprintf(buf, sizeof(buf), "    token server 0x%08X", token);
+              logln(res, "    === CONNECTION REQUEST ACCEPTED ===");
+              logln(res, buf);
+            }
+          } else if (handshake::isTerminalSessionControlId(id)) {
+            res.error = id == ID_NO_FREE_INCOMING_CONNECTIONS
+                ? "server penuh"
+                : "server menolak atau memutus handshake native (RakNet id " +
+                    std::to_string(static_cast<unsigned>(id)) + ")";
+            return res;
+          }
         }
       }
     }
+    if (!res.accepted && !resendTrackedReliableDue(net, handshakePending, res.error)) return res;
   }
 
   if (!res.accepted) {
@@ -1973,16 +2260,58 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     return res;
   }
 
-  // ---- 5. NEW_INCOMING + ClientJoin ---------------------------------------
-  net.send(wrap_packet(raknet::buildReliable(msgNo++, {ID_NEW_INCOMING_CONNECTION}), port));
+  // ---- 5. RakPeer post-accept control + ClientJoin ------------------------
+  // RakPeer.cpp emits NEW_INCOMING, an immediate internal ping, and an empty
+  // static-data record before application traffic. All reliable records are
+  // tracked from this point too; this avoids a one-shot ClientJoin that a lossy
+  // mobile UDP path can silently strand after the transport accepts us.
+  const auto* targetBytes = reinterpret_cast<const uint8_t*>(&net.to.sin_addr.s_addr);
+  const auto incoming = handshake::buildNewIncoming(
+      {targetBytes[0], targetBytes[1], targetBytes[2], targetBytes[3]}, port);
+  const uint16_t incomingMessageNumber = msgNo++;
+  if (!sendTrackedReliable(net, port, handshakePending,
+                           raknet::buildReliable(incomingMessageNumber, incoming),
+                           incomingMessageNumber)) {
+    res.error = "gagal mengirim NEW_INCOMING";
+    return res;
+  }
 
-  const uint32_t challengeResponse = token ^ 4057u;
-  const std::string nick = "SampDroid";
-  auto join = build_client_join(challengeResponse, nick);
-  net.send(wrap_packet(raknet::buildReliable(msgNo++, join), port));
-  char jb[96];
-  std::snprintf(jb, sizeof(jb), "[5] ClientJoin terkirim (nick %s, cr %u)",
-                nick.c_str(), challengeResponse);
+  const uint16_t pingMessageNumber = msgNo++;
+  const auto internalPing = raknet::buildUnreliable(
+      pingMessageNumber, handshake::buildInternalPing(monotonicMilliseconds32()));
+  if (internalPing.empty() || !net.send(wrap_packet(internalPing, port))) {
+    res.error = "gagal mengirim INTERNAL_PING";
+    return res;
+  }
+
+  const uint16_t staticDataMessageNumber = msgNo++;
+  if (!sendTrackedReliable(net, port, handshakePending,
+                           raknet::buildReliable(staticDataMessageNumber,
+                                                 handshake::buildEmptyStaticData()),
+                           staticDataMessageNumber)) {
+    res.error = "gagal mengirim static-data RakNet";
+    return res;
+  }
+
+  const uint32_t challengeResponse = token ^ handshake::kLegacyNetGameVersion;
+  const std::string serial = handshake::generateLegacySerial();
+  const auto join = handshake::buildClientJoin(challengeResponse, requestedNickname, serial);
+  if (join.empty()) {
+    res.error = "ClientJoin lokal tidak valid";
+    return res;
+  }
+  // RakClient::RPC uses the ordered application stream on channel 0. Client
+  // join consumes index zero, so retained session RPCs must continue at one.
+  const uint16_t joinMessageNumber = msgNo++;
+  if (!sendTrackedReliable(net, port, handshakePending,
+                           raknet::buildReliableOrdered(joinMessageNumber, clientrpc::kReliableOrderedChannel, 0, join),
+                           joinMessageNumber)) {
+    res.error = "gagal mengirim ClientJoin";
+    return res;
+  }
+  char jb[160];
+  std::snprintf(jb, sizeof(jb), "[5] post-accept RakPeer + ClientJoin (nick %s, cr %u)",
+                requestedNickname.c_str(), challengeResponse);
   logln(res, jb);
 
   // ---- 6. dengarkan stream server ----------------------------------------
@@ -1994,34 +2323,93 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   std::string stateSummary;
   state::WorldState world;
   for (int i = 0; i < 20; ++i) {
-    if (net.recv(resp) <= 0) continue;
+    if (net.recv(resp) <= 0) {
+      if (!resendTrackedReliableDue(net, handshakePending, res.error)) break;
+      continue;
+    }
     raknet::Datagram dg = raknet::decodeDatagram(resp);
+    consumeTrackedReliableAcks(handshakePending, dg.receivedAckMessageNumbers);
     if (!dg.ackMessageNumbers.empty()) {
       net.send(wrap_packet(raknet::buildAck(dg.ackMessageNumbers), port));
     }
     for (const auto& raw : dg.packets) {
-      if (raw.split) ++splitFragments;
-      for (const auto& pkt : reassembler.push(raw)) {
-        if (pkt.payload.empty()) continue;
-        ++rxPackets;
-        if (pkt.reassembled) ++reassembledPackets;
-        if (pkt.payload[0] != 20 || pkt.payload.size() < 2) continue;
-
-        ++rpcCount;
-        const std::string label = rpc::summarize(pkt.payload);
-        if (rpcSummary.size() + label.size() + 2 < 320) {
-          if (!rpcSummary.empty()) rpcSummary += ", ";
-          rpcSummary += label;
-        }
-
-        state::RpcEvent stateEvent;
-        if (world.applyRpc(pkt.payload, stateEvent) && !stateEvent.summary.empty() &&
-            stateSummary.size() + stateEvent.summary.size() + 2 < 240) {
-          if (!stateSummary.empty()) stateSummary += ", ";
-          stateSummary += stateEvent.summary;
-        }
+      if (isReliableTransport(raw.reliability) && !inboundReliable.accept(raw.messageNumber)) {
+        continue;
       }
+      if (raw.split) ++splitFragments;
+      auto reassembled = reassembler.push(raw);
+      if (reassembler.overflowed()) {
+        res.error = "reassembly split inbound melebihi batas aman";
+        return res;
+      }
+      for (auto packet : reassembled) {
+        auto delivered = applyInboundReliableOrder(inboundOrdered, std::move(packet));
+        if (inboundOrdered.overflowed()) {
+          res.error = "antrean reliable-ordered inbound melebihi batas aman";
+          return res;
+        }
+        for (const auto& pkt : delivered) {
+          if (pkt.payload.empty()) continue;
+          ++rxPackets;
+          if (pkt.reassembled) ++reassembledPackets;
+          if (pkt.payload[0] == ID_INTERNAL_PING) {
+            if (!reply_to_internal_ping(net, port, msgNo, pkt.payload)) {
+              res.error = "gagal membalas RakNet internal ping";
+              break;
+            }
+            continue;
+          }
+          if (pkt.payload[0] == ID_REQUEST_STATIC_DATA) {
+            const uint16_t staticMessageNumber = msgNo++;
+            if (!sendTrackedReliable(net, port, handshakePending,
+                                     raknet::buildReliable(staticMessageNumber,
+                                                           handshake::buildEmptyStaticData()),
+                                     staticMessageNumber)) {
+              res.error = "gagal membalas request static-data RakNet";
+              break;
+            }
+            continue;
+          }
+          if (pkt.payload[0] == ID_RECEIVED_STATIC_DATA) continue;
+          // A connection can receive unrelated broadcast traffic before the
+          // legacy game layer accepts ClientJoin.  Never call that a successful
+          // gameplay join; surface the transport refusal instead.
+          if (handshake::isTerminalSessionControlId(pkt.payload[0])) {
+            res.error = "server menolak atau memutus sesi native (RakNet id " +
+                        std::to_string(static_cast<unsigned>(pkt.payload[0])) + ")";
+            break;
+          }
+          if (pkt.payload[0] != 20 || pkt.payload.size() < 2) continue;
+
+          ++rpcCount;
+          const std::string label = rpc::summarize(pkt.payload);
+          if (rpcSummary.size() + label.size() + 2 < 320) {
+            if (!rpcSummary.empty()) rpcSummary += ", ";
+            rpcSummary += label;
+          }
+
+          state::RpcEvent stateEvent;
+          if (world.applyRpc(pkt.payload, stateEvent)) {
+            if (!stateEvent.summary.empty() &&
+                stateSummary.size() + stateEvent.summary.size() + 2 < 240) {
+              if (!stateSummary.empty()) stateSummary += ", ";
+              stateSummary += stateEvent.summary;
+            }
+            // A server can reject/restart a recipient before it ever emits
+            // PlayerInit. Do not downgrade that explicit terminal RPC into the
+            // generic "menunggu PlayerInit" state or retain its socket.
+            if (stateEvent.kind == state::RpcEventKind::SessionCloseRequested) {
+              res.error = "server mengakhiri atau menolak sesi native (" +
+                          stateEvent.summary + ")";
+              break;
+            }
+          }
+        }
+        if (!res.error.empty()) break;
+      }
+      if (!res.error.empty()) break;
     }
+    if (!res.error.empty() || !resendTrackedReliableDue(net, handshakePending, res.error)) break;
   }
 
   res.receivedPackets = rxPackets;
@@ -2037,7 +2425,9 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     res.serverName = world.playerInit().serverName;
   }
 
-  res.joined = rxPackets > 0;
+  // Server broadcasts can begin as soon as RakNet accepts a UDP peer.  A
+  // playable legacy session exists only after InitGame/PlayerInit is decoded.
+  res.joined = res.playerInit;
   char sb[512];
   std::snprintf(sb, sizeof(sb),
                 "[6] %d paket diterima, %d RPC, split=%d/reassembled=%d (%s)",
@@ -2053,15 +2443,16 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
                 res.trackedPlayers, stateSummary.empty() ? "" : " — ",
                 stateSummary.empty() ? "" : stateSummary.c_str());
   logln(res, sb);
-  if (rxPackets > 0) {
-    logln(res, "");
-    logln(res, "STATUS: ClientJoin diterima server, stream data berjalan");
+  logln(res, "");
+  if (!res.error.empty()) {
+    logln(res, "STATUS: " + res.error);
+  } else if (res.playerInit) {
+    logln(res, "STATUS: InitGame diterima; sesi gameplay siap memilih class");
   } else {
-    logln(res, "");
-    logln(res, "STATUS: tersambung sebagai peer, ClientJoin belum dibalas");
+    logln(res, "STATUS: RakNet tersambung, menunggu PlayerInit setelah ClientJoin");
   }
 
-  if (retainSession) {
+  if (retainSession && res.error.empty()) {
     // raknet_session_connect holds gLiveSessionMutex across this implementation.
     // Move the opened UDP socket and all decoder state, rather than reopening
     // a second connection or losing ordering/message counters after ClientJoin.
@@ -2070,8 +2461,16 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     live->port = port;
     live->nextMessageNumber = msgNo;
     live->orderingCounters = {};
-    // ClientJoin was the most recent reliable handshake send; start the
-    // steady-state transport keepalive interval from hand-off to the session.
+    // ClientJoin is the first RELIABLE_ORDERED packet on RPC channel 0.
+    // Continue at index one so RequestClass cannot be discarded as its stale
+    // duplicate by legacy servers.
+    live->orderingCounters.nextRpc = 1u;
+    // Continue source-equivalent ACK/retry ownership across the synchronous
+    // handshake → retained-session hand-off. This includes any NEW_INCOMING,
+    // empty static-data, or ClientJoin record that the server has not ACKed.
+    live->pendingReliable = std::move(handshakePending);
+    // ClientJoin/static-data was the most recent reliable handshake send;
+    // start the steady-state keepalive interval from this hand-off.
     live->lastReliableSent = std::chrono::steady_clock::now();
     live->accepted = res.accepted;
     live->joined = res.joined;
@@ -2081,7 +2480,13 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     live->reassembledPackets = reassembledPackets;
     live->rpcSummary = std::move(rpcSummary);
     live->stateSummary = std::move(stateSummary);
+    // Preserve all inbound transport gates across the synchronous handshake →
+    // live hand-off. Resetting receipt/order state could replay a reliable
+    // control frame or make a later ordered index wait forever after early
+    // PlayerInit/world frames were already reduced above.
+    live->inboundReliable = std::move(inboundReliable);
     live->reassembler = std::move(reassembler);
+    live->inboundOrdered = std::move(inboundOrdered);
     live->world = std::move(world);
     gLiveSession = std::move(live);
   }
@@ -2089,14 +2494,15 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
 }
 
 ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs) {
-  return raknet_connect_impl(ip, port, timeoutMs, false);
+  return raknet_connect_impl(ip, port, timeoutMs, false, "SampDroid");
 }
 
-SessionSnapshot raknet_session_connect(const std::string& ip, uint16_t port, int timeoutMs) {
+SessionSnapshot raknet_session_connect(const std::string& ip, uint16_t port, int timeoutMs,
+                                       const std::string& nickname) {
   std::lock_guard<std::mutex> lock(gLiveSessionMutex);
   gLiveSession.reset();
 
-  const ProbeResult result = raknet_connect_impl(ip, port, timeoutMs, true);
+  const ProbeResult result = raknet_connect_impl(ip, port, timeoutMs, true, nickname);
   if (!gLiveSession) {
     SessionSnapshot snapshot;
     snapshot.accepted = result.accepted;
@@ -2184,7 +2590,7 @@ SessionSnapshot raknet_session_request_class(uint16_t classId) {
   const auto rpc = clientrpc::buildRequestClass(classId);
   const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
   const uint16_t orderingIndex = gLiveSession->orderingCounters.takeRpc();
-  const auto packet = raknet::buildReliableOrdered(messageNumber, 2, orderingIndex, rpc);
+  const auto packet = raknet::buildReliableOrdered(messageNumber, clientrpc::kReliableOrderedChannel, orderingIndex, rpc);
   if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
     gLiveSession->error = "gagal mengirim PlayerRequestClass";
   } else {
@@ -2230,7 +2636,7 @@ SessionSnapshot raknet_session_request_spawn() {
   const auto rpc = clientrpc::buildRequestSpawn();
   const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
   const uint16_t orderingIndex = gLiveSession->orderingCounters.takeRpc();
-  const auto packet = raknet::buildReliableOrdered(messageNumber, 2, orderingIndex, rpc);
+  const auto packet = raknet::buildReliableOrdered(messageNumber, clientrpc::kReliableOrderedChannel, orderingIndex, rpc);
   if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
     gLiveSession->error = "gagal mengirim PlayerRequestSpawn";
   } else {
@@ -2307,7 +2713,7 @@ SessionSnapshot raknet_session_send_chat(const std::string& message) {
 
   const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
   const uint16_t orderingIndex = gLiveSession->orderingCounters.takeRpc();
-  const auto packet = raknet::buildReliableOrdered(messageNumber, 2, orderingIndex, rpc);
+  const auto packet = raknet::buildReliableOrdered(messageNumber, clientrpc::kReliableOrderedChannel, orderingIndex, rpc);
   if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
     gLiveSession->error = command ? "gagal mengirim command" : "gagal mengirim chat";
     return snapshotFrom(gLiveSession.get());
@@ -2350,7 +2756,7 @@ SessionSnapshot raknet_session_respond_dialog(int16_t dialogId, uint64_t dialogR
   }
   const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
   const uint16_t orderingIndex = gLiveSession->orderingCounters.takeRpc();
-  const auto packet = raknet::buildReliableOrdered(messageNumber, 2, orderingIndex, rpc);
+  const auto packet = raknet::buildReliableOrdered(messageNumber, clientrpc::kReliableOrderedChannel, orderingIndex, rpc);
   if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
     gLiveSession->error = "gagal mengirim respon dialog";
     return snapshotFrom(gLiveSession.get());
@@ -2387,7 +2793,7 @@ SessionSnapshot raknet_session_select_menu(uint8_t menuId, uint64_t menuRevision
   const std::vector<uint8_t> rpc = clientrpc::buildMenuSelect(row);
   const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
   const uint16_t orderingIndex = gLiveSession->orderingCounters.takeRpc();
-  const auto packet = raknet::buildReliableOrdered(messageNumber, 2, orderingIndex, rpc);
+  const auto packet = raknet::buildReliableOrdered(messageNumber, clientrpc::kReliableOrderedChannel, orderingIndex, rpc);
   if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
     gLiveSession->error = "gagal mengirim pilihan menu";
     return snapshotFrom(gLiveSession.get());
@@ -2419,7 +2825,7 @@ SessionSnapshot raknet_session_exit_menu(uint8_t menuId, uint64_t menuRevision) 
   const std::vector<uint8_t> rpc = clientrpc::buildMenuExit();
   const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
   const uint16_t orderingIndex = gLiveSession->orderingCounters.takeRpc();
-  const auto packet = raknet::buildReliableOrdered(messageNumber, 2, orderingIndex, rpc);
+  const auto packet = raknet::buildReliableOrdered(messageNumber, clientrpc::kReliableOrderedChannel, orderingIndex, rpc);
   if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
     gLiveSession->error = "gagal mengirim keluar menu";
     return snapshotFrom(gLiveSession.get());
@@ -2493,6 +2899,14 @@ SessionSnapshot raknet_session_use_nearby(bool passengerIntent) {
         gLiveSession->error = "tidak ada pickup atau kendaraan server dalam jarak interaksi";
         return snapshotFrom(gLiveSession.get());
       }
+      // SetVehicleParamsForPlayer/RPC-24 door state is recipient authority.
+      // Mirror the PC client's locked-door boundary by refusing to manufacture
+      // an EnterVehicle RPC; an unset field stays permissive and server RPC-70
+      // remains the only authority that can place a player in a seat.
+      if (state::isRecipientVehicleEntryLocked(*vehicle)) {
+        gLiveSession->error = "kendaraan terkunci oleh parameter server";
+        return snapshotFrom(gLiveSession.get());
+      }
       kind = InteractionKind::EnterVehicle;
       vehicleId = vehicle->id;
     }
@@ -2527,7 +2941,7 @@ SessionSnapshot raknet_session_use_nearby(bool passengerIntent) {
   }
   const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
   const uint16_t orderingIndex = gLiveSession->orderingCounters.takeRpc();
-  const auto packet = raknet::buildReliableOrdered(messageNumber, 2, orderingIndex, rpc);
+  const auto packet = raknet::buildReliableOrdered(messageNumber, clientrpc::kReliableOrderedChannel, orderingIndex, rpc);
   if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
     gLiveSession->error = "gagal mengirim interaksi server";
     return snapshotFrom(gLiveSession.get());
@@ -2572,7 +2986,7 @@ SessionSnapshot raknet_session_request_scores() {
   const std::vector<uint8_t> rpc = clientrpc::buildRequestScoresAndPings();
   const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
   const uint16_t orderingIndex = gLiveSession->orderingCounters.takeRpc();
-  const auto packet = raknet::buildReliableOrdered(messageNumber, 2, orderingIndex, rpc);
+  const auto packet = raknet::buildReliableOrdered(messageNumber, clientrpc::kReliableOrderedChannel, orderingIndex, rpc);
   if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
     gLiveSession->error = "gagal meminta scoreboard";
     return snapshotFrom(gLiveSession.get());
@@ -2605,7 +3019,7 @@ SessionSnapshot raknet_session_select_textdraw(uint16_t wireId) {
   }
   const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
   const uint16_t orderingIndex = gLiveSession->orderingCounters.takeRpc();
-  const auto packet = raknet::buildReliableOrdered(messageNumber, 2, orderingIndex, rpc);
+  const auto packet = raknet::buildReliableOrdered(messageNumber, clientrpc::kReliableOrderedChannel, orderingIndex, rpc);
   if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
     gLiveSession->error = "gagal mengirim pilihan textdraw";
     return snapshotFrom(gLiveSession.get());
@@ -2663,7 +3077,7 @@ SessionSnapshot raknet_session_select_object(uint16_t objectId, uint64_t expecte
   }
   const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
   const uint16_t orderingIndex = gLiveSession->orderingCounters.takeRpc();
-  const auto packet = raknet::buildReliableOrdered(messageNumber, 2, orderingIndex, rpc);
+  const auto packet = raknet::buildReliableOrdered(messageNumber, clientrpc::kReliableOrderedChannel, orderingIndex, rpc);
   if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
     gLiveSession->error = "gagal mengirim pilihan objek";
     return snapshotFrom(gLiveSession.get());
@@ -2740,7 +3154,7 @@ SessionSnapshot raknet_session_edit_object(uint32_t response, uint64_t expectedR
   }
   const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
   const uint16_t orderingIndex = gLiveSession->orderingCounters.takeRpc();
-  const auto packet = raknet::buildReliableOrdered(messageNumber, 2, orderingIndex, rpc);
+  const auto packet = raknet::buildReliableOrdered(messageNumber, clientrpc::kReliableOrderedChannel, orderingIndex, rpc);
   if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
     gLiveSession->error = "gagal mengirim respons edit objek";
     return snapshotFrom(gLiveSession.get());
@@ -2812,7 +3226,7 @@ SessionSnapshot raknet_session_edit_attached_object(
   }
   const uint16_t messageNumber = gLiveSession->nextMessageNumber++;
   const uint16_t orderingIndex = gLiveSession->orderingCounters.takeRpc();
-  const auto packet = raknet::buildReliableOrdered(messageNumber, 2, orderingIndex, rpc);
+  const auto packet = raknet::buildReliableOrdered(messageNumber, clientrpc::kReliableOrderedChannel, orderingIndex, rpc);
   if (!sendSessionReliable(*gLiveSession, packet, messageNumber)) {
     gLiveSession->error = "gagal mengirim respons edit attachment";
     return snapshotFrom(gLiveSession.get());
@@ -2846,8 +3260,10 @@ SessionSnapshot raknet_session_send_incar(const sync::InCarState& state) {
   return snapshotFrom(gLiveSession.get());
 }
 
-SessionSnapshot raknet_session_advance_gameplay(const gta::world::CollisionWorld& collisionWorld,
-                                                float deltaSeconds) {
+SessionSnapshot raknet_session_advance_gameplay(
+    const gta::world::CollisionWorld& collisionWorld, float deltaSeconds,
+    const vehiclemotion::VehicleMotionTuning* vehicleTuning,
+    uint32_t vehicleTuningModel) {
   std::lock_guard<std::mutex> lock(gLiveSessionMutex);
   if (!gLiveSession || !gLiveSession->net || gLiveSession->net->fd < 0) {
     return snapshotFrom(nullptr);
@@ -2867,6 +3283,8 @@ SessionSnapshot raknet_session_advance_gameplay(const gta::world::CollisionWorld
   }
   const state::LocalPlayer& authoritativeLocal = gLiveSession->world.localPlayer();
   const state::WorldEnvironment& environment = gLiveSession->world.environment();
+  const bool manualVehicleEngineAndLights = gLiveSession->world.initialized() &&
+      gLiveSession->world.playerInit().manualVehicleEngineAndLights;
   if (authoritativeLocal.spectatingKnown && authoritativeLocal.spectating) {
     // RPC 124 is authority to suspend every locally-originated movement/aim/
     // passenger candidate. The renderer may follow copied 126/127 targets,
@@ -2952,9 +3370,18 @@ SessionSnapshot raknet_session_advance_gameplay(const gta::world::CollisionWorld
       return snapshotFrom(gLiveSession.get());
     }
     gLiveSession->passengerPreviewReady = false;
+    // JNI obtains a tuning lookup before entering this session mutex. Bind it
+    // again to the authoritative current model so a concurrent stream/seat
+    // change can only fall back to generic motion, never apply another car's
+    // user-data coefficients for even one frame.
+    const vehiclemotion::VehicleMotionTuning* applicableVehicleTuning =
+        vehicleTuning != nullptr && vehicle->model != 0u && vehicle->model == vehicleTuningModel
+            ? vehicleTuning
+            : nullptr;
     const gameplay::LocalGameplayStep step = gameplay::advanceLocalDriverVehicle(
         authoritativeLocal, *vehicle, gLiveSession->controls, collisionWorld, deltaSeconds,
-        gLiveSession->localGameplay, &environment);
+        gLiveSession->localGameplay, &environment, &gLiveSession->world.buildingRemovals(),
+        applicableVehicleTuning, manualVehicleEngineAndLights);
     if (!step.inCarReady) {
       gLiveSession->inCarPreviewReady = false;
       switch (step.status) {
@@ -3022,7 +3449,8 @@ SessionSnapshot raknet_session_advance_gameplay(const gta::world::CollisionWorld
   const float serverGravity = environment.gravityKnown ? environment.gravity : 0.0f;
   const gameplay::LocalGameplayStep step = gameplay::advanceLocalOnFoot(
       authoritativeLocal, gLiveSession->controls, collisionWorld, deltaSeconds,
-      gLiveSession->localGameplay, serverGravity, &environment);
+      gLiveSession->localGameplay, serverGravity, &environment,
+      &gLiveSession->world.buildingRemovals());
   if (!step.onFootReady) {
     gLiveSession->aimPreviewReady = false;
     switch (step.status) {
@@ -3111,7 +3539,8 @@ SessionSnapshot raknet_session_advance_gameplay(const gta::world::CollisionWorld
         // absolute point for HitType=None. It never picks an entity/target;
         // failure or incomplete collision keeps the conservative zero sentinel.
         (void)gameplay::applyLocalNoTargetStaticWorldImpact(
-            collisionWorld, gLiveSession->localGameplay, aimStep.aim, noTargetBullet);
+            collisionWorld, gLiveSession->localGameplay, aimStep.aim, noTargetBullet,
+            &gLiveSession->world.buildingRemovals());
         (void)sendNoTargetBulletLocked(*gLiveSession, noTargetBullet);
       }
     }
@@ -3135,6 +3564,27 @@ SessionSnapshot raknet_session_disconnect() {
 SessionSnapshot raknet_session_status() {
   std::lock_guard<std::mutex> lock(gLiveSessionMutex);
   return snapshotFrom(gLiveSession.get());
+}
+
+uint32_t raknet_session_local_driver_vehicle_model() {
+  std::lock_guard<std::mutex> lock(gLiveSessionMutex);
+  if (!gLiveSession || !gLiveSession->accepted || !gLiveSession->net ||
+      gLiveSession->net->fd < 0) {
+    return 0u;
+  }
+  const state::LocalPlayer& local = gLiveSession->world.localPlayer();
+  if (!local.vehicleKnown || !local.inVehicle || local.vehicleSeat != 0u) return 0u;
+  const state::Vehicle* vehicle = gLiveSession->world.findVehicle(local.vehicleId);
+  return vehicle != nullptr ? vehicle->model : 0u;
+}
+
+std::vector<gta::removal::Directive> raknet_session_building_removals() {
+  std::lock_guard<std::mutex> lock(gLiveSessionMutex);
+  if (!gLiveSession || !gLiveSession->accepted || !gLiveSession->net ||
+      gLiveSession->net->fd < 0) {
+    return {};
+  }
+  return gLiveSession->world.buildingRemovals();
 }
 
 WorldSnapshot raknet_session_world_snapshot() {

@@ -53,6 +53,7 @@ const char* name(uint8_t rpcId) {
     case 20: return "ResetPlayerMoney";
     case 21: return "ResetPlayerWeapons";
     case 22: return "GivePlayerWeapon";
+    case 24: return "SetVehicleParams";
     case 25: return "PlayerConnect";
     case 26: return "OnPlayerEnterVehicle";
     case 27: return "PlayerBeginObjectSelect / OnPlayerSelectObject";
@@ -64,14 +65,17 @@ const char* name(uint8_t rpcId) {
     case 37: return "DisableCheckpoint";
     case 38: return "SetRaceCheckpoint";
     case 39: return "DisableRaceCheckpoint";
+    case 40: return "PlayerClose";
     case 41: return "PlayAudioStream";
     case 42: return "StopAudioStream";
+    case 43: return "RemoveBuilding";
     case 44: return "CreateObject";
     case 45: return "SetObjectPosition";
     case 46: return "SetObjectRotation";
     case 47: return "DestroyObject";
     case 48: return "SetPlayerVirtualWorld";
     case 52: return "PlayerSpawn";
+    case 55: return "SendDeathMessage";
     case 56: return "SetPlayerMapIcon";
     case 58: return "PlayerHideTextLabel";
     case 59: return "SetPlayerChatBubble";
@@ -97,6 +101,7 @@ const char* name(uint8_t rpcId) {
     case 85: return "StopFlashGangZone";
     case 88: return "SetPlayerSpecialAction";
     case 90: return "SetPlayerVelocity";
+    case 91: return "SetVehicleVelocity";
     case 93: return "SendClientMessage";
     case 94: return "SetWorldTime";
     case 95: return "CreatePickup";
@@ -116,6 +121,7 @@ const char* name(uint8_t rpcId) {
     case 127: return "PlayerSpectateVehicle";
     case 128: return "PlayerRequestClass";
     case 129: return "PlayerRequestSpawn";
+    case 130: return "ConnectionRejected";
     case 131: return "PickedUpPickup";
     case 134: return "ShowTextDraw";
     case 135: return "HideTextDraw";
@@ -134,6 +140,7 @@ const char* name(uint8_t rpcId) {
     case 158: return "SetPlayerCameraLookAt";
     case 159: return "SetVehiclePosition";
     case 160: return "SetVehicleZAngle";
+    case 161: return "SetVehicleParamsForPlayer";
     case 162: return "SetCameraBehindPlayer";
     case 163: return "PlayerStreamOut";
     case 164: return "StreamInVehicle";
@@ -168,7 +175,7 @@ bool decodePlayerInit(const std::vector<uint8_t>& rpcPayload, PlayerInitData& ou
   out.nameTagDrawDistance = readFloat(reader); // SetNameTagDrawDistance
   reader.readBit();  // DisableInteriorEnterExits
   out.disableNameTagLos = reader.readBit();
-  reader.readBit();  // ManualVehicleEngineAndLights
+  out.manualVehicleEngineAndLights = reader.readBit();
   out.spawnClassCount = reader.readBits(32);
   out.playerId = static_cast<uint16_t>(reader.readBits(16));
   out.showNameTags = reader.readBit();

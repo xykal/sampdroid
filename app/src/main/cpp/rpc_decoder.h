@@ -19,6 +19,10 @@ struct PlayerInitData {
   float nameTagDrawDistance = 0.0f;
   bool disableNameTagLos = false;
   bool showNameTags = false;
+  // PlayerInit's ManualVehicleEngineAndLights bit tells the client whether
+  // server scripts, rather than GTA automatic enter/night behavior, own engine
+  // and headlight operation.
+  bool manualVehicleEngineAndLights = false;
   // Server-advertised sync cadence values in milliseconds. PlayerInit carries
   // these as raw u32 fields; retain them for future local-player transmit gating.
   uint32_t onFootSyncRateMs = 0;

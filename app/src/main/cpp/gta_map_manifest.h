@@ -34,6 +34,10 @@ struct IdeObject {
   // Lowercase RenderWare/IMG base name shared with the matching COL model.
   std::string modelName;
   std::string textureDictionary;
+  // Normalized source `cars` handling ID. It is empty for static objects and
+  // peds, and merely joins an already-selected user-owned handling.cfg profile
+  // for the conservative local-driver bridge.
+  std::string handlingName;
   float drawDistance = 0.0f;
   uint32_t flags = 0;
 };
@@ -55,7 +59,8 @@ struct IdeParseResult {
 // plus `cars` and `peds` records needed to resolve streamed SA-MP vehicle/player
 // model IDs to user-owned DFF/TXD members. Multiple historical OBJS/TOBJ
 // mesh-count layouts are validated explicitly; dynamic records retain only
-// ID/model/TXD/type mapping. `txdp` relationships are parsed separately for a
+// ID/model/TXD/type mapping plus the `cars` handling lookup token. `txdp`
+// relationships are parsed separately for a
 // later bounded texture fallback lookup. Other sections are ignored until their
 // explicit `end`; duplicate IDs or conflicting txdp children fail closed.
 bool parseIdeFile(std::string_view text, IdeParseResult& out, std::string& error,

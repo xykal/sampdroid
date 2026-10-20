@@ -8,15 +8,46 @@ mendistribusikan game/data proprietary di APK.
 
 APK hanya membawa kode open-source SampDroid. Saat world renderer nyata mulai
 dipakai, pemain memilih data GTA San Andreas yang memang ia miliki sendiri.
-SampDroid membaca data itu **read-only** lewat storage Android; tidak menyalin,
-mengubah, mengunduh, atau menyertakan file game dalam APK/release GitHub.
+SampDroid membaca data akhir **read-only** lewat storage Android dan tidak
+menyertakan atau meng-host file game dalam APK/release GitHub.
+
+Selain memilih folder hasil ekstrak, pemain boleh memilih **ZIP lokal** yang
+sudah ia miliki atau memasukkan URL **HTTPS ZIP** miliknya sendiri, lalu memilih
+folder tujuan melalui SAF (termasuk removable SD card). URL itu bukan katalog
+asset SampDroid: tidak ada URL game yang dipaketkan, hotlink, atau bundle
+proprietary. Baik input lokal maupun unduhan hanya **dibaca**, lalu disalin ke
+folder sementara pada storage pilihan, dapat dibandingkan terhadap SHA-256 yang
+pemain masukkan, dibatasi ukuran/entry/ratio, dilindungi dari traversal ZIP,
+lalu dicek untuk `data/gta.dat` dan header `models/gta3.img`. Baru setelah itu
+runtime mencoba parse/mount descriptor read-only. Jika validasi struktur atau
+parser native gagal, data tidak dipersist sebagai root aplikasi; arsip input
+tidak pernah diubah dan tidak ada tree GTA akhir yang disalin ke internal
+storage.
+
+Pemilih `ACTION_OPEN_DOCUMENT_TREE` wajib memberi grant SAF yang dapat
+dipersist. Jalur folder membutuhkan read grant; jalur installer membutuhkan
+read+write grant untuk staging di media pilihan. UI menolak grant session-only
+sebelum unduhan/ekstraksi agar folder SD yang tampak terpasang tidak gagal diam-
+diam saat aplikasi dibuka ulang. Untuk hasil installer, yang disimpan adalah URI
+**tree asal** plus relative path root GTA yang bounded; proses berikutnya membuka
+ulang tree asal lalu turun melalui path tersebut, bukan menyimpan URI child yang
+tidak dapat diremount dengan benar oleh semua provider. Relative path dihitung
+sebelum rename folder akhir dan leaf final direkonstruksi dari nama yang telah
+divalidasi, sehingga provider SAF yang meninggalkan `DocumentFile` lama/cache
+URI stale setelah `renameTo()` tidak dapat mempersist path pre-rename. Installer
+lalu membuka ulang path final itu dari tree grant sebelum menyatakannya terpasang;
+provider yang tak bisa meresolve path dibatalkan transaksional, bukan meninggalkan
+preference root yang rusak. Mount, restore setelah process death, map sync, dan hand-off archive diserialkan lewat mutex runtime;
+startup restore membawa epoch pilihan sehingga tidak boleh memasang tree lama
+setelah pemain mulai memilih sumber pengganti.
 
 ```text
-user-owned game data
-  └─ IMG v2 / COL / IDE / IPL / DFF / TXD
-       └─ loader native bounded
-            └─ collision + map streaming + renderer Android
-                 └─ local movement/gameplay bridge + SA-MP sync
+user-owned folder OR local ZIP OR user-supplied HTTPS ZIP
+  └─ temporary SAF/SD-card validation + extraction (ZIP only)
+       └─ IMG v2 / COL / IDE / IPL / DFF / TXD read-only root
+            └─ loader native bounded
+                 └─ collision + map streaming + renderer Android
+                      └─ local movement/gameplay bridge + SA-MP sync
 ```
 
 ## Tahap awal yang sudah mulai dibangun
@@ -101,8 +132,10 @@ interior authoritative yang sama, input, vitals, dan state server valid; retaine
 session mengirimkannya sendiri pada rate server setelah spawn/ACK. SetSpawnInfo/
 SetPlayerPosition, freeze, transisi SetPlayerInterior, source collision kosong,
 dan server velocity membuang prediction atau menolak tick. Sweep ini belum
-capsule/mesh physics GTA penuh; handling vehicle/weapon/animasi dan validasi
-server nyata masih belum ada.
+capsule/mesh physics GTA penuh; driver vehicle kini dapat memakai envelope
+kinematic terbatas dari `handling.cfg` milik user (sesudah join `cars` IDE),
+tetapi suspension/wheel contact/drivetrain/damage/animasi dan validasi server
+nyata masih belum ada.
 
 `gta_map_manifest.{h,cpp}` sekarang menangani map descriptor tanpa mengakses
 filesystem secara langsung:
@@ -111,9 +144,12 @@ filesystem secara langsung:
   menormalkan path relatif lower-case dan menolak path absolut/traversal;
 - section placement-capable `objs`, `tobj`, dan `anim` IDE menerima layout SA
   compact maupun mesh-count 1–3, menghasilkan model ID, nama model, TXD, draw
-  distance pertama, dan flags. Resolver `cars`/`peds` hanya membaca prefix
-  model/TXD/type yang dibutuhkan renderer; tail handling legacy tidak menjadi
-  gameplay authority. Kasus stock `peds` ID 0 `null` dipetakan eksplisit ke
+  distance pertama, dan flags. Resolver `cars`/`peds` membaca prefix
+  model/TXD/type yang dibutuhkan renderer; untuk `cars`, token handling kelima
+  juga disimpan sebagai key name-only untuk join profile `handling.cfg` yang
+  sudah dipilih user. Token itu tidak menjalankan mod/skrip PC dan tidak
+  mengubah authority server; root minimal empat-field tetap bisa merender dengan
+  fallback generic. Kasus stock `peds` ID 0 `null` dipetakan eksplisit ke
   `player.dff`, dan tiga row `cars` stock yang menggabungkan nama DFF/TXD
   identik hanya diterima lewat repair token-duplikat sempit. Identifier stock
   yang memakai `+` atau tanda kurung tetap name-only (bukan path), sedangkan ID
@@ -152,6 +188,21 @@ utama. Batas itu mencakup root GTA SA stock tanpa menjadikan setiap IMG/modded
 archive sebagai scan atau alokasi tak terbatas. Tidak ada member yang dieksekusi,
 ditulis, atau dipaketkan ke APK.
 
+`gta_vehicle_handling.{h,cpp}` menambah reader bounded untuk `data/handling.cfg`
+dari tree SAF yang sama. Ia hanya membaca profile whitespace stock-compatible
+(`max velocity`, `engine acceleration`, `brake deceleration`, drag/traction, dan
+`steering lock`), menolak ID duplikat, control/path-like byte, angka non-finite,
+serta range tidak aman secara transaksional. Profile tidak berguna sendiri:
+runtime harus menemukan `cars` IDE dengan model ID dan handling token yang sama.
+Saat pemain benar-benar sudah server-authorized sebagai driver seat `0`, JNI
+menyalin satu envelope kinematic tervalidasi untuk **model current** ke gameplay
+tick; session mengecek model itu lagi di bawah mutex supaya stream/seat change
+racy hanya jatuh ke fallback generic. Koefisien tetap dipersempit (speed,
+accel/brake, coast, steering) dan seluruh floor/sweep COL, bounds, rate
+Packet-200, serta koreksi server yang sudah ada tetap wajib lolos. Tidak ada
+suspension, tyre/wheel, gearbox, boat/air/train handling, collision damage,
+angular physics, atau authority outbound baru yang diklaim.
+
 Status JNI memberi count struktural; bridge preview DFF terpisah tetap menyalin
 vertex expanded bounded dari model terakhir dan, bila resolusi nama aman, satu
 RGBA TXD bounded ke buffer Java. Font-4 TextDraw memakai lookup literal
@@ -182,17 +233,25 @@ streaming collision dinamis; companion IMG kini ikut full-COL sync bounded,
 namun discovery `parent_streamN.ipl` tetap primary-only.
 
 Pemain dapat memilih folder GTA yang sudah diekstrak lewat SAF, termasuk
-removable SD card: resolver mencari `data/gta.dat`, memasang `models/gta3.img`
-sebagai IMG utama lalu maksimal empat companion `models/*.img` dari manifest
-sebagai source read-only DFF/TXD dan COL gabungan bounded, memuat COL/IDE/IPL
-tree dalam batch descriptor, lalu secara opsional mencoba dua table resolver stock yang
-memang tidak tercantum di
-manifest (`data/vehicles.ide` dan `data/peds.ide`). Setelah itu ia menemukan
-streaming IPL relevan dan catalog COL IMG bounded untuk root stock. Grant folder
-dan pilihan sinkronisasi map dipersist agar IMG/manifest/map assembly dapat dibuat
+removable SD card, memilih ZIP lokal miliknya, atau mengunduh ZIP HTTPS yang ia
+masukkan sendiri ke folder pilihan itu. Untuk jalur ZIP, pembanding SHA-256 bersifat opsional tetapi
+ditampilkan/disimpan setelah native mount sukses; tanpa pembanding, digest tetap
+dihitung namun UI jujur menyatakannya belum dibandingkan. Ekstraksi memakai
+staging tree provider yang sama—bukan cache internal—dan hanya root yang lolos
+struktur + parser native yang dipersist. Resolver mencari `data/gta.dat`,
+memasang `models/gta3.img` sebagai IMG utama lalu maksimal empat companion
+`models/*.img` dari manifest sebagai source read-only DFF/TXD dan COL gabungan
+bounded, memvalidasi `data/handling.cfg` bila file itu ada, memuat COL/IDE/IPL
+tree dalam batch descriptor, lalu secara opsional mencoba dua table resolver
+stock yang memang tidak tercantum di manifest (`data/vehicles.ide` dan
+`data/peds.ide`). Setelah itu ia menemukan streaming
+IPL relevan dan catalog COL IMG bounded untuk root stock. Grant folder dan
+pilihan sinkronisasi map dipersist agar IMG/manifest/map assembly dapat dibuat
 ulang setelah process death tanpa menyalin data ke internal storage. File manifest
 yang tidak ada di tree tidak ditebak; dua table dinamis tersebut juga no-op bila
-root custom tidak memilikinya.
+root custom tidak memilikinya. `handling.cfg` yang tidak ada juga bukan alasan
+mount gagal—driver tetap memakai envelope generic aman—sedangkan file yang ada
+tetapi malformed ditolak jujur sebelum diintegrasikan.
 
 Fixture regresi sintetis kecil untuk semua parser/bridge di atas sudah disiapkan
 untuk validasi final batch ini; tidak ada data GTA yang masuk ke repository.
@@ -219,9 +278,12 @@ untuk validasi final batch ini; tidak ada data GTA yang masuk ke repository.
    animasi actor/vehicle, dan fallback perangkat rendah masih perlu.
 5. **Local simulation** — floor grounding + side sweep COL dasar sudah ada;
    seat driver 0 yang diotorisasi juga punya pilot kinematic Packet-200 terbatas
-   di atas collision yang sama. Capsule/mesh physics lengkap, camera, animation,
-   weapons, handling/suspension/damage kendaraan GTA, dan collision nyata penuh
-   masih perlu. Input tidak akan menjadi sync posisi bebas.
+   di atas collision yang sama. Bila tree user memuat `handling.cfg` valid dan
+   `cars` IDE yang cocok, envelope speed/accel/brake/coast/steer pilot memakai
+   source profile vehicle itu; tanpa join yang pasti ia tetap fallback generic.
+   Capsule/mesh physics lengkap, camera, animation, weapons, suspension/wheel/
+   drivetrain/damage kendaraan GTA, dan collision nyata penuh masih perlu.
+   Input tidak akan menjadi sync posisi bebas.
 6. **SA-MP bridge penuh** — static `Create/Set/DestroyObject` sudah punya jalur
    bounded sampai batch DFF bila mapping asset tersedia; global pickup sudah
    memiliki marker + `USE` → RPC 131 user-confirmed tanpa reward lokal.

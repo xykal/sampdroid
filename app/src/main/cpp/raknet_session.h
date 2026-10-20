@@ -3,6 +3,7 @@
 #pragma once
 
 #include "client_sync.h"
+#include "gta_building_removal.h"
 #include "input_state.h"
 
 #include <array>
@@ -14,6 +15,10 @@ namespace samp {
 
 namespace gta::world {
 class CollisionWorld;
+}
+
+namespace vehiclemotion {
+struct VehicleMotionTuning;
 }
 
 // Bounded server Apply*Animation directive carried only for visual/UI handoff.
@@ -102,6 +107,17 @@ struct WorldChatSnapshot {
   std::string text;
 };
 
+// Global RPC-55 feed copied after expiry filtering. Names are already resolved
+// from local/known player facts so Android never has to infer identity from IDs.
+struct WorldDeathMessageSnapshot {
+  bool hasKiller = false;
+  uint16_t killerId = 0xFFFFu;
+  uint16_t victimId = 0xFFFFu;
+  uint8_t reason = 0;
+  std::string killerName;
+  std::string victimName;
+};
+
 // One score/ping roster row; it has no transform and is kept separately from
 // streamed render actors so TAB-style UI can show distant joined players.
 struct WorldScoreSnapshot {
@@ -161,6 +177,17 @@ struct WorldVehicleSnapshot {
   float y = 0.0f;
   float z = 0.0f;
   float angle = 0.0f;
+  // Packet-200 quaternion-derived DFF attitude; false means use yaw fallback.
+  bool attitudeKnown = false;
+  float rotationX = 0.0f;
+  float rotationY = 0.0f;
+  float rotationZ = 0.0f;
+  // Source-owned RPC-24 values in wire order. `-1` remains the explicit
+  // no-server-value sentinel, never a fabricated local switch state.
+  bool parametersKnown = false;
+  std::array<int8_t, 16> parameters{
+      -1, -1, -1, -1, -1, -1, -1, -1,
+      -1, -1, -1, -1, -1, -1, -1, -1};
   float health = 1000.0f;
 };
 
@@ -545,6 +572,7 @@ struct WorldSnapshot {
   std::vector<WorldMapIconSnapshot> mapIcons;
   std::vector<WorldTextDrawSnapshot> textDraws;
   std::vector<WorldChatSnapshot> chat;
+  std::vector<WorldDeathMessageSnapshot> deathMessages;
 };
 
 struct SessionSnapshot {
@@ -662,16 +690,18 @@ struct SessionSnapshot {
 };
 
 // Establishes and retains one explicit, user-initiated Android-native session.
-// Handshake retries can require multiple timeout windows; always call off the UI thread.
+// `nickname` is a user-selected legacy identity (3-24 printable ASCII bytes),
+// never a bundled/shared bot name. Handshake retries can require multiple
+// timeout windows; always call off the UI thread.
 SessionSnapshot raknet_session_connect(const std::string& ip, uint16_t port,
-                                      int timeoutMs = 1000);
+                                      int timeoutMs, const std::string& nickname);
 
 // Receives one timeout-bounded datagram, then only if it did not time out
 // drains at most 15 immediately-ready datagrams, ACKs reliable packets, and
 // reduces RPC state. Call from an IO coroutine while the user keeps the session.
 SessionSnapshot raknet_session_poll(int timeoutMs = 200);
 
-// Sends a RELIABLE_ORDERED channel-2 PlayerRequestClass RPC. The caller must
+// Sends a RELIABLE_ORDERED channel-0 PlayerRequestClass RPC. The caller must
 // subsequently poll for the server reply before reading classSelectionKnown.
 SessionSnapshot raknet_session_request_class(uint16_t classId);
 
@@ -699,7 +729,7 @@ SessionSnapshot raknet_session_respond_dialog(int16_t dialogId, uint64_t dialogR
                                               const std::string& text);
 
 // Selects/exits only a currently active source-verified legacy menu revision.
-// Both paths use RELIABLE_ORDERED channel 2 and clear Android presentation only
+// Both paths use RELIABLE_ORDERED channel 0 and clear Android presentation only
 // after queuing succeeds, so stale/cross-menu taps cannot forge a response.
 SessionSnapshot raknet_session_select_menu(uint8_t menuId, uint64_t menuRevision, uint8_t row);
 SessionSnapshot raknet_session_exit_menu(uint8_t menuId, uint64_t menuRevision);
@@ -728,7 +758,7 @@ SessionSnapshot raknet_session_select_object(uint16_t objectId, uint64_t expecte
 // Sends an OnPlayerEditObject (RPC 117) reply only for the exact active server
 // edit tuple. `response` is Cancel=0, Final=1, or Update=2; Java can never
 // supply the global/player flag or object ID. Transform bounds, current object
-// resolution, reliable ordered channel 2, and update cadence remain native.
+// resolution, reliable ordered channel 0, and update cadence remain native.
 // `expectedRevision` is a copied server revision, never an object identity.
 // It prevents a delayed touch coroutine from applying an old transform to a
 // newer BeginObjectEdit lifecycle that happened after the tap.
@@ -749,11 +779,12 @@ SessionSnapshot raknet_session_edit_attached_object(
 // Emits exactly one source-validated client PlayerFootSync packet only after
 // the active session has PlayerInit, a server-approved spawn response, and a
 // transport-ACKed PlayerSpawn confirmation. It uses UNRELIABLE_SEQUENCED/
-// channel 1, its own ordering counter, and the server-advertised OnFootRate.
+// channel 0 and its own sequenced ordering counter (separate from reliable
+// RPC despite the shared numeric channel), plus the server-advertised OnFootRate.
 SessionSnapshot raknet_session_send_onfoot(const sync::OnFootState& state);
 
 // Emits exactly one source-validated client PlayerVehicleSync / Packet 200
-// only for the current server-authorized driver vehicle. It shares channel 1
+// only for the current server-authorized driver vehicle. It shares channel 0
 // with on-foot sync but has independent cadence state from PlayerInit InCarRate.
 SessionSnapshot raknet_session_send_incar(const sync::InCarState& state);
 
@@ -769,8 +800,16 @@ SessionSnapshot raknet_session_send_incar(const sync::InCarState& state);
 // velocity, incomplete spawn state, passengers,
 // server-camera endpoints, and unknown/streamed-out vehicles instead of
 // transmitting touch-only or fabricated state.
-SessionSnapshot raknet_session_advance_gameplay(const gta::world::CollisionWorld& collisionWorld,
-                                                float deltaSeconds);
+SessionSnapshot raknet_session_advance_gameplay(
+    const gta::world::CollisionWorld& collisionWorld, float deltaSeconds,
+    const vehiclemotion::VehicleMotionTuning* vehicleTuning = nullptr,
+    uint32_t vehicleTuningModel = 0u);
+
+// Returns the currently authoritative local driver vehicle model under the
+// retained-session mutex, or zero when no streamed driver vehicle is eligible.
+// It is only a lookup hint: advance_gameplay independently verifies the model
+// before a user-data tuning can influence prediction.
+uint32_t raknet_session_local_driver_vehicle_model();
 
 // Sends a best-effort disconnect notification and releases the UDP socket.
 SessionSnapshot raknet_session_disconnect();
@@ -781,5 +820,10 @@ SessionSnapshot raknet_session_status();
 // Copies a renderer-neutral, bounded world/radar view without reading from the
 // network. Callers must poll the session separately to receive fresh packets.
 WorldSnapshot raknet_session_world_snapshot();
+
+// Copies only validated RPC-43 static-world removals for a user-owned GTA map
+// renderer. The vector is empty outside an active retained session and exposes
+// no socket/world mutability to JNI.
+std::vector<gta::removal::Directive> raknet_session_building_removals();
 
 }  // namespace samp

@@ -9,12 +9,14 @@
 #include "gta_img_archive.h"
 #include "gta_map_manifest.h"
 #include "gta_txd_texture.h"
+#include "gta_vehicle_handling.h"
 #include "input_state.h"
 #include "local_gameplay_bridge.h"
 #include "local_movement.h"
 #include "local_vehicle_movement.h"
 #include "local_player_sync.h"
 #include "raknet_codec.h"
+#include "raknet_handshake.h"
 #include "raknet_string_compressor.h"
 #include "raknet_session.h"
 #include "raknet_session_policy.h"
@@ -32,6 +34,7 @@
 #include <cstring>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -699,7 +702,7 @@ std::vector<uint8_t> makeImgWithTxdParentFixture() {
   return bytes;
 }
 
-std::vector<uint8_t> makePlayerInit() {
+std::vector<uint8_t> makePlayerInit(bool manualVehicleEngineAndLights = false) {
   samp::raknet::BitWriter writer;
   const uint8_t header[] = {20, 139};
   writer.writeBytes(header, sizeof(header));
@@ -713,7 +716,7 @@ std::vector<uint8_t> makePlayerInit() {
   writeFloat(writer, 70.0f);
   writer.writeBit(false);  // DisableInteriorEnterExits
   writer.writeBit(true);   // DisableNameTagLOS
-  writer.writeBit(false);  // ManualVehicleEngineAndLights
+  writer.writeBit(manualVehicleEngineAndLights);  // ManualVehicleEngineAndLights
   writer.writeBits(3, 32); // SetSpawnInfoCount
   writer.writeBits(42, 16); // PlayerID
   writer.writeBit(true);    // ShowNameTags
@@ -1009,6 +1012,22 @@ std::vector<uint8_t> makeStreamOutVehicle(uint16_t id) {
   return {20, 165, static_cast<uint8_t>(id & 0xFF), static_cast<uint8_t>(id >> 8)};
 }
 
+std::vector<uint8_t> makeSetVehicleParams(uint16_t id,
+                                          const std::array<uint8_t, 16>& parameters) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 24};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(id, 16);
+  for (uint8_t parameter : parameters) writer.writeBits(parameter, 8);
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makeSetVehicleParamsForPlayer(uint16_t id, uint8_t objective,
+                                                   uint8_t doorsLocked) {
+  return {20u, 161u, static_cast<uint8_t>(id & 0xFFu),
+          static_cast<uint8_t>(id >> 8), objective, doorsLocked};
+}
+
 void writeCompressedUnitFloat(samp::raknet::BitWriter& writer, float value) {
   // Matches NetworkBitStream::WriteCompressed(float)'s unsigned-short cast.
   const auto raw = static_cast<uint16_t>((value + 1.0f) * 32767.5f);
@@ -1028,7 +1047,11 @@ void writeCompressedQuaternion(samp::raknet::BitWriter& writer, float w, float x
   writer.writeBits(component(z), 16);
 }
 
-std::vector<uint8_t> makeRemoteVehicleDriverBroadcast(uint16_t playerId, uint16_t vehicleId) {
+std::vector<uint8_t> makeRemoteVehicleDriverBroadcast(uint16_t playerId, uint16_t vehicleId,
+                                                        float quaternionW = 0.70710678f,
+                                                        float quaternionX = 0.0f,
+                                                        float quaternionY = 0.0f,
+                                                        float quaternionZ = -0.70710678f) {
   samp::raknet::BitWriter writer;
   writer.writeBits(200, 8);
   writer.writeBits(playerId, 16);
@@ -1036,10 +1059,9 @@ std::vector<uint8_t> makeRemoteVehicleDriverBroadcast(uint16_t playerId, uint16_
   writer.writeBits(0, 16);  // LeftRight
   writer.writeBits(0, 16);  // UpDown
   writer.writeBits(0, 16);  // Keys
-  constexpr float kRootHalf = 0.70710678f;
   // Same negative-Z heading convention used by the local PlayerFoot preview:
-  // a 90 degree GTA-facing angle is W=+sqrt(1/2), Z=-sqrt(1/2).
-  writeCompressedQuaternion(writer, kRootHalf, 0.0f, 0.0f, -kRootHalf);
+  // default is 90° GTA-facing; callers can provide a source packet tilt case.
+  writeCompressedQuaternion(writer, quaternionW, quaternionX, quaternionY, quaternionZ);
   writeFloat(writer, 125.0f);
   writeFloat(writer, -75.0f);
   writeFloat(writer, 6.0f);
@@ -1093,6 +1115,33 @@ std::vector<uint8_t> makeRemoteUnoccupiedVehicleBroadcast(uint16_t playerId, uin
   writeFloat(writer, 0.0f);
   for (int i = 0; i < 3; ++i) writeFloat(writer, 0.0f);  // angular velocity
   writeFloat(writer, 640.0f);
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makeRemoteTrailerBroadcast(uint16_t playerId, uint16_t vehicleId,
+                                                 float quaternionW = 0.70710678f,
+                                                 float quaternionX = 0.0f,
+                                                 float quaternionY = 0.0f,
+                                                 float quaternionZ = -0.70710678f) {
+  // Exact public open.mp PlayerTrailerSync writer: raw position, raw Vector4
+  // constructed as q.w/q.x/q.y/q.z, then raw linear + turn VEC3 values.
+  samp::raknet::BitWriter writer;
+  writer.writeBits(210, 8);
+  writer.writeBits(playerId, 16);
+  writer.writeBits(vehicleId, 16);
+  writeFloat(writer, 325.0f);
+  writeFloat(writer, -275.0f);
+  writeFloat(writer, 7.5f);
+  writeFloat(writer, quaternionW);
+  writeFloat(writer, quaternionX);
+  writeFloat(writer, quaternionY);
+  writeFloat(writer, quaternionZ);
+  writeFloat(writer, 3.0f);
+  writeFloat(writer, 4.0f);
+  writeFloat(writer, 0.0f);
+  writeFloat(writer, 0.1f);
+  writeFloat(writer, -0.2f);
+  writeFloat(writer, 0.3f);
   return writer.buffer;
 }
 
@@ -1259,6 +1308,19 @@ std::vector<uint8_t> makeVec3Rpc(uint8_t rpcId, float x, float y, float z) {
   return writer.buffer;
 }
 
+std::vector<uint8_t> makeRemoveBuilding(uint32_t modelId, float x, float y, float z,
+                                        float radius) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 43};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(modelId, 32);
+  writeFloat(writer, x);
+  writeFloat(writer, y);
+  writeFloat(writer, z);
+  writeFloat(writer, radius);
+  return writer.buffer;
+}
+
 std::vector<uint8_t> makePutPlayerInVehicle(uint16_t vehicleId, uint8_t seatId) {
   samp::raknet::BitWriter writer;
   const uint8_t header[] = {20, 70};
@@ -1287,6 +1349,31 @@ std::vector<uint8_t> makeVehicleFloatRpc(uint8_t rpcId, uint16_t vehicleId, floa
   writer.writeBytes(header, sizeof(header));
   writer.writeBits(vehicleId, 16);
   writeFloat(writer, value);
+  return writer.buffer;
+}
+
+// RPC 91 deliberately has no vehicle ID. The recipient-local seat-zero context
+// selects its target; fixtures must never smuggle an ID into this wire layout.
+std::vector<uint8_t> makeSetVehicleVelocity(uint8_t type, float x, float y, float z) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 91};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(type, 8);
+  writeFloat(writer, x);
+  writeFloat(writer, y);
+  writeFloat(writer, z);
+  return writer.buffer;
+}
+
+// Global SendDeathMessage is fixed: KillerID:u16 (0xFFFF for none),
+// PlayerID:u16, Reason:u8. Unlike RPC-166 it has no position/health payload.
+std::vector<uint8_t> makeSendDeathMessage(uint16_t killerId, uint16_t victimId, uint8_t reason) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 55};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(killerId, 16);
+  writer.writeBits(victimId, 16);
+  writer.writeBits(reason, 8);
   return writer.buffer;
 }
 
@@ -1935,6 +2022,104 @@ std::vector<uint8_t> makeEmptyRpc(uint8_t rpcId) {
   return {20, rpcId};
 }
 
+void testLegacyHandshakeBuilders() {
+  using samp::handshake::buildClientJoin;
+  using samp::handshake::buildEmptyStaticData;
+  using samp::handshake::buildInternalPing;
+  using samp::handshake::buildNewIncoming;
+  using samp::handshake::generateLegacySerial;
+  using samp::handshake::isTerminalSessionControlId;
+  using samp::handshake::isValidLegacySerial;
+  using samp::handshake::isValidNickname;
+  using samp::handshake::parseAuthChallenge;
+
+  expect(isValidNickname("Native_01") && !isValidNickname("hi") &&
+             !isValidNickname("has space") && !isValidNickname("line\nbreak"),
+         "legacy nickname bounds/control validation changed");
+  const std::string generatedSerial = generateLegacySerial();
+  expect(isValidLegacySerial(generatedSerial) && !isValidLegacySerial("123456") &&
+             !isValidLegacySerial("not-hex"),
+         "generated legacy serial must remain bounded hexadecimal multiple of 1001");
+  expect(isTerminalSessionControlId(28u) && isTerminalSessionControlId(29u) &&
+             isTerminalSessionControlId(31u) && isTerminalSessionControlId(32u) &&
+             isTerminalSessionControlId(33u) && isTerminalSessionControlId(36u) &&
+             isTerminalSessionControlId(37u) && !isTerminalSessionControlId(12u) &&
+             !isTerminalSessionControlId(34u) && !isTerminalSessionControlId(41u),
+         "terminal legacy RakNet control classification changed");
+
+  const std::string authText = "6C407EC29DE59E2";
+  std::vector<uint8_t> authChallenge = {12u, static_cast<uint8_t>(authText.size() + 1u)};
+  authChallenge.insert(authChallenge.end(), authText.begin(), authText.end());
+  authChallenge.push_back(0u);
+  const auto parsedAuth = parseAuthChallenge(authChallenge);
+  expect(parsedAuth && *parsedAuth == authText,
+         "legacy NUL-terminated AUTH_KEY challenge parser changed");
+  const std::vector<uint8_t> authLengthOverrun = {12u, 0xFFu, 'x', 0u};
+  const std::vector<uint8_t> authMissingNul = {12u, 2u, 'x', 'y'};
+  const std::vector<uint8_t> authEmbeddedNul = {12u, 4u, 'x', 0u, 'y', 0u};
+  std::vector<uint8_t> authTrailing = authChallenge;
+  authTrailing.push_back(0u);
+  std::vector<uint8_t> authTooLong = {12u, 18u};
+  authTooLong.insert(authTooLong.end(), 17u, 'A');
+  authTooLong.push_back(0u);
+  expect(!parseAuthChallenge(authLengthOverrun) && !parseAuthChallenge(authMissingNul) &&
+             !parseAuthChallenge(authEmbeddedNul) && !parseAuthChallenge(authTrailing) &&
+             !parseAuthChallenge(authTooLong),
+         "AUTH_KEY parser must reject malformed length/NUL/trailing records safely");
+
+  const auto incoming = buildNewIncoming({94u, 23u, 145u, 137u}, 7776u);
+  expect(incoming == std::vector<uint8_t>({30u, 94u, 23u, 145u, 137u, 0x60u, 0x1Eu}),
+         "NEW_INCOMING must retain exact seven-byte legacy layout");
+
+  // RakPeer sends these source-defined post-accept controls before game RPC
+  // traffic: an unreliable internal ping and an empty reliable static record.
+  const auto internalPing = buildInternalPing(0x12345678u);
+  expect(internalPing == std::vector<uint8_t>({6u, 0x78u, 0x56u, 0x34u, 0x12u}) &&
+             buildEmptyStaticData() == std::vector<uint8_t>({41u}),
+         "post-accept ping/static payload builders changed");
+  const auto framedPing = samp::raknet::buildUnreliable(2u, internalPing);
+  const auto decodedPing = samp::raknet::decodeDatagram(framedPing);
+  const auto framedStatic = samp::raknet::buildReliable(3u, buildEmptyStaticData());
+  const auto decodedStatic = samp::raknet::decodeDatagram(framedStatic);
+  expect(decodedPing.ok && decodedPing.packets.size() == 1u &&
+             decodedPing.packets[0].messageNumber == 2u &&
+             decodedPing.packets[0].reliability == samp::raknet::kReliabilityUnreliable &&
+             decodedPing.ackMessageNumbers.empty() && decodedPing.packets[0].payload == internalPing &&
+             decodedStatic.ok && decodedStatic.packets.size() == 1u &&
+             decodedStatic.packets[0].messageNumber == 3u &&
+             decodedStatic.packets[0].reliability == samp::raknet::kReliabilityReliable &&
+             decodedStatic.ackMessageNumbers == std::vector<uint16_t>({3u}) &&
+             decodedStatic.packets[0].payload == std::vector<uint8_t>({41u}),
+         "post-accept RakPeer reliability framing changed");
+
+  const auto join = buildClientJoin(0x12345678u, "Native_01", "3E9");
+  const std::vector<uint8_t> expectedJoin = {
+      20u, 25u, 0xD9u, 0x0Fu, 0x00u, 0x00u, 1u, 9u,
+      'N', 'a', 't', 'i', 'v', 'e', '_', '0', '1',
+      0x78u, 0x56u, 0x34u, 0x12u, 3u, '3', 'E', '9', 8u,
+      '0', '.', '3', '.', '7', '-', 'R', '2',
+  };
+  expect(join == expectedJoin, "ClientJoin field layout/version identity changed");
+  expect(buildClientJoin(0u, "bad nick", "3E9").empty() &&
+             buildClientJoin(0u, "Native_01", "123").empty(),
+         "ClientJoin must reject unsafe nickname or invalid serial before framing");
+
+  // The source-faithful RakClient path uses channel 0 for ClientJoin and every
+  // later client RPC. ClientJoin consumes index zero, so RequestClass starts at
+  // one on that same channel.
+  static_assert(samp::clientrpc::kReliableOrderedChannel == 0u,
+                "legacy RPC ordering channel changed");
+  const auto framedJoin = samp::raknet::buildReliableOrdered(
+      3u, samp::clientrpc::kReliableOrderedChannel, 0u, join);
+  const auto decoded = samp::raknet::decodeDatagram(framedJoin);
+  expect(decoded.ok && decoded.packets.size() == 1u &&
+             decoded.packets[0].messageNumber == 3u &&
+             decoded.packets[0].reliability == samp::raknet::kReliabilityReliableOrdered &&
+             decoded.packets[0].orderingChannel == samp::clientrpc::kReliableOrderedChannel &&
+             decoded.packets[0].orderingIndex == 0u && decoded.packets[0].payload == join,
+         "ClientJoin reliable ordered channel/index framing changed");
+}
+
 void testReliableAndAck() {
   const auto reliable = samp::raknet::buildReliable(1, {0x0B});
   const std::vector<uint8_t> expectedReliable = {0x00, 0x80, 0x43, 0x80, 0x0B};
@@ -2014,14 +2199,21 @@ void testReliableAndAck() {
              longAckRange,
          "outbound ACK span must split at bounded range limit");
 
-  const auto ordered = samp::raknet::buildReliableOrdered(2, 2, 17, {20, 128, 3, 0});
+  const auto ordered = samp::raknet::buildReliableOrdered(
+      2, samp::clientrpc::kReliableOrderedChannel, 17, {20, 128, 3, 0});
+  // Locks the actual five-bit channel header at zero, not merely a decoder
+  // round-trip that could otherwise drift together with its encoder.
+  expect(ordered == std::vector<uint8_t>({
+             0x01, 0x00, 0x48, 0x04, 0x40, 0x11, 0x00, 0x14, 0x80, 0x03, 0x00}),
+         "legacy RPC channel-0 wire vector changed");
   const auto orderedDecoded = samp::raknet::decodeDatagram(ordered);
   expect(orderedDecoded.ok && orderedDecoded.packets.size() == 1,
          "reliable ordered packet did not decode");
   const auto& packet = orderedDecoded.packets[0];
   expect(packet.reliability == samp::raknet::kReliabilityReliableOrdered,
          "wrong ordered reliability code");
-  expect(packet.orderingChannel == 2 && packet.orderingIndex == 17,
+  expect(packet.orderingChannel == samp::clientrpc::kReliableOrderedChannel &&
+             packet.orderingIndex == 17,
          "ordered channel/index changed");
   expect(packet.payload == std::vector<uint8_t>({20, 128, 3, 0}),
          "ordered payload changed");
@@ -2029,19 +2221,23 @@ void testReliableAndAck() {
 
 void testUnreliableSequencedTransport() {
   // This vector has a deliberately non-byte-aligned five-bit payload. It
-  // locks the packet bit length, channel-1 header, and alignment before the
-  // payload; a byte-length-only builder would silently encode it differently.
+  // locks the compatible channel-0 header and alignment before the payload;
+  // a byte-length-only builder or a channel drift would silently differ.
+  expect(samp::sync::kSyncOrderingChannel == samp::clientrpc::kReliableOrderedChannel &&
+             samp::sync::kSyncOrderingChannel == 0u,
+         "legacy RPC and USeq sync must share numeric channel zero");
   const auto sequenced = samp::raknet::buildUnreliableSequenced(
-      0x1234, 1, 0x00A5, {0xA8}, 5);
-  const std::vector<uint8_t> expected = {0x1A, 0x09, 0x38, 0x69, 0x40, 0x1A, 0x80, 0xA8};
-  expect(sequenced == expected, "unreliable sequenced wire vector changed");
+      0x1234, samp::sync::kSyncOrderingChannel, 0x00A5, {0xA8}, 5);
+  const std::vector<uint8_t> expected = {0x1A, 0x09, 0x38, 0x29, 0x40, 0x1A, 0x80, 0xA8};
+  expect(sequenced == expected, "channel-0 unreliable sequenced wire vector changed");
 
   samp::raknet::BitReader header(sequenced.data(), sequenced.size());
   expect(!header.readBit(), "sequenced packet unexpectedly has ACKs");
   expect(header.readBits(16) == 0x1234, "sequenced message number changed");
   expect(header.readBits(4) == samp::raknet::kReliabilityUnreliableSequenced,
          "sequenced reliability changed");
-  expect(header.readBits(5) == 1 && header.readBits(16) == 0x00A5,
+  expect(header.readBits(5) == samp::sync::kSyncOrderingChannel &&
+             header.readBits(16) == 0x00A5,
          "sequenced channel/index changed");
   expect(!header.readBit() && header.readCompressedU16() == 5,
          "sequenced payload bit length changed");
@@ -2052,7 +2248,8 @@ void testUnreliableSequencedTransport() {
   expect(decoded.ok && decoded.ackMessageNumbers.empty() && decoded.packets.size() == 1,
          "unreliable sequenced packet decode/ACK behavior changed");
   expect(decoded.packets[0].reliability == samp::raknet::kReliabilityUnreliableSequenced &&
-         decoded.packets[0].orderingChannel == 1 && decoded.packets[0].orderingIndex == 0x00A5 &&
+         decoded.packets[0].orderingChannel == samp::sync::kSyncOrderingChannel &&
+         decoded.packets[0].orderingIndex == 0x00A5 &&
          decoded.packets[0].payload == std::vector<uint8_t>({0xA8}) &&
          decoded.packets[0].payloadBitLength == 5,
          "unreliable sequenced semantics changed");
@@ -2076,6 +2273,172 @@ void testUnreliableSequencedTransport() {
          "duplicate, stale, or invalid sequenced packet must be rejected");
   gate.clear();
   expect(gate.accept(1, 12), "cleared sequenced gate must accept a fresh index");
+}
+
+void testReliableMessageTransportGate() {
+  samp::raknet::ReliableMessageGate gate;
+  // Message-number delivery is independent from application ordering: a
+  // reliable packet can fill a transport hole before an earlier number arrives.
+  expect(gate.accept(0u) && gate.accept(2u) && gate.accept(1u) && gate.seenCount() == 3u,
+         "reliable message gate must accept first-seen out-of-order holes");
+  expect(!gate.accept(2u) && !gate.accept(0u),
+         "duplicate reliable transport messages must not reach reducers twice");
+
+  gate.clear();
+  expect(gate.accept(0xFFFEu) && gate.accept(0xFFFFu) && gate.accept(0u) &&
+             gate.accept(1u) && !gate.accept(0xFFFFu),
+         "reliable message gate must retain duplicate rejection across u16 wrap");
+
+  gate.clear();
+  expect(gate.accept(0u) && gate.accept(samp::raknet::ReliableMessageGate::kHistoryWindow) &&
+             gate.seenCount() == 1u,
+         "reliable message gate must prune stale receive history after a forward window advance");
+  expect(!gate.accept(0u) &&
+             !gate.accept(static_cast<uint16_t>(samp::raknet::ReliableMessageGate::kHistoryWindow + 0x8000u)),
+         "stale or ambiguous reliable message numbers must be rejected safely");
+
+  // This receipt history starts during authentication and moves into the
+  // retained socket, so a handshake duplicate must stay recognized afterward.
+  gate.clear();
+  expect(gate.accept(77u), "reliable receipt hand-off fixture failed");
+  samp::raknet::ReliableMessageGate handedOff = std::move(gate);
+  expect(!handedOff.accept(77u) && handedOff.accept(76u),
+         "moving reliable receipt gate must preserve handshake history");
+
+  gate.clear();
+  expect(gate.seenCount() == 0u && gate.accept(77u),
+         "reliable message gate clear must reset transport receive history");
+}
+
+void testReliableOrderedTransportGate() {
+  const auto orderedPacket = [](uint8_t channel, uint16_t index, uint8_t marker) {
+    samp::raknet::IncomingPacket packet;
+    packet.reliability = samp::raknet::kReliabilityReliableOrdered;
+    packet.orderingChannel = channel;
+    packet.orderingIndex = index;
+    packet.payload = {marker};
+    packet.payloadBitLength = 8;
+    return packet;
+  };
+
+  samp::raknet::ReliableOrderedGate gate;
+  expect(gate.push(orderedPacket(0, 1, 0xB1)).empty() && gate.pendingCount() == 1 &&
+             gate.pendingBytes() == 1 && !gate.overflowed(),
+         "later reliable-ordered frame must wait for its missing predecessor");
+  const auto released = gate.push(orderedPacket(0, 0, 0xA0));
+  expect(released.size() == 2 && released[0].payload == std::vector<uint8_t>({0xA0}) &&
+             released[1].payload == std::vector<uint8_t>({0xB1}) && gate.pendingCount() == 0,
+         "reliable-ordered gate must release a contiguous channel run in order");
+  expect(gate.push(orderedPacket(0, 1, 0xB1)).empty() &&
+             gate.push(orderedPacket(0, 0xFFFFu, 0xFF)).empty(),
+         "duplicate/stale reliable-ordered frames must not re-enter reducers");
+
+  // The synchronous ClientJoin phase moves this gate into LiveSession. A
+  // buffered predecessor must survive that ownership hand-off intact.
+  gate.clear();
+  expect(gate.push(orderedPacket(4, 1, 0x41)).empty(),
+         "handoff fixture needs one buffered ordered packet");
+  samp::raknet::ReliableOrderedGate handedOff = std::move(gate);
+  const auto afterHandoff = handedOff.push(orderedPacket(4, 0, 0x40));
+  expect(afterHandoff.size() == 2 &&
+             afterHandoff[0].payload == std::vector<uint8_t>({0x40}) &&
+             afterHandoff[1].payload == std::vector<uint8_t>({0x41}),
+         "moving reliable-ordered gate must preserve buffered handshake state");
+
+  gate.clear();
+  expect(gate.push(orderedPacket(1, 1, 0x11)).empty(),
+         "second ordered channel should buffer independently");
+  const auto channelZero = gate.push(orderedPacket(0, 0, 0x00));
+  expect(channelZero.size() == 1 && channelZero[0].payload == std::vector<uint8_t>({0x00}),
+         "one ordered channel must not wait on another channel's missing frame");
+  const auto channelOne = gate.push(orderedPacket(1, 0, 0x10));
+  expect(channelOne.size() == 2 && channelOne[0].payload == std::vector<uint8_t>({0x10}) &&
+             channelOne[1].payload == std::vector<uint8_t>({0x11}),
+         "per-channel reliable ordering release changed");
+
+  // The legacy u16 ordering index wraps. Advance to 65535, receive zero early,
+  // then prove delivery releases the final pre-wrap index before its buffered
+  // post-wrap successor.
+  gate.clear();
+  for (uint32_t index = 0; index < 0xFFFFu; ++index) {
+    const auto one = gate.push(orderedPacket(2, static_cast<uint16_t>(index), 0x22));
+    expect(one.size() == 1, "in-order reliable-ordered frame must pass immediately");
+  }
+  expect(gate.push(orderedPacket(2, 0, 0x23)).empty(),
+         "post-wrap reliable-ordered frame must wait for index 65535");
+  const auto wrapped = gate.push(orderedPacket(2, 0xFFFFu, 0x24));
+  expect(wrapped.size() == 2 && wrapped[0].payload == std::vector<uint8_t>({0x24}) &&
+             wrapped[1].payload == std::vector<uint8_t>({0x23}),
+         "reliable-ordered buffer/release across u16 wrap changed");
+
+  gate.clear();
+  for (size_t index = 1; index <= samp::raknet::ReliableOrderedGate::kMaxBufferedPacketsPerChannel;
+       ++index) {
+    expect(gate.push(orderedPacket(3, static_cast<uint16_t>(index), 0x33)).empty(),
+           "bounded reliable-ordered prebuffer should accept its configured window");
+  }
+  expect(gate.pendingCount() == samp::raknet::ReliableOrderedGate::kMaxBufferedPacketsPerChannel &&
+             !gate.overflowed(),
+         "reliable-ordered pending window accounting changed");
+  expect(gate.push(orderedPacket(
+                    3, static_cast<uint16_t>(samp::raknet::ReliableOrderedGate::kMaxBufferedPacketsPerChannel + 1),
+                    0x34)).empty() &&
+             gate.overflowed(),
+         "reliable-ordered overflow must be observable, not silently accepted");
+  gate.clear();
+  expect(gate.pendingCount() == 0 && gate.pendingBytes() == 0 && !gate.overflowed(),
+         "reliable-ordered clear must reset bounded pending state");
+}
+
+void testRakNetMalformedDatagramSmoke() {
+  // Deterministic malformed-input smoke coverage for the full bounded ingress
+  // ordering: decode → reliable receipt → split → reliable-order/sequenced.
+  // This is not a protocol oracle; it locks the promise that arbitrary UDP
+  // bytes cannot escape the codec/gate resource boundaries or crash the host.
+  uint32_t prng = 0xA51C9E37u;
+  const auto next = [&prng]() {
+    prng ^= prng << 13u;
+    prng ^= prng >> 17u;
+    prng ^= prng << 5u;
+    return prng;
+  };
+  samp::raknet::ReliableMessageGate reliableReceipt;
+  samp::raknet::SplitReassembler reassembler;
+  samp::raknet::ReliableOrderedGate reliableOrdered;
+  samp::raknet::SequencedPacketGate sequenced;
+  for (size_t round = 0; round < 4096u; ++round) {
+    const size_t length = static_cast<size_t>(next() % 2049u);
+    std::vector<uint8_t> bytes(length);
+    for (uint8_t& value : bytes) value = static_cast<uint8_t>(next());
+    const auto datagram = samp::raknet::decodeDatagram(bytes);
+    for (const auto& raw : datagram.packets) {
+      const bool reliable = raw.reliability == samp::raknet::kReliabilityReliable ||
+          raw.reliability == samp::raknet::kReliabilityReliableOrdered ||
+          raw.reliability == samp::raknet::kReliabilityReliableSequenced;
+      if (reliable && !reliableReceipt.accept(raw.messageNumber)) continue;
+      auto complete = reassembler.push(raw);
+      if (reassembler.overflowed()) {
+        reassembler.clear();
+        reliableReceipt.clear();
+        reliableOrdered.clear();
+        sequenced.clear();
+        continue;
+      }
+      for (auto packet : complete) {
+        if (packet.reliability == samp::raknet::kReliabilityReliableOrdered) {
+          (void)reliableOrdered.push(std::move(packet));
+          if (reliableOrdered.overflowed()) reliableOrdered.clear();
+        } else if ((packet.reliability == samp::raknet::kReliabilityUnreliableSequenced ||
+                    packet.reliability == samp::raknet::kReliabilityReliableSequenced)) {
+          (void)sequenced.accept(packet.orderingChannel, packet.orderingIndex);
+        }
+      }
+    }
+  }
+  expect(reassembler.pendingBytes() <= samp::raknet::SplitReassembler::kMaxPendingBytes &&
+             reliableOrdered.pendingBytes() <= samp::raknet::ReliableOrderedGate::kMaxBufferedBytesTotal &&
+             reliableReceipt.seenCount() <= samp::raknet::ReliableMessageGate::kHistoryWindow,
+         "malformed datagram smoke exceeded a bounded ingress resource limit");
 }
 
 void testPlayerFootSyncBuilder() {
@@ -2138,9 +2501,11 @@ void testPlayerFootSyncBuilder() {
          "out-of-range PlayerFootSync velocity must be rejected");
 
   samp::syncpolicy::OrderingCounters ordering;
+  // Both reliability families now select channel 0, but RakNet stores their
+  // indices in independent arrays. Lock that source-compatible separation.
   expect(ordering.takeRpc() == 0 && ordering.takeRpc() == 1 && ordering.takeSync() == 0 &&
          ordering.takeRpc() == 2 && ordering.takeSync() == 1,
-         "RPC and sync ordering counters must remain independent");
+         "channel-0 RPC and USeq sync ordering counters must remain independent");
 
   expect(samp::syncpolicy::boundedOnFootRateMs(0) == 30 &&
          samp::syncpolicy::boundedOnFootRateMs(1) == 20 &&
@@ -2573,8 +2938,16 @@ void testRemoteVehicleBroadcastDecoder() {
          std::fabs(remote.x - 125.0f) < 0.001f && std::fabs(remote.y + 75.0f) < 0.001f &&
          std::fabs(remote.z - 6.0f) < 0.001f && std::fabs(remote.health - 875.0f) < 0.001f &&
          std::fabs(remote.velocityX - 3.0f) < 0.02f && std::fabs(remote.velocityY - 4.0f) < 0.02f &&
+         remote.attitudeKnown && std::fabs(remote.rotationX) < 0.2f &&
+         std::fabs(remote.rotationY) < 0.2f && std::fabs(remote.rotationZ - 90.0f) < 0.2f &&
          std::fabs(remote.angle - 90.0f) < 0.2f,
-         "remote PlayerVehicleSync decode changed");
+         "remote PlayerVehicleSync decode/attitude changed");
+  constexpr float kRootHalf = 0.70710678f;
+  const auto pitched = makeRemoteVehicleDriverBroadcast(7, 90, kRootHalf, 0.0f, kRootHalf, 0.0f);
+  expect(samp::syncdecode::decodeRemoteVehicleBroadcast(pitched, remote) && remote.attitudeKnown &&
+         std::fabs(remote.rotationX) < 0.2f && std::fabs(remote.rotationY + 90.0f) < 0.2f &&
+         std::fabs(remote.rotationZ) < 0.2f,
+         "Packet-200 quaternion pitch must survive source-derived DFF attitude reduction");
   expect(samp::syncdecode::summarize(remote).find("#90") != std::string::npos,
          "remote vehicle sync summary missing vehicle ID");
 
@@ -2590,6 +2963,80 @@ void testRemoteVehicleBroadcastDecoder() {
          "truncated remote PlayerVehicleSync must be rejected");
   expect(!samp::syncdecode::decodeRemoteVehicleBroadcast({209, 0, 0, 0, 0}, remote),
          "malformed remote vehicle sync must be rejected");
+}
+
+void testRemoteTrailerBroadcastDecoder() {
+  samp::syncdecode::RemoteTrailerSync remote;
+  const auto packet = makeRemoteTrailerBroadcast(7u, 90u);
+  const std::vector<uint8_t> expected = {
+      0xD2, 0x07, 0x00, 0x5A, 0x00, 0x00, 0x80, 0xA2, 0x43,
+      0x00, 0x80, 0x89, 0xC3, 0x00, 0x00, 0xF0, 0x40,
+      0xF3, 0x04, 0x35, 0x3F, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0xF3, 0x04, 0x35, 0xBF,
+      0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x80, 0x40,
+      0x00, 0x00, 0x00, 0x00, 0xCD, 0xCC, 0xCC, 0x3D,
+      0xCD, 0xCC, 0x4C, 0xBE, 0x9A, 0x99, 0x99, 0x3E};
+  expect(packet == expected && packet.size() == 57u,
+         "remote PlayerTrailerSync broadcast writer vector changed");
+  expect(samp::syncdecode::decodeRemoteTrailerBroadcast(packet, remote) &&
+         remote.playerId == 7u && remote.vehicleId == 90u && remote.attitudeKnown &&
+         std::fabs(remote.x - 325.0f) < 0.001f && std::fabs(remote.y + 275.0f) < 0.001f &&
+         std::fabs(remote.z - 7.5f) < 0.001f && std::fabs(remote.velocityX - 3.0f) < 0.001f &&
+         std::fabs(remote.velocityY - 4.0f) < 0.001f &&
+         std::fabs(remote.turnVelocityX - 0.1f) < 0.001f &&
+         std::fabs(remote.turnVelocityY + 0.2f) < 0.001f &&
+         std::fabs(remote.turnVelocityZ - 0.3f) < 0.001f &&
+         std::fabs(remote.rotationZ - 90.0f) < 0.2f,
+         "remote PlayerTrailerSync decode/raw quaternion reduction changed");
+  expect(samp::syncdecode::summarize(remote).find("trailer #90") != std::string::npos,
+         "remote trailer summary missing vehicle ID");
+
+  auto truncated = packet;
+  truncated.pop_back();
+  expect(!samp::syncdecode::decodeRemoteTrailerBroadcast(truncated, remote),
+         "truncated remote PlayerTrailerSync must be rejected");
+  expect(!samp::syncdecode::decodeRemoteTrailerBroadcast(packet, remote, packet.size() * 8 - 1),
+         "declared-short remote PlayerTrailerSync must be rejected");
+  auto invalidQuaternion = packet;
+  invalidQuaternion[17] = 0x00u;
+  invalidQuaternion[18] = 0x00u;
+  invalidQuaternion[19] = 0xC0u;
+  invalidQuaternion[20] = 0x7Fu;  // IEEE quiet NaN, little-endian
+  expect(!samp::syncdecode::decodeRemoteTrailerBroadcast(invalidQuaternion, remote),
+         "non-finite remote trailer quaternion must reject");
+  auto invalidTurnVelocity = packet;
+  invalidTurnVelocity[45] = 0x00u;
+  invalidTurnVelocity[46] = 0x00u;
+  invalidTurnVelocity[47] = 0x00u;
+  invalidTurnVelocity[48] = 0x40u;  // 2.0, beyond source turn envelope
+  expect(!samp::syncdecode::decodeRemoteTrailerBroadcast(invalidTurnVelocity, remote),
+         "out-of-envelope remote trailer turn velocity must reject");
+  expect(samp::syncdecode::decodeRemoteTrailerBroadcast(packet, remote),
+         "valid remote trailer fixture must decode again after malformed input");
+
+  samp::state::WorldState world;
+  samp::state::RpcEvent event;
+  expect(world.applyRpc(makeStreamInVehicle(90u, 435u, 10.0f, 20.0f, 5.0f, 0.0f,
+                                            1u, 2u, 850.0f), event) &&
+         world.applyRpc(makePlayerStreamIn(7u, 0u, 7u, 0.0f, 0.0f, 3.0f, 0.0f,
+                                            0xFFFFFFFFu, 0u), event),
+         "remote trailer lifecycle fixtures rejected");
+  samp::syncdecode::RemoteVehicleSync driver;
+  expect(samp::syncdecode::decodeRemoteVehicleBroadcast(makeRemoteVehicleDriverBroadcast(7u, 90u), driver) &&
+         world.applyRemoteVehicle(driver, event) && world.findVehicle(90u)->driverKnown &&
+         world.findVehicle(90u)->driverId == 7u &&
+         std::fabs(world.findVehicle(90u)->health - 875.0f) < 0.001f,
+         "remote trailer fixture driver baseline rejected");
+  expect(world.applyRemoteTrailer(remote, event) && event.kind == samp::state::RpcEventKind::RemoteTrailerSync &&
+         event.playerId == 90u && world.findVehicle(90u)->dynamicSyncKnown &&
+         world.findVehicle(90u)->driverKnown && world.findVehicle(90u)->driverId == 7u &&
+         std::fabs(world.findVehicle(90u)->x - 325.0f) < 0.001f &&
+         std::fabs(world.findVehicle(90u)->rotationZ - 90.0f) < 0.2f &&
+         std::fabs(world.findVehicle(90u)->health - 875.0f) < 0.001f,
+         "Packet-210 must update only an existing trailer transform, preserving driver/health facts");
+  samp::state::WorldState unknownWorld;
+  expect(!unknownWorld.applyRemoteTrailer(remote, event),
+         "Packet-210 must not allocate an unstreamed trailer vehicle");
 }
 
 void testRemotePassengerBroadcastDecoder() {
@@ -2753,6 +3200,62 @@ void testSplitReassembly() {
          result[0].payloadBitLength == 32,
          "split order/bit length changed");
 
+  // The partially assembled state is moved from the synchronous handshake
+  // into LiveSession, so an out-of-order fragment must survive that hand-off.
+  samp::raknet::SplitReassembler handoffReassembler;
+  samp::raknet::IncomingPacket handoffSecond;
+  handoffSecond.split = true;
+  handoffSecond.splitId = 79;
+  handoffSecond.splitIndex = 1;
+  handoffSecond.splitCount = 2;
+  handoffSecond.payload = {0x12};
+  expect(handoffReassembler.push(handoffSecond).empty(),
+         "split hand-off fixture completed too early");
+  samp::raknet::SplitReassembler movedReassembler = std::move(handoffReassembler);
+  samp::raknet::IncomingPacket handoffFirst;
+  handoffFirst.split = true;
+  handoffFirst.splitId = 79;
+  handoffFirst.splitIndex = 0;
+  handoffFirst.splitCount = 2;
+  handoffFirst.payload = {0x11};
+  const auto handoffResult = movedReassembler.push(handoffFirst);
+  expect(handoffResult.size() == 1 &&
+             handoffResult[0].payload == std::vector<uint8_t>({0x11, 0x12}),
+         "moving split reassembler must preserve handshake fragments");
+
+  // RakNet copies reliability/order metadata to every fragment. If a wrapped
+  // split ID is recycled with a different transport identity, its body must
+  // replace—not splice into—the stale retained sequence and its accounting.
+  samp::raknet::SplitReassembler identityReassembler;
+  samp::raknet::IncomingPacket staleIdentity;
+  staleIdentity.split = true;
+  staleIdentity.splitId = 80;
+  staleIdentity.splitIndex = 1;
+  staleIdentity.splitCount = 2;
+  staleIdentity.reliability = samp::raknet::kReliabilityReliableOrdered;
+  staleIdentity.orderingChannel = 2;
+  staleIdentity.orderingIndex = 9;
+  staleIdentity.payload = {0xA1};
+  expect(identityReassembler.push(staleIdentity).empty() && identityReassembler.pendingBytes() == 1u,
+         "split transport-identity fixture failed to retain stale fragment");
+  samp::raknet::IncomingPacket replacementIdentity = staleIdentity;
+  replacementIdentity.splitIndex = 0;
+  replacementIdentity.orderingChannel = 3;
+  replacementIdentity.orderingIndex = 4;
+  replacementIdentity.payload = {0xB0};
+  expect(identityReassembler.push(replacementIdentity).empty() &&
+             identityReassembler.pendingBytes() == 1u,
+         "recycled split transport identity must replace old accounting");
+  samp::raknet::IncomingPacket replacementTail = replacementIdentity;
+  replacementTail.splitIndex = 1;
+  replacementTail.payload = {0xB1};
+  const auto identityResult = identityReassembler.push(replacementTail);
+  expect(identityResult.size() == 1 &&
+             identityResult[0].payload == std::vector<uint8_t>({0xB0, 0xB1}) &&
+             identityResult[0].orderingChannel == 3u && identityResult[0].orderingIndex == 4u &&
+             identityReassembler.pendingBytes() == 0u,
+         "split fragments with mismatched transport identity were spliced");
+
   samp::raknet::IncomingPacket ambiguous;
   ambiguous.split = true;
   ambiguous.splitId = 78;
@@ -2762,6 +3265,91 @@ void testSplitReassembly() {
   ambiguous.payloadBitLength = 5;
   expect(reassembler.push(ambiguous).empty() && reassembler.pendingCount() == 0,
          "non-byte-aligned non-final split must be rejected");
+
+  samp::raknet::IncomingPacket oversizedBacking;
+  oversizedBacking.payload = {0x01, 0x02};
+  oversizedBacking.payloadBitLength = 8;
+  expect(reassembler.push(oversizedBacking).empty(),
+         "split reassembler must reject bytes beyond declared payload bits");
+
+  samp::raknet::SplitReassembler sequenceBounded;
+  for (size_t index = 0; index < samp::raknet::SplitReassembler::kMaxPendingSequences; ++index) {
+    samp::raknet::IncomingPacket fragment;
+    fragment.split = true;
+    fragment.splitId = static_cast<uint16_t>(1000u + index);
+    fragment.splitIndex = 0;
+    fragment.splitCount = 2;
+    fragment.payload = {0x55};
+    expect(sequenceBounded.push(fragment).empty(),
+           "bounded split sequence fixture should remain incomplete");
+  }
+  expect(sequenceBounded.pendingCount() == samp::raknet::SplitReassembler::kMaxPendingSequences &&
+             !sequenceBounded.overflowed(),
+         "split pending-sequence budget accounting changed");
+  samp::raknet::IncomingPacket sequenceOverflow;
+  sequenceOverflow.split = true;
+  sequenceOverflow.splitId = 2000;
+  sequenceOverflow.splitIndex = 0;
+  sequenceOverflow.splitCount = 2;
+  sequenceOverflow.payload = {0x56};
+  expect(sequenceBounded.push(sequenceOverflow).empty() && sequenceBounded.overflowed(),
+         "split sequence overflow must be observable for session teardown");
+  sequenceBounded.clear();
+  expect(sequenceBounded.pendingCount() == 0 && sequenceBounded.pendingBytes() == 0 &&
+             !sequenceBounded.overflowed(),
+         "split clear must release pending bytes and overflow state");
+
+  // Fragment payloads are each legal, but a long out-of-order set must still
+  // obey the aggregate retained-byte budget before any untrusted allocation
+  // reaches an Android session.
+  samp::raknet::SplitReassembler byteBounded;
+  const std::vector<uint8_t> nearMaxFragment(8191, 0x77);
+  constexpr uint16_t kNearMaxFragmentBits = 65528;
+  const size_t allowedFragments =
+      samp::raknet::SplitReassembler::kMaxPendingBytes / nearMaxFragment.size();
+  for (size_t index = 0; index < allowedFragments; ++index) {
+    samp::raknet::IncomingPacket fragment;
+    fragment.split = true;
+    fragment.splitId = static_cast<uint16_t>(3000u + index);
+    fragment.splitIndex = 0;
+    fragment.splitCount = 2;
+    fragment.payload = nearMaxFragment;
+    fragment.payloadBitLength = kNearMaxFragmentBits;
+    expect(byteBounded.push(std::move(fragment)).empty(),
+           "aggregate split byte budget fixture should remain incomplete");
+  }
+  expect(byteBounded.pendingBytes() == allowedFragments * nearMaxFragment.size() &&
+             !byteBounded.overflowed(),
+         "split aggregate byte accounting changed");
+  samp::raknet::IncomingPacket byteOverflow;
+  byteOverflow.split = true;
+  byteOverflow.splitId = 4000;
+  byteOverflow.splitIndex = 0;
+  byteOverflow.splitCount = 2;
+  byteOverflow.payload = nearMaxFragment;
+  byteOverflow.payloadBitLength = kNearMaxFragmentBits;
+  expect(byteBounded.push(std::move(byteOverflow)).empty() && byteBounded.overflowed(),
+         "split aggregate byte overflow must be observable for session teardown");
+
+  samp::raknet::SplitReassembler representationBounded;
+  samp::raknet::IncomingPacket highBits;
+  highBits.split = true;
+  highBits.splitId = 5000;
+  highBits.splitIndex = 0;
+  highBits.splitCount = 2;
+  highBits.payload = nearMaxFragment;
+  highBits.payloadBitLength = kNearMaxFragmentBits;
+  expect(representationBounded.push(std::move(highBits)).empty(),
+         "high-bit split prefix should wait for final fragment");
+  samp::raknet::IncomingPacket oneBitTooFar;
+  oneBitTooFar.split = true;
+  oneBitTooFar.splitId = 5000;
+  oneBitTooFar.splitIndex = 1;
+  oneBitTooFar.splitCount = 2;
+  oneBitTooFar.payload = {0x78};
+  oneBitTooFar.payloadBitLength = 8;
+  expect(representationBounded.push(oneBitTooFar).empty() && representationBounded.overflowed(),
+         "split total beyond u16 payload-bit representation must not accumulate");
 }
 
 void testDefaultStringCompressorDecoder() {
@@ -2985,10 +3573,18 @@ void testGtaImgAndCollisionData() {
            std::fabs(worldHit.z - 7.0f) < 0.001f &&
            !world.findHighestFloor(10.0f, -20.0f, 4.0f, 8.0f, 1, worldHit),
            "transformed/interior world collision floor query changed");
+    const std::vector<samp::gta::removal::Directive> removePlacedFloor = {
+        {1000u, 10.0f, -20.0f, 5.0f, 2.0f}};
+    expect(!world.findHighestFloor(10.0f, -20.0f, 4.0f, 8.0f, 0, worldHit,
+                                   &removePlacedFloor) &&
+               !world.findHighestFloor(10.0f, -20.0f, 4.0f, 8.0f, 7, worldHit,
+                                       &removePlacedFloor),
+           "RemoveBuilding filter must remove matching static COL floors in every interior");
     samp::gta::world::CollisionCatalog wallCatalog;
     expect(samp::gta::world::loadCollisionArchiveBytes(makeWallCol3Fixture(), wallCatalog, error),
            "wall collision fixture could not enter catalog");
     samp::gta::map::Instance wallPlacement;
+    wallPlacement.modelId = 9000u;
     wallPlacement.modelName = "wall";
     wallPlacement.position = {0.0f, 0.0f, 0.0f};
     wallPlacement.rotation = {0.0f, 0.0f, 0.0f, 1.0f};
@@ -3005,11 +3601,23 @@ void testGtaImgAndCollisionData() {
         -0.5f, 3.0f, 0.5f, 3.0f, 0.0f, 0.36f, 1.55f, 0);
     expect(freeMove.valid && !freeMove.blocked && std::fabs(freeMove.position.x - 0.5f) < 0.001f,
            "horizontal cylinder sweep must preserve unobstructed movement");
+    const std::vector<samp::gta::removal::Directive> removeWall = {
+        {samp::gta::removal::kAnyModel, 0.0f, 0.0f, 0.0f, 4.0f}};
+    const auto removedWallMove = wallWorld.resolveHorizontalMove(
+        -0.5f, 0.0f, 0.5f, 0.0f, 0.0f, 0.36f, 1.55f, 0, &removeWall);
+    expect(removedWallMove.valid && !removedWallMove.blocked &&
+               std::fabs(removedWallMove.position.x - 0.5f) < 0.001f,
+           "wildcard RemoveBuilding must clear matching static COL side collision");
     samp::gta::world::RaycastHit wallRay;
     expect(wallWorld.raycastStaticWorld({-1.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.0f}, 4.0f, 0, wallRay) &&
                wallRay.valid && wallRay.hit && std::fabs(wallRay.position.x - 0.15f) < 0.001f &&
                wallRay.normal.x < -0.99f,
            "bounded static ray must resolve the nearest COL wall face");
+    samp::gta::world::RaycastHit removedWallRay;
+    expect(wallWorld.raycastStaticWorld({-1.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.0f}, 4.0f, 0,
+                                         removedWallRay, &removeWall) &&
+               removedWallRay.valid && !removedWallRay.hit,
+           "RemoveBuilding must clear static COL ray contacts as well as movement");
     samp::gta::world::RaycastHit otherInteriorRay;
     expect(wallWorld.raycastStaticWorld({-1.0f, 0.0f, 1.0f}, {1.0f, 0.0f, 0.0f}, 4.0f, 7,
                                          otherInteriorRay) &&
@@ -3280,6 +3888,71 @@ void testGtaImgAndCollisionData() {
            vehicleMotion.grounded,
            "collision vehicle motion must retain grounded throttle/brake state");
 
+    // A validated user-data profile may specialize only the conservative
+    // kinematic response envelope; it must not bypass the same grounded COL
+    // step or exceed the shared tuning validator.
+    samp::vehiclemotion::LocalVehicleMotionState genericHandlingMotion;
+    samp::vehiclemotion::LocalVehicleMotionState tunedHandlingMotion;
+    expect(samp::vehiclemotion::resetFromAuthoritative(
+               88, {10.0f, -20.0f, 7.0f}, 0.0f, 0, genericHandlingMotion) &&
+           samp::vehiclemotion::resetFromAuthoritative(
+               88, {10.0f, -20.0f, 7.0f}, 0.0f, 0, tunedHandlingMotion),
+           "handling motion fixtures could not initialize");
+    samp::vehiclemotion::VehicleMotionTuning modelTuning;
+    modelTuning.forwardAcceleration = 25.0f;
+    modelTuning.maxForwardSpeed = 44.0f;
+    modelTuning.maxReverseSpeed = 13.0f;
+    modelTuning.maxSteeringDegreesPerSecond = 90.0f;
+    expect(samp::vehiclemotion::validMotionTuning(modelTuning),
+           "validated handling tuning fixture rejected");
+    const auto genericHandlingStep = samp::vehiclemotion::advance(
+        world, vehicleInput, 0.05f, genericHandlingMotion);
+    const auto tunedHandlingStep = samp::vehiclemotion::advance(
+        world, vehicleInput, 0.05f, tunedHandlingMotion, nullptr, 0.008f, &modelTuning);
+    auto invalidModelTuning = modelTuning;
+    invalidModelTuning.forwardAcceleration = 0.0f;
+    expect((genericHandlingStep.status == samp::vehiclemotion::StepStatus::Applied ||
+            genericHandlingStep.status == samp::vehiclemotion::StepStatus::Blocked) &&
+           (tunedHandlingStep.status == samp::vehiclemotion::StepStatus::Applied ||
+            tunedHandlingStep.status == samp::vehiclemotion::StepStatus::Blocked) &&
+           tunedHandlingMotion.speed > genericHandlingMotion.speed &&
+           !samp::vehiclemotion::validMotionTuning(invalidModelTuning),
+           "handling tuning must influence only valid collision-grounded motion");
+
+    // RPC-91 linear values are GTA 50 Hz CVector units, not arbitrary Android
+    // metres/second. The pilot must retain a world-space sideways vector and a
+    // bounded vertical launch rather than turning either into a guessed vehicle
+    // ID or a yaw change.
+    samp::vehiclemotion::LocalVehicleMotionState rpc91LinearMotion;
+    expect(samp::vehiclemotion::resetFromAuthoritative(
+               88, {10.0f, -20.0f, 7.0f}, 0.0f, 0, rpc91LinearMotion) &&
+               samp::vehiclemotion::applyServerLinearVelocity(
+                   0.0f, 0.01f, 0.0f, 41u, rpc91LinearMotion),
+           "bounded RPC-91 linear velocity could not seed driver motion");
+    samp::input::TouchIntent neutralVehicleInput;
+    const auto rpc91LinearStep = samp::vehiclemotion::advance(
+        world, neutralVehicleInput, 0.05f, rpc91LinearMotion);
+    expect((rpc91LinearStep.status == samp::vehiclemotion::StepStatus::Applied ||
+            rpc91LinearStep.status == samp::vehiclemotion::StepStatus::Blocked) &&
+           rpc91LinearMotion.appliedServerLinearVelocityRevision == 41u &&
+           rpc91LinearMotion.grounded &&
+           (rpc91LinearMotion.position.y > -19.99f || rpc91LinearStep.blocked),
+           "RPC-91 linear vector must remain collision-bounded without yaw fabrication");
+    samp::vehiclemotion::LocalVehicleMotionState rpc91JumpMotion;
+    expect(samp::vehiclemotion::resetFromAuthoritative(
+               88, {10.0f, -20.0f, 7.0f}, 0.0f, 0, rpc91JumpMotion) &&
+               samp::vehiclemotion::applyServerLinearVelocity(
+                   0.0f, 0.0f, 0.2f, 42u, rpc91JumpMotion),
+           "RPC-91 jump velocity could not seed driver motion");
+    const auto rpc91JumpStep = samp::vehiclemotion::advance(
+        world, neutralVehicleInput, 0.05f, rpc91JumpMotion);
+    expect(rpc91JumpStep.status == samp::vehiclemotion::StepStatus::Applied &&
+           !rpc91JumpMotion.grounded && rpc91JumpMotion.position.z > 7.0f &&
+           rpc91JumpMotion.verticalVelocity > 0.0f &&
+           !samp::vehiclemotion::applyServerLinearVelocity(
+               3.1f, 0.0f, 0.0f, 43u, rpc91JumpMotion),
+           "RPC-91 vehicle pilot must support bounded launches and reject unsafe local trajectories");
+
     samp::state::LocalPlayer driver = local;
     driver.vehicleKnown = true;
     driver.inVehicle = true;
@@ -3301,6 +3974,82 @@ void testGtaImgAndCollisionData() {
            driverGameplay.inCar.positionY >= -20.0f &&
            samp::sync::isValidInCarState(driverGameplay.inCar),
            "collision gameplay bridge must output a valid driver Packet-200 candidate");
+    // Only retained server RPC-24 facts may affect the local driver path:
+    // engine-off suppresses Android throttle only under PlayerInit's manual
+    // engine/light mode, and siren mirrors exactly. There is no local
+    // engine/siren ownership or invented vehicle-system state.
+    samp::state::Vehicle serverParamDriverVehicle = driverVehicle;
+    serverParamDriverVehicle.parameters.known = true;
+    serverParamDriverVehicle.parameters.values[
+        static_cast<size_t>(samp::state::VehicleParameter::Engine)] = 0;
+    serverParamDriverVehicle.parameters.values[
+        static_cast<size_t>(samp::state::VehicleParameter::Siren)] = 1;
+    // An ordinary automatic-engine server still displays/forwards the received
+    // state, but its PlayerInit bit says the client must not turn it into an
+    // invented drivetrain restriction.
+    samp::gameplay::LocalGameplayState automaticEngineDriverGameplay;
+    const auto automaticEngineDriverStep = samp::gameplay::advanceLocalDriverVehicle(
+        driver, serverParamDriverVehicle, gameplayControls, world, 0.05f,
+        automaticEngineDriverGameplay);
+    expect(automaticEngineDriverStep.inCarReady && automaticEngineDriverStep.inCar.siren == 1u &&
+           static_cast<int16_t>(automaticEngineDriverStep.inCar.upDown) != 0,
+           "engine-off must not suppress throttle when PlayerInit keeps GTA automatic engine mode");
+    samp::gameplay::LocalGameplayState serverParamDriverGameplay;
+    const auto serverParamDriverStep = samp::gameplay::advanceLocalDriverVehicle(
+        driver, serverParamDriverVehicle, gameplayControls, world, 0.05f,
+        serverParamDriverGameplay, nullptr, nullptr, nullptr, true);
+    expect(serverParamDriverStep.inCarReady && serverParamDriverStep.inCar.siren == 1u &&
+           static_cast<int16_t>(serverParamDriverStep.inCar.upDown) == 0 &&
+           std::fabs(serverParamDriverStep.inCar.positionY - serverParamDriverVehicle.y) < 0.001f &&
+           samp::sync::isValidInCarState(serverParamDriverStep.inCar),
+           "server engine-off/siren must control only bounded local driver sync facts");
+    serverParamDriverVehicle.parameters.values[
+        static_cast<size_t>(samp::state::VehicleParameter::Engine)] = 1;
+    serverParamDriverVehicle.parameters.values[
+        static_cast<size_t>(samp::state::VehicleParameter::Siren)] = 0;
+    samp::gameplay::LocalGameplayState serverEngineOnDriverGameplay;
+    const auto serverEngineOnDriverStep = samp::gameplay::advanceLocalDriverVehicle(
+        driver, serverParamDriverVehicle, gameplayControls, world, 0.05f, serverEngineOnDriverGameplay);
+    expect(serverEngineOnDriverStep.inCarReady && serverEngineOnDriverStep.inCar.siren == 0u &&
+           static_cast<int16_t>(serverEngineOnDriverStep.inCar.upDown) != 0,
+           "server engine-on must preserve held Android throttle without inventing siren state");
+    // A later full RPC-24 snapshot may explicitly reset both fields to -1.
+    // Even on a manual-engine server that must release the Android throttle
+    // gate: unset is neither an implicit off state nor a stale prior engine=0.
+    serverParamDriverVehicle.parameters.values[
+        static_cast<size_t>(samp::state::VehicleParameter::Engine)] = -1;
+    serverParamDriverVehicle.parameters.values[
+        static_cast<size_t>(samp::state::VehicleParameter::Siren)] = -1;
+    samp::gameplay::LocalGameplayState serverEngineUnsetDriverGameplay;
+    const auto serverEngineUnsetDriverStep = samp::gameplay::advanceLocalDriverVehicle(
+        driver, serverParamDriverVehicle, gameplayControls, world, 0.05f,
+        serverEngineUnsetDriverGameplay, nullptr, nullptr, nullptr, true);
+    expect(serverEngineUnsetDriverStep.inCarReady && serverEngineUnsetDriverStep.inCar.siren == 0u &&
+           static_cast<int16_t>(serverEngineUnsetDriverStep.inCar.upDown) != 0,
+           "explicit full-snapshot engine unset must release manual throttle suppression");
+    samp::state::Vehicle rpc91DriverVehicle = driverVehicle;
+    rpc91DriverVehicle.linearVelocityKnown = true;
+    rpc91DriverVehicle.linearVelocityRevision = 17u;
+    rpc91DriverVehicle.linearVelocityZ = 0.2f;
+    samp::gameplay::LocalGameplayState rpc91DriverGameplay;
+    const auto rpc91DriverStep = samp::gameplay::advanceLocalDriverVehicle(
+        driver, rpc91DriverVehicle, gameplayControls, world, 0.05f, rpc91DriverGameplay);
+    expect(rpc91DriverStep.inCarReady && rpc91DriverGameplay.vehiclePredictionActive &&
+           !rpc91DriverStep.grounded && rpc91DriverStep.inCar.positionZ > driverVehicle.z &&
+           rpc91DriverStep.inCar.velocityZ > 0.0f && rpc91DriverStep.inCar.velocityZ < 0.2f &&
+           rpc91DriverGameplay.consumedVehicleLinearVelocityRevision == 17u &&
+           samp::sync::isValidInCarState(rpc91DriverStep.inCar),
+           "driver bridge must consume one bounded linear RPC-91 command into Packet-200 motion");
+    // A SetVehiclePosition-style reset for the same vehicle must not replay an
+    // already-consumed ID-less launch command merely because its retained state
+    // still exists; only a newer reducer revision may seed it again.
+    samp::gameplay::invalidateLocalPrediction(rpc91DriverGameplay);
+    const auto postResetRpc91DriverStep = samp::gameplay::advanceLocalDriverVehicle(
+        driver, rpc91DriverVehicle, gameplayControls, world, 0.05f, rpc91DriverGameplay);
+    expect(postResetRpc91DriverStep.inCarReady && postResetRpc91DriverStep.grounded &&
+           std::fabs(postResetRpc91DriverStep.inCar.positionZ - driverVehicle.z) < 0.001f &&
+           rpc91DriverGameplay.consumedVehicleLinearVelocityRevision == 17u,
+           "same-vehicle authoritative reset must not replay an old RPC-91 linear command");
     samp::state::WorldEnvironment boundedDriverExterior;
     boundedDriverExterior.worldBoundsKnown = true;
     boundedDriverExterior.worldMaxX = 100.0f;
@@ -3575,6 +4324,38 @@ void testGtaDataRuntimeAssembly() {
          "runtime must reject cyclic txdp graph transactionally");
   ::close(cyclicTxdParentDescriptor);
 
+  // handling.cfg has an independent user-data lifetime: it can load before
+  // cars.ide, survives a map-source rebuild, and binds only after the exact
+  // source model → handling token join exists.
+  samp::gta::runtime::GameDataRuntime handlingRuntime;
+  descriptor = writeTemporaryFile(textBytes(
+      "LANDSTAL 1700.0 4000.0 2.0 0.0 0.1 -0.3 70 0.75 0.85 0.52 5 160.0 25.0 10.0 R P 10.0 0.53 0 30.0 1.0 0.15 0.0 0.28 -0.14 0.5 0.0 0.2 0.5 0.5 20000 0 0 0 0 0\n"));
+  expect(handlingRuntime.loadHandlingFileDescriptor(descriptor, error),
+         "runtime could not load bounded handling.cfg descriptor");
+  ::close(descriptor);
+  samp::vehiclemotion::VehicleMotionTuning resolvedTuning;
+  expect(handlingRuntime.snapshot().handlingProfiles == 1u &&
+         !handlingRuntime.vehicleMotionTuning(400u, resolvedTuning),
+         "handling source cannot tune an unknown/non-IDE vehicle model");
+  descriptor = writeTemporaryFile(textBytes(
+      "cars\n400, Landstal, landstal, car, LANDSTAL, landstal, null, executive, 10, 0, 0, -1, 0.7, 0.7, 0\nend\n"));
+  expect(handlingRuntime.loadIdeFileDescriptor(descriptor, error),
+         "runtime could not load cars IDE handling join");
+  ::close(descriptor);
+  expect(handlingRuntime.vehicleMotionTuning(400u, resolvedTuning) &&
+         std::fabs(resolvedTuning.maxForwardSpeed - (160.0f / 3.6f)) < 0.01f &&
+         !handlingRuntime.vehicleMotionTuning(401u, resolvedTuning),
+         "runtime must bind handling only through loaded cars IDE model IDs");
+  handlingRuntime.clearMapAssembly();
+  expect(handlingRuntime.snapshot().handlingProfiles == 1u &&
+         !handlingRuntime.vehicleMotionTuning(400u, resolvedTuning),
+         "map source rebuild must preserve profiles but drop stale model join");
+  descriptor = writeTemporaryFile(textBytes("IMG models/gta3.img\n"));
+  expect(handlingRuntime.loadGtaDatFileDescriptor(descriptor, error) &&
+         handlingRuntime.snapshot().handlingProfiles == 0u,
+         "new gta.dat manifest must drop handling from a prior source tree");
+  ::close(descriptor);
+
   descriptor = writeTemporaryFile(makeCol3Fixture());
   expect(runtime.loadExternalCollisionFileDescriptor(descriptor, error),
          "runtime could not load selected external COLFILE");
@@ -3697,6 +4478,21 @@ void testGtaDataRuntimeAssembly() {
          std::fabs(nearbyTexturedWorld.vertices[1]) < 0.001f &&
          std::fabs(nearbyTexturedWorld.vertices[2] - 1.0f) < 0.001f,
          "runtime placement-aware DFF/TXD batch changed");
+  const std::vector<samp::gta::removal::Directive> removeRenderedFloor = {
+      {1000u, 10.0f, -20.0f, 5.0f, 3.0f}};
+  samp::gta::runtime::NearbyWorldRenderBatch removedNearbyWorld;
+  expect(runtime.copyNearbyWorldRenderBatch(10.0f, -20.0f, 5.0f, 40.0f, 4, 12,
+                                            removedNearbyWorld, error, 0,
+                                            &removeRenderedFloor) &&
+             removedNearbyWorld.vertices.empty() &&
+             removedNearbyWorld.renderedPlacements == 0u,
+         "RemoveBuilding must hide matching static IPL geometry in color rendering");
+  samp::gta::runtime::NearbyWorldTexturedRenderBatch removedTexturedWorld;
+  expect(runtime.copyNearbyWorldTexturedRenderBatch(10.0f, -20.0f, 5.0f, 40.0f, 12, 4,
+                                                    removedTexturedWorld, error, 0,
+                                                    &removeRenderedFloor) &&
+             removedTexturedWorld.vertices.empty() && removedTexturedWorld.textureRgba.empty(),
+         "RemoveBuilding must hide matching static IPL texture overlays");
 
   // A server-authoritative nonzero interior must select only matching IPL
   // placements, never blend nearby exterior records into the same batch.
@@ -4282,10 +5078,12 @@ void testGtaMapManifestData() {
            objects[0].flags == 17u && objects[1].modelName == "timed" &&
            std::fabs(objects[1].drawDistance - 120.0f) < 0.001f && objects[2].modelName == "animated" &&
            objects[3].modelId == 400u && objects[3].modelName == "landstal" &&
-           objects[3].textureDictionary == "generic" && objects[3].drawDistance == 0.0f &&
-           objects[4].modelId == 585u && objects[4].modelName == "emperor" &&
-           objects[4].textureDictionary == "emperor" && objects[5].modelId == 446u &&
+           objects[3].textureDictionary == "generic" && objects[3].handlingName == "landstal" &&
+           objects[3].drawDistance == 0.0f && objects[4].modelId == 585u &&
+           objects[4].modelName == "emperor" && objects[4].textureDictionary == "emperor" &&
+           objects[4].handlingName == "emperor" && objects[5].modelId == 446u &&
            objects[5].modelName == "squalo" && objects[5].textureDictionary == "squalo" &&
+           objects[5].handlingName == "squalo" &&
            objects[6].modelId == 0u && objects[6].modelName == "player" &&
            objects[6].textureDictionary == "generic" && objects[6].drawDistance == 0.0f,
            "stock SA objs/tobj/anim/cars/peds IDE layouts changed");
@@ -4321,6 +5119,32 @@ void testGtaMapManifestData() {
     expect(!samp::gta::map::parseIdeObjects(
                "txdp\nchild_dictionary, ../not-a-dictionary\nend\n", objects, error) && objects.empty(),
            "txdp identifiers must never become paths");
+  }
+  {
+    const std::string handlingCfg =
+        "; stock-compatible source row; extension tail remains opaque\n"
+        "LANDSTAL 1700.0 4000.0 2.0 0.0 0.1 -0.3 70 0.75 0.85 0.52 5 160.0 25.0 10.0 R P 10.0 0.53 0 30.0 1.0 0.15 0.0 0.28 -0.14 0.5 0.0 0.2 0.5 0.5 20000 0 0 0 0 0\n";
+    std::unordered_map<std::string, samp::gta::handling::Profile> profiles;
+    std::string error;
+    expect(samp::gta::handling::parseHandlingCfg(handlingCfg, profiles, error) &&
+           profiles.size() == 1u && profiles.count("landstal") == 1u &&
+           std::fabs(profiles.at("landstal").maxVelocityKph - 160.0f) < 0.001f,
+           "handling.cfg parser must retain bounded normalized source profile");
+    samp::vehiclemotion::VehicleMotionTuning tuning;
+    expect(samp::gta::handling::makeMotionTuning(profiles.at("landstal"), tuning) &&
+           samp::vehiclemotion::validMotionTuning(tuning) &&
+           std::fabs(tuning.maxForwardSpeed - (160.0f / 3.6f)) < 0.01f &&
+           std::fabs(tuning.forwardAcceleration - 25.0f) < 0.001f &&
+           std::fabs(tuning.maxSteeringDegreesPerSecond - 90.0f) < 0.001f,
+           "handling source conversion must stay within local-driver envelope");
+    const size_t retainedProfileCount = profiles.size();
+    const float retainedMaxVelocity = profiles.at("landstal").maxVelocityKph;
+    expect(!samp::gta::handling::parseHandlingCfg(
+               "LANDSTAL 1 2 3\n", profiles, error) && profiles.size() == retainedProfileCount &&
+               profiles.count("landstal") == 1u &&
+               std::fabs(profiles.at("landstal").maxVelocityKph - retainedMaxVelocity) < 0.001f,
+           "malformed handling.cfg must fail closed without replacing prior profiles");
+
   }
   {
     const std::string ipl =
@@ -4401,8 +5225,11 @@ void testPlayerInitDecoder() {
   expect(init.serverName == "SampDroid Test", "PlayerInit server name wrong");
   expect(std::fabs(init.gravity - 0.008f) < 0.00001f &&
          std::fabs(init.nameTagDrawDistance - 70.0f) < 0.00001f &&
-         init.disableNameTagLos && init.showNameTags,
+         init.disableNameTagLos && init.showNameTags && !init.manualVehicleEngineAndLights,
          "PlayerInit presentation policy wrong");
+  expect(samp::rpc::decodePlayerInit(makePlayerInit(true), init) &&
+         init.manualVehicleEngineAndLights,
+         "PlayerInit ManualVehicleEngineAndLights bit was not retained");
   expect(init.onFootSyncRateMs == 30 && init.inCarSyncRateMs == 30 &&
          init.weaponSyncRateMs == 30 && init.syncMultiplier == 1 && init.lagCompensation == 1,
          "PlayerInit sync rates were not retained");
@@ -4410,6 +5237,9 @@ void testPlayerInitDecoder() {
          "PlayerInit on-foot rate missing from summary");
   expect(samp::rpc::summarize(payload).find("PlayerInit") != std::string::npos,
          "PlayerInit summary has no RPC name");
+  expect(samp::rpc::summarize({20u, 40u}).find("PlayerClose") != std::string::npos &&
+             samp::rpc::summarize({20u, 130u, 2u}).find("ConnectionRejected") != std::string::npos,
+         "terminal RPC summary has no RPC name");
 }
 
 void testClientRpcBuilders() {
@@ -4759,16 +5589,83 @@ void testRenderableWorldBoundary() {
 }
 
 void testWorldStateReducer() {
+  // ConnectionRejected is allowed to arrive before PlayerInit. Preserve its
+  // terminal meaning rather than requiring an initialized gameplay reducer.
+  {
+    samp::state::WorldState preInitWorld;
+    samp::state::RpcEvent preInitEvent;
+    expect(preInitWorld.applyRpc({20u, 130u, 1u}, preInitEvent) &&
+               preInitEvent.kind == samp::state::RpcEventKind::SessionCloseRequested &&
+               preInitEvent.playerId == 0u &&
+               preInitEvent.summary.find("versi") != std::string::npos,
+           "pre-PlayerInit ConnectionRejected must remain terminal");
+  }
   samp::state::WorldState world;
   samp::state::RpcEvent event;
 
   expect(world.applyRpc(makePlayerInit(), event), "WorldState rejected PlayerInit");
   expect(world.initialized() && world.playerInit().playerId == 42,
          "WorldState did not retain PlayerInit");
+  expect(world.applyRpc({20u, 40u}, event) &&
+             event.kind == samp::state::RpcEventKind::SessionCloseRequested &&
+             event.playerId == 42u,
+         "exact PlayerClose must surface a transport-terminal lifecycle event");
+  expect(!world.applyRpc({20u, 40u, 0u}, event) &&
+             event.kind == samp::state::RpcEventKind::Malformed,
+         "trailing PlayerClose bytes must fail closed");
+  expect(world.applyRpc({20u, 130u, 2u}, event) &&
+             event.kind == samp::state::RpcEventKind::SessionCloseRequested &&
+             event.summary.find("nickname") != std::string::npos,
+         "valid ConnectionRejected reason must surface a terminal lifecycle event");
+  expect(!world.applyRpc({20u, 130u, 0u}, event) &&
+             event.kind == samp::state::RpcEventKind::Malformed &&
+             !world.applyRpc({20u, 130u, 1u, 0u}, event) &&
+             event.kind == samp::state::RpcEventKind::Malformed,
+         "unknown/trailing ConnectionRejected records must fail closed");
   expect(world.environment().timeKnown && world.environment().weatherKnown &&
          world.environment().gravityKnown && world.environment().worldTime == 12 &&
          world.environment().weather == 7 && std::fabs(world.environment().gravity - 0.008f) < 0.00001f,
          "PlayerInit environment was not retained");
+  const auto removeFloorRpc = makeRemoveBuilding(1000u, 10.0f, -20.0f, 5.0f, 3.0f);
+  expect(world.applyRpc(removeFloorRpc, event) &&
+             event.kind == samp::state::RpcEventKind::BuildingRemovalChanged &&
+             world.buildingRemovals().size() == 1u &&
+             world.buildingRemovals().front().modelId == 1000u &&
+             std::fabs(world.buildingRemovals().front().radius - 3.0f) < 0.0001f &&
+             std::string(samp::rpc::name(43u)) == "RemoveBuilding",
+         "exact RemoveBuilding must retain a static-world directive");
+  expect(world.applyRpc(removeFloorRpc, event) && world.buildingRemovals().size() == 1u,
+         "duplicate RemoveBuilding must not grow reducer state");
+  auto trailingRemoveBuilding = removeFloorRpc;
+  trailingRemoveBuilding.push_back(0u);
+  expect(!world.applyRpc(trailingRemoveBuilding, event) &&
+             event.kind == samp::state::RpcEventKind::Malformed &&
+             world.buildingRemovals().size() == 1u,
+         "trailing RemoveBuilding bytes must fail closed");
+  expect(!world.applyRpc(makeRemoveBuilding(1000u, 10.0f, -20.0f, 5.0f,
+                                             std::numeric_limits<float>::quiet_NaN()), event) &&
+             event.kind == samp::state::RpcEventKind::Malformed &&
+             world.buildingRemovals().size() == 1u,
+         "non-finite RemoveBuilding radius must fail closed");
+  expect(world.applyRpc(makeRemoveBuilding(0xFFFFFFFFu, 11.0f, -20.0f, 5.0f, 2.0f), event) &&
+             event.kind == samp::state::RpcEventKind::BuildingRemovalChanged &&
+             world.buildingRemovals().size() == 2u &&
+             world.buildingRemovals().back().modelId == samp::gta::removal::kAnyModel,
+         "wildcard RemoveBuilding model -1 must remain explicit");
+  samp::state::WorldState cappedRemoveWorld;
+  samp::state::RpcEvent cappedRemoveEvent;
+  for (size_t index = 0; index < samp::gta::removal::kMaxDirectives; ++index) {
+    expect(cappedRemoveWorld.applyRpc(makeRemoveBuilding(2000u, static_cast<float>(index),
+                                                          0.0f, 0.0f, 0.0f),
+                                      cappedRemoveEvent),
+           "bounded RemoveBuilding fixture rejected before its cap");
+  }
+  expect(cappedRemoveWorld.buildingRemovals().size() == samp::gta::removal::kMaxDirectives &&
+             cappedRemoveWorld.applyRpc(makeRemoveBuilding(2000u, 2001.0f, 0.0f, 0.0f, 0.0f),
+                                         cappedRemoveEvent) &&
+             cappedRemoveEvent.kind == samp::state::RpcEventKind::Ignored &&
+             cappedRemoveWorld.buildingRemovals().size() == samp::gta::removal::kMaxDirectives,
+         "RemoveBuilding directive cap must ignore extra valid records without growing state");
   expect(world.applyRpc(makeGivePlayerMoney(1250), event) &&
          event.kind == samp::state::RpcEventKind::MoneyChanged && world.localPlayer().moneyKnown &&
          world.localPlayer().money == 1250 &&
@@ -6070,6 +6967,9 @@ void testWorldStateReducer() {
          renderVehicles[0].model == 411 && renderVehicles[0].colour1 == 12 &&
          renderVehicles[0].colour2 == 34 && renderVehicles[0].paintjob == 5 &&
          std::fabs(renderVehicles[0].x - 80.0f) < 0.001f &&
+         !renderVehicles[0].attitudeKnown && std::fabs(renderVehicles[0].rotationX) < 0.001f &&
+         std::fabs(renderVehicles[0].rotationY) < 0.001f &&
+         std::fabs(renderVehicles[0].rotationZ - 90.0f) < 0.001f &&
          std::fabs(renderVehicles[0].angle - 90.0f) < 0.001f &&
          std::fabs(renderVehicles[0].health - 875.0f) < 0.001f,
          "StreamInVehicle render snapshot wrong");
@@ -6081,6 +6981,9 @@ void testWorldStateReducer() {
   const auto driverVehicle = world.renderableVehicles();
   expect(driverVehicle.size() == 1 && driverVehicle[0].dynamicSyncKnown && driverVehicle[0].driverKnown &&
          driverVehicle[0].driverId == 7 && std::fabs(driverVehicle[0].x - 125.0f) < 0.001f &&
+         driverVehicle[0].attitudeKnown && std::fabs(driverVehicle[0].rotationX) < 0.2f &&
+         std::fabs(driverVehicle[0].rotationY) < 0.2f &&
+         std::fabs(driverVehicle[0].rotationZ - 90.0f) < 0.2f &&
          std::fabs(driverVehicle[0].angle - 90.0f) < 0.2f &&
          std::fabs(driverVehicle[0].health - 875.0f) < 0.001f &&
          world.renderablePlayers().size() == 1 && world.renderablePlayers()[0].inVehicle &&
@@ -6133,6 +7036,9 @@ void testWorldStateReducer() {
   expect(unoccupiedVehicle.size() == 1 && unoccupiedVehicle[0].dynamicSyncKnown &&
          !unoccupiedVehicle[0].driverKnown && unoccupiedVehicle[0].driverId == 0 &&
          std::fabs(unoccupiedVehicle[0].x - 225.0f) < 0.001f &&
+         // Packet-209 has no quaternion: retain the last Packet-200 DFF
+         // attitude rather than treating raw direction as guessed Euler angles.
+         unoccupiedVehicle[0].attitudeKnown && std::fabs(unoccupiedVehicle[0].rotationZ - 90.0f) < 0.2f &&
          std::fabs(unoccupiedVehicle[0].angle - 90.0f) < 0.2f &&
          std::fabs(unoccupiedVehicle[0].health - 640.0f) < 0.001f &&
          world.renderablePlayers().empty(),
@@ -6155,6 +7061,10 @@ void testWorldStateReducer() {
   const auto mutatedVehicle = world.renderableVehicles();
   expect(mutatedVehicle.size() == 1 && std::fabs(mutatedVehicle[0].x - 17.0f) < 0.001f &&
          std::fabs(mutatedVehicle[0].health - 612.5f) < 0.001f &&
+         // RPC-160 is yaw-only, so it must clear a stale full driver attitude.
+         !mutatedVehicle[0].attitudeKnown && std::fabs(mutatedVehicle[0].rotationX) < 0.001f &&
+         std::fabs(mutatedVehicle[0].rotationY) < 0.001f &&
+         std::fabs(mutatedVehicle[0].rotationZ - 90.0f) < 0.001f &&
          std::fabs(mutatedVehicle[0].angle - 90.0f) < 0.001f,
          "vehicle mutator state wrong");
   expect(!world.applyRpc(makeVehicleFloatRpc(147, 90, -1.0f), event) &&
@@ -6218,11 +7128,303 @@ void testWorldStateReducer() {
          "pre-join name-tag cleanup failed");
 }
 
+
+void testSendDeathMessageReducer() {
+  samp::state::WorldState world;
+  samp::state::RpcEvent event;
+
+  const auto exact = makeSendDeathMessage(42u, 7u, 24u);
+  expect(exact == std::vector<uint8_t>({20u, 55u, 42u, 0u, 7u, 0u, 24u}) &&
+         samp::rpc::summarize(exact).find("SendDeathMessage") != std::string::npos,
+         "RPC-55 fixed kill-feed wire/decoder label changed");
+  expect(world.applyRpc(exact, event) && event.kind == samp::state::RpcEventKind::DeathMessageChanged &&
+         event.playerId == 7u && !world.localPlayer().healthKnown,
+         "RPC-55 must create presentation feed only, not local death state");
+  const auto first = world.recentDeathMessages();
+  expect(first.size() == 1u && first[0].hasKiller && first[0].killerId == 42u &&
+         first[0].victimId == 7u && first[0].reason == 24u && first[0].expiresAtMs != 0u,
+         "RPC-55 retained kill-feed values changed");
+
+  // INVALID_PLAYER_ID is the source writer's no-killer sentinel, not an
+  // invalid packet and not a fake player/weapon state.
+  expect(world.applyRpc(makeSendDeathMessage(0xFFFFu, 42u, 53u), event) &&
+         event.kind == samp::state::RpcEventKind::DeathMessageChanged,
+         "RPC-55 world/no-killer form rejected");
+  const auto feed = world.recentDeathMessages();
+  expect(feed.size() == 2u && !feed.back().hasKiller && feed.back().killerId == 0xFFFFu &&
+         feed.back().victimId == 42u && feed.back().reason == 53u,
+         "RPC-55 no-killer sentinel was not preserved exactly");
+
+  auto trailing = exact;
+  trailing.push_back(0u);
+  auto shortBody = exact;
+  shortBody.pop_back();
+  expect(!world.applyRpc(trailing, event) && event.kind == samp::state::RpcEventKind::Malformed &&
+         !world.applyRpc(shortBody, event) && event.kind == samp::state::RpcEventKind::Malformed &&
+         !world.applyRpc(makeSendDeathMessage(3u, 0xFFFFu, 1u), event) &&
+         event.kind == samp::state::RpcEventKind::Malformed && world.recentDeathMessages().size() == 2u,
+         "RPC-55 malformed/trailing/invalid-victim input must fail atomically");
+
+  // UI export has a fixed tail independent of a server feed flood; raw reason
+  // remains opaque through all valid uint8 values.
+  for (uint8_t index = 0; index < 12u; ++index) {
+    expect(world.applyRpc(makeSendDeathMessage(index, static_cast<uint16_t>(100u + index),
+                                               static_cast<uint8_t>(255u - index)), event),
+           "RPC-55 bounded feed fixture rejected");
+  }
+  const auto bounded = world.recentDeathMessages(99u);
+  expect(bounded.size() == 8u && bounded.back().reason == 244u &&
+         bounded.back().victimId == 111u,
+         "RPC-55 renderer feed must cap the newest opaque rows");
+}
+
+
+void testSetVehicleParamsReducer() {
+  samp::state::WorldState world;
+  samp::state::RpcEvent event;
+  std::array<uint8_t, 16> initial{};
+  initial.fill(0xFFu);
+  initial[0] = 1u;  // engine
+  initial[1] = 0u;  // lights
+  initial[7] = 1u;  // siren
+  const auto exact = makeSetVehicleParams(77u, initial);
+  expect(exact.size() == 20u && exact[0] == 20u && exact[1] == 24u &&
+         exact[2] == 77u && exact[3] == 0u && exact[4] == 1u &&
+         exact[5] == 0u && exact[11] == 1u &&
+         samp::rpc::summarize(exact).find("SetVehicleParams") != std::string::npos,
+         "RPC-24 wire vector/decoder label changed");
+
+  // An RPC-24 command cannot allocate a proxy or target an arbitrary raw ID.
+  expect(!world.applyRpc(exact, event) && event.kind == samp::state::RpcEventKind::Ignored,
+         "RPC-24 must reject an unknown/unstreamed vehicle");
+  auto shortBody = exact;
+  shortBody.pop_back();
+  expect(!world.applyRpc(shortBody, event) && event.kind == samp::state::RpcEventKind::Malformed,
+         "RPC-24 body must be exactly vehicle ID plus sixteen bytes");
+  auto invalid = exact;
+  invalid[4] = 2u;
+  expect(!world.applyRpc(invalid, event) && event.kind == samp::state::RpcEventKind::Malformed,
+         "RPC-24 values outside signed -1/0/1 must fail closed");
+  invalid[4] = 0x80u;
+  expect(!world.applyRpc(invalid, event) && event.kind == samp::state::RpcEventKind::Malformed,
+         "RPC-24 malformed high bytes must not depend on signed-char conversion");
+
+  expect(world.applyRpc(makeStreamInVehicle(77, 411, 10.0f, 20.0f, 5.0f, 90.0f), event),
+         "RPC-24 fixture vehicle stream rejected");
+  expect(world.applyRpc(exact, event) && event.kind == samp::state::RpcEventKind::VehicleChanged &&
+         event.vehicleParametersUpdated && event.playerId == 77u && world.findVehicle(77) != nullptr &&
+         world.findVehicle(77)->parameters.known &&
+         world.findVehicle(77)->parameters.value(samp::state::VehicleParameter::Engine) == 1 &&
+         world.findVehicle(77)->parameters.value(samp::state::VehicleParameter::Lights) == 0 &&
+         world.findVehicle(77)->parameters.value(samp::state::VehicleParameter::Siren) == 1 &&
+         world.findVehicle(77)->parameters.value(samp::state::VehicleParameter::Doors) == -1 &&
+         !samp::state::isRecipientVehicleEntryLocked(*world.findVehicle(77)),
+         "RPC-24 must decode raw 0xFF as signed explicit unset in its full snapshot");
+  const auto presentation = world.renderableVehicles();
+  const auto presented = std::find_if(presentation.begin(), presentation.end(),
+                                      [](const samp::state::RemoteVehicleView& vehicle) {
+                                        return vehicle.id == 77u;
+                                      });
+  expect(presented != presentation.end() && presented->parameters.known &&
+         presented->parameters.value(samp::state::VehicleParameter::Engine) == 1 &&
+         presented->parameters.value(samp::state::VehicleParameter::Siren) == 1,
+         "RPC-24 facts must cross the bounded vehicle presentation snapshot");
+
+  std::array<uint8_t, 16> partial{};
+  partial.fill(0xFFu);
+  partial[1] = 1u;
+  expect(world.applyRpc(makeSetVehicleParams(77u, partial), event) &&
+         event.kind == samp::state::RpcEventKind::VehicleChanged && event.vehicleParametersUpdated &&
+         world.findVehicle(77)->parameters.value(samp::state::VehicleParameter::Engine) == -1 &&
+         world.findVehicle(77)->parameters.value(samp::state::VehicleParameter::Lights) == 1 &&
+         world.findVehicle(77)->parameters.value(samp::state::VehicleParameter::Siren) == -1,
+         "RPC-24 must atomically replace prior facts, including explicit signed -1 unsets");
+  std::array<uint8_t, 16> allUnset{};
+  allUnset.fill(0xFFu);
+  expect(world.applyRpc(makeSetVehicleParams(77u, allUnset), event) &&
+         event.kind == samp::state::RpcEventKind::VehicleChanged && event.vehicleParametersUpdated &&
+         world.findVehicle(77)->parameters.known &&
+         world.findVehicle(77)->parameters.value(samp::state::VehicleParameter::Lights) == -1,
+         "all-unset RPC-24 must commit an explicit full unset snapshot");
+  expect(world.applyRpc(makeSetVehicleParams(77u, allUnset), event) &&
+         event.kind == samp::state::RpcEventKind::Ignored && !event.vehicleParametersUpdated,
+         "duplicate all-unset RPC-24 snapshot must not manufacture a vehicle change");
+
+  // Even without an explicit StreamOut, a new StreamIn for the same raw ID is
+  // a fresh server entity baseline. Both lifecycle paths must clear recipient
+  // parameter facts before a later ID reuse.
+  expect(world.applyRpc(makeStreamInVehicle(77, 451, 30.0f, 20.0f, 5.0f, 0.0f), event) &&
+         !world.findVehicle(77)->parameters.known &&
+         world.findVehicle(77)->parameters.value(samp::state::VehicleParameter::Engine) == -1,
+         "RPC-24 state must clear on same-ID StreamIn lifecycle replacement");
+  expect(world.applyRpc(makeSetVehicleParams(77u, initial), event) &&
+         world.findVehicle(77)->parameters.known &&
+         world.applyRpc(makeStreamOutVehicle(77u), event) && world.findVehicle(77) == nullptr &&
+         world.applyRpc(makeStreamInVehicle(77, 411, 10.0f, 20.0f, 5.0f, 90.0f), event) &&
+         !world.findVehicle(77)->parameters.known,
+         "RPC-24 state must clear through StreamOut/raw-ID reuse");
+}
+
+void testSetVehicleParamsForPlayerReducer() {
+  samp::state::WorldState world;
+  samp::state::RpcEvent event;
+  const auto exact = makeSetVehicleParamsForPlayer(91u, 1u, 1u);
+  expect(exact == std::vector<uint8_t>({20u, 161u, 91u, 0u, 1u, 1u}) &&
+         samp::rpc::summarize(exact).find("SetVehicleParamsForPlayer") != std::string::npos,
+         "legacy RPC-161 vehicle parameter wire vector/decoder label changed");
+  expect(!world.applyRpc(exact, event) && event.kind == samp::state::RpcEventKind::Ignored,
+         "RPC-161 must not allocate an unstreamed vehicle proxy");
+  auto shortBody = exact;
+  shortBody.pop_back();
+  expect(!world.applyRpc(shortBody, event) && event.kind == samp::state::RpcEventKind::Malformed,
+         "RPC-161 must require exact u16/objective/door-lock body");
+  expect(!world.applyRpc(makeSetVehicleParamsForPlayer(91u, 2u, 0u), event) &&
+         event.kind == samp::state::RpcEventKind::Malformed,
+         "RPC-161 invalid objective bit must fail closed");
+  expect(!world.applyRpc(makeSetVehicleParamsForPlayer(91u, 0u, 2u), event) &&
+         event.kind == samp::state::RpcEventKind::Malformed,
+         "RPC-161 invalid door-lock bit must fail closed");
+
+  expect(world.applyRpc(makeStreamInVehicle(91, 411, 10.0f, 20.0f, 5.0f, 90.0f), event),
+         "RPC-161 fixture vehicle stream rejected");
+  std::array<uint8_t, 16> params{};
+  params.fill(0xFFu);
+  params[0] = 1u;
+  params[1] = 1u;
+  params[7] = 1u;
+  expect(world.applyRpc(makeSetVehicleParams(91u, params), event),
+         "RPC-161 baseline RPC-24 merge rejected");
+  expect(world.applyRpc(exact, event) && event.kind == samp::state::RpcEventKind::VehicleChanged &&
+         event.vehicleParametersUpdated && world.findVehicle(91)->parameters.known &&
+         world.findVehicle(91)->parameters.value(samp::state::VehicleParameter::Objective) == 1 &&
+         world.findVehicle(91)->parameters.value(samp::state::VehicleParameter::Doors) == 1 &&
+         samp::state::isRecipientVehicleEntryLocked(*world.findVehicle(91)) &&
+         world.findVehicle(91)->parameters.value(samp::state::VehicleParameter::Engine) == 1 &&
+         world.findVehicle(91)->parameters.value(samp::state::VehicleParameter::Lights) == 1 &&
+         world.findVehicle(91)->parameters.value(samp::state::VehicleParameter::Siren) == 1,
+         "RPC-161 must update only recipient objective/door-lock fields");
+  std::array<uint8_t, 16> globalPartial{};
+  globalPartial.fill(0xFFu);
+  globalPartial[0] = 0u;
+  expect(world.applyRpc(makeSetVehicleParams(91u, globalPartial), event) &&
+         world.findVehicle(91)->parameters.value(samp::state::VehicleParameter::Engine) == 0 &&
+         world.findVehicle(91)->parameters.value(samp::state::VehicleParameter::Objective) == -1 &&
+         world.findVehicle(91)->parameters.value(samp::state::VehicleParameter::Doors) == -1 &&
+         !samp::state::isRecipientVehicleEntryLocked(*world.findVehicle(91)),
+         "later full RPC-24 snapshot must clear prior recipient objective/door-lock unsets");
+  expect(world.applyRpc(exact, event) && event.kind == samp::state::RpcEventKind::VehicleChanged &&
+         event.vehicleParametersUpdated,
+         "legacy RPC-161 must reapply its two recipient-local overrides after RPC-24 replacement");
+  expect(world.applyRpc(exact, event) && event.kind == samp::state::RpcEventKind::Ignored &&
+         !event.vehicleParametersUpdated,
+         "duplicate RPC-161 must not manufacture a parameter event");
+  expect(world.applyRpc(makeSetVehicleParamsForPlayer(91u, 0u, 0u), event) &&
+         world.findVehicle(91)->parameters.value(samp::state::VehicleParameter::Objective) == 0 &&
+         world.findVehicle(91)->parameters.value(samp::state::VehicleParameter::Doors) == 0 &&
+         !samp::state::isRecipientVehicleEntryLocked(*world.findVehicle(91)),
+         "RPC-161 recipient values must overwrite their two authoritative fields");
+  expect(world.applyRpc(makeStreamOutVehicle(91u), event) &&
+         world.applyRpc(makeStreamInVehicle(91, 411, 10.0f, 20.0f, 5.0f, 90.0f), event) &&
+         !world.findVehicle(91)->parameters.known,
+         "RPC-161 state must clear on StreamOut/raw-ID reuse");
+}
+
+void testSetVehicleVelocityReducer() {
+  samp::state::WorldState world;
+  samp::state::RpcEvent event;
+
+  const auto exactLinear = makeSetVehicleVelocity(0u, 0.25f, -0.5f, 0.2f);
+  expect(exactLinear == std::vector<uint8_t>({20u, 91u, 0u, 0u, 0u, 0x80u, 0x3Eu,
+                                               0u, 0u, 0u, 0xBFu, 0xCDu, 0xCCu,
+                                               0x4Cu, 0x3Eu}),
+         "RPC-91 linear wire fixture changed");
+  expect(samp::rpc::summarize(exactLinear).find("SetVehicleVelocity") != std::string::npos,
+         "RPC-91 decoder label missing");
+
+  // The ID-less command cannot allocate/guess a vehicle before server stream +
+  // authoritative recipient driver seating exist.
+  expect(!world.applyRpc(exactLinear, event) && event.kind == samp::state::RpcEventKind::Ignored,
+         "RPC-91 without local driver context must fail closed");
+  expect(world.applyRpc(makeStreamInVehicle(77, 411, 10.0f, 20.0f, 5.0f, 90.0f), event) &&
+         world.applyRpc(makeStreamInVehicle(78, 451, 15.0f, 20.0f, 5.0f, 90.0f), event),
+         "RPC-91 fixture vehicle streams rejected");
+  expect(!world.applyRpc(exactLinear, event) && !world.findVehicle(77)->linearVelocityKnown &&
+         !world.findVehicle(78)->linearVelocityKnown,
+         "RPC-91 must not choose an arbitrary streamed vehicle");
+  expect(world.applyRpc(makePutPlayerInVehicle(77, 1), event),
+         "RPC-91 passenger fixture seating rejected");
+  expect(!world.applyRpc(exactLinear, event) && !world.findVehicle(77)->linearVelocityKnown,
+         "RPC-91 must not target a passenger vehicle");
+  expect(world.applyRpc(makePutPlayerInVehicle(77, 0), event),
+         "RPC-91 driver fixture seating rejected");
+
+  expect(world.applyRpc(exactLinear, event) &&
+         event.kind == samp::state::RpcEventKind::VehicleChanged && event.playerId == 77 &&
+         event.localVehicleVelocityUpdated && !event.localVehicleVelocityAngular &&
+         world.findVehicle(77)->linearVelocityKnown &&
+         std::fabs(world.findVehicle(77)->linearVelocityX - 0.25f) < 0.0001f &&
+         std::fabs(world.findVehicle(77)->linearVelocityY + 0.5f) < 0.0001f &&
+         std::fabs(world.findVehicle(77)->linearVelocityZ - 0.2f) < 0.0001f &&
+         !world.findVehicle(77)->angularVelocityKnown && !world.findVehicle(78)->linearVelocityKnown,
+         "RPC-91 linear command must update only the recipient local driver vehicle");
+  const uint64_t linearRevision = world.findVehicle(77)->linearVelocityRevision;
+
+  const auto angular = makeSetVehicleVelocity(1u, 0.0f, 0.0f, 2.0f);
+  expect(world.applyRpc(angular, event) && event.localVehicleVelocityUpdated &&
+         event.localVehicleVelocityAngular && world.findVehicle(77)->angularVelocityKnown &&
+         std::fabs(world.findVehicle(77)->angularVelocityZ - 2.0f) < 0.0001f &&
+         world.findVehicle(77)->linearVelocityRevision == linearRevision &&
+         std::fabs(world.findVehicle(77)->linearVelocityZ - 0.2f) < 0.0001f,
+         "RPC-91 angular selection must not overwrite retained linear velocity");
+  const uint64_t angularRevision = world.findVehicle(77)->angularVelocityRevision;
+
+  // All malformed vectors/types fail atomically and retain both prior channels.
+  auto trailing = exactLinear;
+  trailing.push_back(0u);
+  expect(!world.applyRpc(trailing, event) && event.kind == samp::state::RpcEventKind::Malformed &&
+         world.findVehicle(77)->linearVelocityRevision == linearRevision,
+         "RPC-91 trailing payload must fail closed");
+  expect(!world.applyRpc(makeSetVehicleVelocity(2u, 0.0f, 0.0f, 0.0f), event) &&
+         event.kind == samp::state::RpcEventKind::Malformed &&
+         world.findVehicle(77)->angularVelocityRevision == angularRevision,
+         "RPC-91 unknown turn selector must fail closed");
+  expect(!world.applyRpc(makeSetVehicleVelocity(0u, std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f), event) &&
+         event.kind == samp::state::RpcEventKind::Malformed &&
+         world.findVehicle(77)->linearVelocityRevision == linearRevision,
+         "RPC-91 non-finite vector must fail closed");
+  expect(!world.applyRpc(makeSetVehicleVelocity(0u, 101.0f, 0.0f, 0.0f), event) &&
+         event.kind == samp::state::RpcEventKind::Malformed &&
+         world.findVehicle(77)->linearVelocityRevision == linearRevision,
+         "RPC-91 out-of-envelope vector must fail closed");
+
+  // A new StreamIn lifecycle for a raw ID clears retained recipient directives;
+  // stream-out must do the same so a later reused ID cannot inherit a command.
+  expect(world.applyRpc(makeStreamOutVehicle(77), event) && world.findVehicle(77) == nullptr,
+         "RPC-91 stream-out must remove the implicit target from the usable vehicle view");
+  expect(!world.applyRpc(exactLinear, event),
+         "RPC-91 cannot target a stream-out vehicle");
+  expect(world.applyRpc(makeStreamInVehicle(77, 411, 10.0f, 20.0f, 5.0f, 90.0f), event) &&
+         !world.findVehicle(77)->linearVelocityKnown && !world.findVehicle(77)->angularVelocityKnown,
+         "RPC-91 stream-in ID reuse must start directive-free");
+
+  // Documented train exclusion is enforced from the authoritative streamed
+  // model, not a client-nominated vehicle ID or heuristic coordinate test.
+  samp::state::WorldState trainWorld;
+  expect(trainWorld.applyRpc(makeStreamInVehicle(91, 537, 0.0f, 0.0f, 5.0f, 0.0f), event) &&
+         trainWorld.applyRpc(makePutPlayerInVehicle(91, 0), event) &&
+         !trainWorld.applyRpc(exactLinear, event) && !trainWorld.findVehicle(91)->linearVelocityKnown,
+         "RPC-91 must ignore documented train models");
+}
+
 }  // namespace
 
 int main() {
+  testLegacyHandshakeBuilders();
   testReliableAndAck();
   testUnreliableSequencedTransport();
+  testReliableMessageTransportGate();
+  testReliableOrderedTransportGate();
+  testRakNetMalformedDatagramSmoke();
   testPlayerFootSyncBuilder();
   testPlayerVehicleSyncBuilder();
   testPlayerAimSyncBuilder();
@@ -6232,6 +7434,7 @@ int main() {
   testRemoteBulletBroadcastDecoder();
   testRemoteOnFootBroadcastDecoder();
   testRemoteVehicleBroadcastDecoder();
+  testRemoteTrailerBroadcastDecoder();
   testRemotePassengerBroadcastDecoder();
   testNativeInputAndLocalPreview();
   testCompressedU32();
@@ -6251,6 +7454,10 @@ int main() {
   testAttachedObjectEditReducer();
   testSessionSafetyWithoutSocket();
   testRenderableWorldBoundary();
+  testSetVehicleParamsReducer();
+  testSetVehicleParamsForPlayerReducer();
+  testSetVehicleVelocityReducer();
+  testSendDeathMessageReducer();
   testWorldStateReducer();
   std::puts("raknet codec/state regression tests: OK");
   return 0;

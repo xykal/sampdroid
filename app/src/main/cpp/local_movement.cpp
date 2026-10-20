@@ -40,9 +40,10 @@ float speedFor(uint16_t actions) {
 }
 
 bool floorNear(const gta::world::CollisionWorld& collisionWorld, float x, float y, float centerZ,
-               int32_t interior, gta::col::FloorHit& floor) {
+               int32_t interior, gta::col::FloorHit& floor,
+               const std::vector<gta::removal::Directive>* removals) {
   return collisionWorld.findHighestFloor(x, y, centerZ - kMaxGroundDrop, centerZ + kStepUp,
-                                        interior, floor);
+                                        interior, floor, removals);
 }
 
 }  // namespace
@@ -79,7 +80,7 @@ bool resetFromAuthoritative(const gta::col::Vec3& position, float headingDegrees
 
 StepResult advance(const gta::world::CollisionWorld& collisionWorld, const input::TouchIntent& intent,
                    float headingDegrees, float deltaSeconds, LocalMotionState& state,
-                   float serverGravity) {
+                   float serverGravity, const std::vector<gta::removal::Directive>* removals) {
   StepResult result;
   if (!state.initialized || !finitePosition(state.position) || !std::isfinite(state.headingDegrees) ||
       !std::isfinite(state.verticalVelocity) || !isSupportedServerGravity(serverGravity)) {
@@ -105,7 +106,7 @@ StepResult advance(const gta::world::CollisionWorld& collisionWorld, const input
 
   gta::col::FloorHit currentFloor;
   const bool hasCurrentFloor = floorNear(collisionWorld, next.position.x, next.position.y,
-                                         next.position.z, next.interior, currentFloor);
+                                         next.position.z, next.interior, currentFloor, removals);
   if (next.grounded || std::fabs(next.verticalVelocity) <= kEpsilon) {
     if (!hasCurrentFloor) {
       result.status = StepStatus::MissingGround;
@@ -142,7 +143,7 @@ StepResult advance(const gta::world::CollisionWorld& collisionWorld, const input
   float targetY = next.position.y + (rightY * moveX + forwardY * moveY) * distance;
   const gta::world::HorizontalMoveResult horizontal = collisionWorld.resolveHorizontalMove(
       next.position.x, next.position.y, targetX, targetY, next.position.z, kPlayerCollisionRadius,
-      kPlayerCollisionHeight, next.interior);
+      kPlayerCollisionHeight, next.interior, removals);
   if (!horizontal.valid) {
     result.status = StepStatus::InvalidState;
     return result;
@@ -152,7 +153,8 @@ StepResult advance(const gta::world::CollisionWorld& collisionWorld, const input
 
   if (next.grounded) {
     gta::col::FloorHit targetFloor;
-    if (!floorNear(collisionWorld, targetX, targetY, next.position.z, next.interior, targetFloor)) {
+    if (!floorNear(collisionWorld, targetX, targetY, next.position.z, next.interior, targetFloor,
+                   removals)) {
       // Do not turn an absent map/collision member into client-authored free
       // coordinates. Streaming must load a valid floor before movement resumes.
       result.status = StepStatus::MissingGround;
@@ -169,7 +171,8 @@ StepResult advance(const gta::world::CollisionWorld& collisionWorld, const input
     const float targetZ = previousZ + next.verticalVelocity * stepSeconds;
     gta::col::FloorHit landingFloor;
     const bool hasLandingFloor = floorNear(collisionWorld, targetX, targetY,
-                                           std::max(previousZ, targetZ), next.interior, landingFloor);
+                                           std::max(previousZ, targetZ), next.interior, landingFloor,
+                                           removals);
     if (next.verticalVelocity <= 0.0f && hasLandingFloor &&
         landingFloor.z <= previousZ + kStepUp && landingFloor.z >= targetZ - kEpsilon) {
       next.position.z = landingFloor.z;

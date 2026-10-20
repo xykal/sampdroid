@@ -9,7 +9,7 @@ Native client core (C++17, ARMv7 + ARM64)
  ├─ SA-MP query protocol
  ├─ RakNet 2.x codec                         ← deterministic test vectors
  │   ├─ bitstream / ACK / reliability
- │   └─ split reassembly
+ │   └─ reliable receipt + split reassembly + inbound reliable-ordered gates
  ├─ Persistent session + RPC/world state
  ├─ Player + vehicle sync encoder/remote broadcast decoder
  ├─ bounded dialog StringCompressor decoder + reliable responder
@@ -37,14 +37,18 @@ text serta resolver dinamis stock opsional `data/vehicles.ide`/`data/peds.ide`
 yang tidak tercantum di `gta.dat`, `parent_streamN.ipl` `bnry` relevan, dan saat
 pengguna meminta sync, catalog `.col` IMG yang dibatasi 256 member/32 MiB dengan
 descriptor bounded;
-native menduplikasi descriptor dan merakit runtime random-access/read-only. Ia
-bukan extractor RAR, repack, atau download pipeline.
+native menduplikasi descriptor dan merakit runtime random-access/read-only.
+Installer Kotlin yang terpisah dapat membaca ZIP lokal atau URL HTTPS milik
+pemain ke staging SAF tujuan, memverifikasi/menginspeksi hasil ekstrak, lalu
+baru meminta mount native read-only. Runtime native sendiri bukan extractor
+RAR/EXE, repacker, atau host katalog/download asset GTA.
 
 ## Session yang sudah ada di `main`
 
 `raknet_session` mempertahankan satu socket UDP yang dipilih pengguna setelah
-`ClientJoin`, membawa message/order counter, split reassembler, `WorldState`, ACK
-inbound, ACK outbound, dan retry queue bounded. Saat idle lima detik tanpa
+`ClientJoin`, membawa message/order counter, gate receipt reliable bounded,
+split reassembler, gate inbound `RELIABLE_ORDERED`, `WorldState`, ACK inbound,
+ACK outbound, dan retry queue bounded. Saat idle lima detik tanpa
 reliable outbound yang pending, session mengirim reliable transport keepalive
 `ID_DETECT_LOST_CONNECTIONS`; inbound `ID_INTERNAL_PING` dibalas dengan
 unreliable `ID_CONNECTED_PONG`. Android shell memanggil JNI ini dari Kotlin IO
@@ -52,8 +56,8 @@ coroutine; selama detail server terbuka, poll UDP berjalan otomatis dan
 berhenti/disconnect saat dialog ditutup.
 
 Fondasi encoder `OnFootSync` sudah ada: payload client→server yang diuji,
-`UNRELIABLE_SEQUENCED` channel 1, rate gate `PlayerInit`, dan spawn/session
-safety gate. Spawn gate sekarang mencakup `RequestSpawn` → respons → `PlayerSpawn`
+`UNRELIABLE_SEQUENCED` channel 0 (counter sequenced tetap terpisah dari
+counter RPC reliable-ordered), rate gate `PlayerInit`, dan spawn/session safety gate. Spawn gate sekarang mencakup `RequestSpawn` → respons → `PlayerSpawn`
 (52) → transport ACK, sementara `WorldState` menahan template spawn/posisi/vitals
 lokal terverifikasi. Reducer juga menyimpan `ResetPlayerWeapons`/`GivePlayerWeapon`/
 `SetPlayerAmmo`/`SetPlayerArmedWeapon` sebagai raw weapon-ID/ammo + armed fact bounded. Armed fact itu mengisi weapon
@@ -163,8 +167,8 @@ bukan diganti gravity lokal tebak. Untuk seat driver 0 yang
 sudah diotorisasi `PutPlayerInVehicle`, bridge terpisah mereset dari transform
 `StreamInVehicle`, menjalankan pilot kinematic gas/mundur-steer-rem terhadap
 floor COL dan sweep statik, lalu membangun Packet-200 client-originated tepat
-64 byte. Session tetap menjadi satu-satunya sender USeq channel-1 rate-gated
-(`OnFootRate`/`InCarRate`); freeze, world collision kosong, server velocity,
+64 byte. Session tetap menjadi satu-satunya sender USeq channel-0 rate-gated
+(dengan counter sequenced terpisah dari RPC ordered; `OnFootRate`/`InCarRate`); freeze, world collision kosong, server velocity,
 stream vehicle hilang, dan input/state invalid berhenti fail-closed. Passenger
 menggunakan sender Packet-211 terpisah tanpa prediction; koreksi posisi/velocity
 atau mutator vehicle server membuang prediction driver tanpa memutasi
@@ -177,7 +181,10 @@ menahan hanya prediction exterior pada rectangle maxX/minX/maxY/minY server;
 ia tidak menjadi force push-back, perubahan COL, atau batas interior. `SetPlayerVirtualWorld` (48) non-DL juga disimpan
 sebagai `i32` server-routing/HUD fact, tetapi sengaja tidak disamakan dengan
 interior atau dijadikan filter collision/renderer lokal: server-lah yang
-menentukan entity mana yang di-stream untuk recipient tersebut. Handling/suspension/damage GTA, drive-by/trailer,
+menentukan entity mana yang di-stream untuk recipient tersebut. Packet-210
+remote sekarang boleh memperbarui transform/attitude visual trailer yang sudah
+streamed, tetapi tidak memberi coupling atau sender/pilot trailer lokal.
+Handling/suspension/damage GTA, drive-by, outbound/local trailer,
 eviction/streaming COL sekitar player untuk budget perangkat rendah, dan
 validasi server nyata masih belum ada.
 

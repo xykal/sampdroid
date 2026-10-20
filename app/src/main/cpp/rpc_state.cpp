@@ -17,6 +17,9 @@ namespace {
 constexpr uint8_t kIdRpc = 20;
 constexpr uint8_t kSetPlayerName = 11;
 constexpr uint8_t kPlayerBeginObjectSelect = 27;
+// Current open.mp SetVehicleParams writer: u16 VehicleID followed by sixteen
+// signed int8 vehicle parameter values (serialized as raw bytes).
+constexpr uint8_t kSetVehicleParams = 24;
 constexpr uint8_t kSetPlayerTime = 29;
 constexpr uint8_t kTogglePlayerClock = 30;
 constexpr uint8_t kPlayerBeginAttachedObjectEdit = 116;
@@ -24,6 +27,9 @@ constexpr uint8_t kPlayerBeginObjectEdit = 117;
 constexpr uint8_t kPlayerCancelObjectEdit = 28;
 constexpr uint8_t kSetVehiclePosition = 159;
 constexpr uint8_t kSetVehicleZAngle = 160;
+// Legacy per-recipient objective/door-lock RPC, separate from the sixteen
+// signed-field SetVehicleParamsEx-compatible RPC 24.
+constexpr uint8_t kSetVehicleParamsForPlayer = 161;
 constexpr uint8_t kSetPlayerPosition = 12;
 constexpr uint8_t kSetPlayerPositionFindZ = 13;
 constexpr uint8_t kSetPlayerHealth = 14;
@@ -38,10 +44,13 @@ constexpr uint8_t kPlayerStreamIn = 32;
 constexpr uint8_t kPlayerShowTextLabel = 36;
 constexpr uint8_t kPlayAudioStream = 41;
 constexpr uint8_t kStopAudioStream = 42;
+// RemoveBuildingForPlayer: uint32 model (-1 is wildcard) + four IEEE floats.
+constexpr uint8_t kRemoveBuilding = 43;
 constexpr uint8_t kCreateObject = 44;
 // Core non-DL/open.mp writer: signed 32-bit world ID. It is distinct from
 // GTA interior IDs and is retained only as server state/presentation.
 constexpr uint8_t kSetPlayerVirtualWorld = 48;
+constexpr uint8_t kSendDeathMessage = 55;
 constexpr uint8_t kSetPlayerCameraPosition = 157;
 constexpr uint8_t kSetPlayerCameraLookAt = 158;
 constexpr uint8_t kSetPlayerCameraBehindPlayer = 162;
@@ -54,6 +63,12 @@ constexpr uint8_t kDestroyObject = 47;
 constexpr uint8_t kDisableCheckpoint = 37;
 constexpr uint8_t kSetRaceCheckpoint = 38;
 constexpr uint8_t kDisableRaceCheckpoint = 39;
+// Current open.mp core.hpp calls RPC 40 PlayerClose. It has no body and means
+// the server has requested that this recipient terminate its client session.
+constexpr uint8_t kPlayerClose = 40;
+// Legacy ConnectionRejected has exactly one byte: 1=version, 2=nickname,
+// 3=mod version, 4=server cannot allocate a player slot.
+constexpr uint8_t kConnectionRejected = 130;
 constexpr uint8_t kPlayerHideTextLabel = 58;
 constexpr uint8_t kSetPlayerMapIcon = 56;
 constexpr uint8_t kSetPlayerChatBubble = 59;
@@ -78,6 +93,9 @@ constexpr uint8_t kSetPlayerSpecialAction = 88;
 constexpr uint8_t kApplyPlayerAnimation = 86;
 constexpr uint8_t kClearPlayerTasks = 87;
 constexpr uint8_t kSetPlayerVelocity = 90;
+// Recipient-local SetVehicleVelocity has no VehicleID. Type 0 is linear and
+// Type 1 is angular in open.mp's VehicleVelocitySetType enum.
+constexpr uint8_t kSetVehicleVelocity = 91;
 constexpr uint8_t kSendClientMessage = 93;
 constexpr uint8_t kSetWorldTime = 94;
 constexpr uint8_t kCreatePickup = 95;
@@ -141,6 +159,9 @@ constexpr size_t kMaxScoreboardEntries = 1000;
 constexpr size_t kMaxNameTagVisibilityOverrides = 1000;
 constexpr uint32_t kMaxChatBubbleLifetimeMs = 3'600'000u;
 constexpr float kMaxChatBubbleDrawDistance = 50'000.0f;
+constexpr size_t kMaxDeathMessages = 16;
+constexpr size_t kHardHudDeathMessageLimit = 8;
+constexpr uint64_t kDeathMessagePresentationLifetimeMs = 8'000u;
 // Packet-203 has no explicit stop event. Keep its renderer-only direction
 // marker short-lived rather than leaving a stale aim pose after a remote player
 // releases AIM or stops syncing it.
@@ -178,6 +199,16 @@ constexpr uint16_t kGangZonePoolSize = 1024u;
 constexpr size_t kMaxTrackedMenus = 128u;
 constexpr size_t kMenuFixedTextBytes = 32u;
 constexpr uint32_t kMaxCameraInterpolationMs = 3'600'000u;
+
+const char* connectionRejectionSummary(uint8_t reason) {
+  switch (reason) {
+    case 1u: return "ConnectionRejected: versi client tidak cocok";
+    case 2u: return "ConnectionRejected: nickname ditolak server";
+    case 3u: return "ConnectionRejected: versi/mod client ditolak server";
+    case 4u: return "ConnectionRejected: slot pemain server tidak tersedia";
+    default: return nullptr;
+  }
+}
 
 std::string readString8(raknet::BitReader& reader, size_t maxLength) {
   const size_t length = static_cast<uint8_t>(reader.readBits(8));
@@ -499,6 +530,88 @@ bool validVelocity(float x, float y, float z) {
   const double lengthSquared = static_cast<double>(x) * x + static_cast<double>(y) * y +
                                static_cast<double>(z) * z;
   return std::isfinite(lengthSquared) && lengthSquared <= 100.0 * 100.0;
+}
+
+uint64_t nextDirectiveRevision(uint64_t revision) {
+  return revision == std::numeric_limits<uint64_t>::max() ? 1u : revision + 1u;
+}
+
+// SA-MP documents SetVehicleVelocity/SetVehicleAngularVelocity as having no
+// effect on trains. Reject the full GTA-SA rail family here rather than trying
+// to reinterpret this ID-less recipient command as a generic vehicle force.
+bool isTrainVehicleModel(uint32_t model) {
+  switch (model) {
+    case 449u:  // Tram
+    case 537u:  // Freight
+    case 538u:  // Brown Streak
+    case 569u:  // Freight Flat trailer
+    case 570u:  // Brown Streak carriage
+    case 590u:  // Freight box carriage
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool validVehicleParameterValue(int8_t value) {
+  return value == -1 || value == 0 || value == 1;
+}
+
+bool applyVehicleParameters(const std::array<int8_t, kVehicleParameterCount>& incoming,
+                            VehicleParameters& target) {
+  for (int8_t value : incoming) {
+    if (!validVehicleParameterValue(value)) return false;
+  }
+  // Current open.mp's SetVehicleParams and SetVehicleParamsForPlayer writers
+  // serialize the complete VehicleParams struct. The server also replaces its
+  // retained struct before writing it, so raw -1 means that field is now
+  // *unset*, not a delta/no-change instruction. Keep the same full-snapshot
+  // contract or an old engine/lock fact would survive a later server reset.
+  const bool changed = !target.known || target.values != incoming;
+  target.values = incoming;
+  target.known = true;
+  return changed;
+}
+
+bool applyVehicleParametersForPlayer(uint8_t objective, uint8_t doors,
+                                     VehicleParameters& target) {
+  if (objective > 1u || doors > 1u) return false;
+  bool changed = false;
+  const size_t objectiveIndex = static_cast<size_t>(VehicleParameter::Objective);
+  const size_t doorsIndex = static_cast<size_t>(VehicleParameter::Doors);
+  if (target.values[objectiveIndex] != static_cast<int8_t>(objective)) {
+    target.values[objectiveIndex] = static_cast<int8_t>(objective);
+    changed = true;
+  }
+  if (target.values[doorsIndex] != static_cast<int8_t>(doors)) {
+    target.values[doorsIndex] = static_cast<int8_t>(doors);
+    changed = true;
+  }
+  if (!target.known) {
+    target.known = true;
+    changed = true;
+  }
+  return changed;
+}
+
+void clearVehicleParameters(Vehicle& vehicle) {
+  vehicle.parameters = {};
+}
+
+void clearVehicleVelocityDirectives(Vehicle& vehicle) {
+  vehicle.linearVelocityKnown = false;
+  vehicle.angularVelocityKnown = false;
+  vehicle.linearVelocityX = 0.0f;
+  vehicle.linearVelocityY = 0.0f;
+  vehicle.linearVelocityZ = 0.0f;
+  vehicle.angularVelocityX = 0.0f;
+  vehicle.angularVelocityY = 0.0f;
+  vehicle.angularVelocityZ = 0.0f;
+  // Do not reset these to zero on an ID reuse. A retained local driver bridge
+  // can then distinguish a fresh StreamIn lifecycle from an old command for
+  // the same raw vehicle ID without relying on a wall-clock deadline.
+  vehicle.linearVelocityRevision = nextDirectiveRevision(vehicle.linearVelocityRevision);
+  vehicle.angularVelocityRevision = nextDirectiveRevision(vehicle.angularVelocityRevision);
 }
 
 bool validRemoteAim(const syncdecode::RemoteAimSync& sync) {
@@ -1300,6 +1413,22 @@ std::vector<ChatLine> WorldState::recentChat(size_t maxLines) const {
                                chatLines_.end());
 }
 
+std::vector<DeathMessage> WorldState::recentDeathMessages(size_t maxMessages) const {
+  const size_t limit = std::min(maxMessages, kHardHudDeathMessageLimit);
+  if (limit == 0 || deathMessages_.empty()) return {};
+  const uint64_t nowMs = monotonicMilliseconds();
+  std::vector<DeathMessage> live;
+  live.reserve(std::min(limit, deathMessages_.size()));
+  for (const DeathMessage& message : deathMessages_) {
+    if (message.expiresAtMs <= nowMs) continue;
+    live.push_back(message);
+  }
+  if (live.size() > limit) {
+    live.erase(live.begin(), live.end() - static_cast<std::ptrdiff_t>(limit));
+  }
+  return live;
+}
+
 std::vector<RemotePlayerView> WorldState::renderablePlayers(size_t maxPlayers) const {
   constexpr size_t kHardRenderEntityLimit = 64;
   const size_t limit = std::min(maxPlayers, kHardRenderEntityLimit);
@@ -1427,6 +1556,11 @@ std::vector<RemoteVehicleView> WorldState::renderableVehicles(size_t maxVehicles
     view.y = vehicle.y;
     view.z = vehicle.z;
     view.angle = vehicle.angle;
+    view.attitudeKnown = vehicle.attitudeKnown;
+    view.rotationX = vehicle.rotationX;
+    view.rotationY = vehicle.rotationY;
+    view.rotationZ = vehicle.rotationZ;
+    view.parameters = vehicle.parameters;
     view.health = vehicle.health;
     out.push_back(view);
   }
@@ -1597,7 +1731,11 @@ bool WorldState::applyRemoteVehicle(const syncdecode::RemoteVehicleSync& sync, R
   if (sync.vehicleId == 0 || !validWorldPosition(sync.x, sync.y, sync.z) ||
       !validVelocity(sync.velocityX, sync.velocityY, sync.velocityZ) ||
       !std::isfinite(sync.health) || sync.health < 0.0f || sync.health > 65535.0f ||
-      (sync.angleKnown && !std::isfinite(sync.angle))) {
+      (sync.angleKnown && !std::isfinite(sync.angle)) ||
+      (sync.attitudeKnown &&
+       (!std::isfinite(sync.rotationX) || !std::isfinite(sync.rotationY) ||
+        !std::isfinite(sync.rotationZ) || std::fabs(sync.rotationX) > 180.001f ||
+        std::fabs(sync.rotationY) > 90.001f || std::fabs(sync.rotationZ) > 180.001f))) {
     return false;
   }
   // Vehicle sync is only a transform update. It never creates an entity: a
@@ -1649,6 +1787,21 @@ bool WorldState::applyRemoteVehicle(const syncdecode::RemoteVehicleSync& sync, R
   vehicle.y = sync.y;
   vehicle.z = sync.z;
   if (sync.angleKnown) vehicle.angle = normalizedAngle(sync.angle);
+  // Packet-200 has an exact compressed quaternion; consume its source-derived
+  // full DFF attitude only for a driver sync. Packet-209 deliberately retains
+  // the last attitude because its raw direction vectors are not an Euler tuple.
+  if (sync.driverSync) {
+    vehicle.attitudeKnown = sync.attitudeKnown;
+    if (sync.attitudeKnown) {
+      vehicle.rotationX = sync.rotationX;
+      vehicle.rotationY = sync.rotationY;
+      vehicle.rotationZ = sync.rotationZ;
+    } else {
+      vehicle.rotationX = 0.0f;
+      vehicle.rotationY = 0.0f;
+      vehicle.rotationZ = vehicle.angle;
+    }
+  }
   vehicle.health = sync.health;
   if (sync.driverSync) {
     const auto player = players_.find(sync.playerId);
@@ -1668,6 +1821,41 @@ bool WorldState::applyRemoteVehicle(const syncdecode::RemoteVehicleSync& sync, R
   }
   setEvent(event, RpcEventKind::RemoteVehicleSync, sync.vehicleId,
            sync.driverSync ? "PlayerVehicleSync" : "PlayerUnoccupiedSync");
+  return true;
+}
+
+bool WorldState::applyRemoteTrailer(const syncdecode::RemoteTrailerSync& sync, RpcEvent& event) {
+  event = {};
+  if (sync.vehicleId == 0 || !sync.attitudeKnown ||
+      !validWorldPosition(sync.x, sync.y, sync.z) ||
+      !validVelocity(sync.velocityX, sync.velocityY, sync.velocityZ) ||
+      !std::isfinite(sync.turnVelocityX) || !std::isfinite(sync.turnVelocityY) ||
+      !std::isfinite(sync.turnVelocityZ) || sync.turnVelocityX < -1.0f ||
+      sync.turnVelocityX > 1.0f || sync.turnVelocityY < -1.0f ||
+      sync.turnVelocityY > 1.0f || sync.turnVelocityZ < -1.0f ||
+      sync.turnVelocityZ > 1.0f || !std::isfinite(sync.rotationX) ||
+      !std::isfinite(sync.rotationY) || !std::isfinite(sync.rotationZ) ||
+      std::fabs(sync.rotationX) > 180.001f || std::fabs(sync.rotationY) > 90.001f ||
+      std::fabs(sync.rotationZ) > 180.001f) {
+    return false;
+  }
+  // Packet 210 is a transform for a trailer that already exists in the
+  // recipient stream. It has no cab relationship, health, seat, or local
+  // authority, so preserve all of those retained facts rather than inferring
+  // occupancy or a physical attachment from the packet alone.
+  const auto it = vehicles_.find(sync.vehicleId);
+  if (it == vehicles_.end() || !it->second.streamedIn) return false;
+  Vehicle& trailer = it->second;
+  trailer.dynamicSyncKnown = true;
+  trailer.x = sync.x;
+  trailer.y = sync.y;
+  trailer.z = sync.z;
+  trailer.attitudeKnown = true;
+  trailer.rotationX = sync.rotationX;
+  trailer.rotationY = sync.rotationY;
+  trailer.rotationZ = sync.rotationZ;
+  trailer.angle = normalizedAngle(sync.rotationZ);
+  setEvent(event, RpcEventKind::RemoteTrailerSync, sync.vehicleId, "PlayerTrailerSync");
   return true;
 }
 
@@ -2069,6 +2257,36 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       return true;
     }
 
+    // SetVehicleParams is recipient-local vehicle presentation/control state:
+    // u16 ID followed by the exact sixteen signed-byte fields emitted by the
+    // compatible writer. The payload is one full VehicleParams snapshot: `-1`
+    // explicitly clears a field to unset rather than preserving an old fact or
+    // being coerced to off.
+    case kSetVehicleParams: {
+      if (rpcPayload.size() - 2u != 18u) break;
+      const uint16_t id = static_cast<uint16_t>(reader.readBits(16));
+      std::array<int8_t, kVehicleParameterCount> incoming{};
+      bool valid = reader.ok() && id != 0u;
+      for (size_t index = 0; index < incoming.size(); ++index) {
+        const uint8_t raw = static_cast<uint8_t>(reader.readBits(8));
+        // Avoid relying on implementation-defined unsigned→signed conversion
+        // for malformed high bytes: only legacy -1, 0, and 1 are legal.
+        const int8_t value = raw == 0xFFu ? static_cast<int8_t>(-1)
+                           : raw <= 1u   ? static_cast<int8_t>(raw)
+                                          : static_cast<int8_t>(-2);
+        incoming[index] = value;
+        valid = valid && validVehicleParameterValue(value);
+      }
+      if (!reader.ok() || !valid) break;
+      const auto vehicle = vehicles_.find(id);
+      if (vehicle == vehicles_.end() || !vehicle->second.streamedIn) return false;
+      if (applyVehicleParameters(incoming, vehicle->second.parameters)) {
+        setEvent(event, RpcEventKind::VehicleChanged, id, "SetVehicleParams");
+        event.vehicleParametersUpdated = true;
+      }
+      return true;
+    }
+
     // StreamInVehicle establishes the authoritative initial transform plus
     // presentation facts. Packet 200/209 may later update the same bounded
     // proxy; consume the full legacy layout to keep the wire reducer aligned.
@@ -2104,6 +2322,10 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       vehicle->dynamicSyncKnown = false;
       vehicle->driverKnown = false;
       vehicle->driverId = 0;
+      // Recipient-local RPC-24 and implicit RPC-91 state must not survive a
+      // raw vehicle-ID reuse/stream lifecycle.
+      clearVehicleParameters(*vehicle);
+      clearVehicleVelocityDirectives(*vehicle);
       // Fresh stream-in has no occupancy record. Clear any stale driver or
       // passenger anchor retained from a prior lifecycle for this raw ID.
       for (auto& [playerId, player] : players_) {
@@ -2126,6 +2348,10 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       vehicle->y = y;
       vehicle->z = z;
       vehicle->angle = normalizedAngle(angle);
+      vehicle->attitudeKnown = false;
+      vehicle->rotationX = 0.0f;
+      vehicle->rotationY = 0.0f;
+      vehicle->rotationZ = vehicle->angle;
       vehicle->health = health;
       setEvent(event, RpcEventKind::VehicleStreamedIn, id, "StreamInVehicle");
       return true;
@@ -2140,6 +2366,8 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       it->second.dynamicSyncKnown = false;
       it->second.driverKnown = false;
       it->second.driverId = 0;
+      clearVehicleParameters(it->second);
+      clearVehicleVelocityDirectives(it->second);
       for (auto& [playerId, player] : players_) {
         (void)playerId;
         if (player.remoteVehicleKnown && player.remoteVehicleId == id) {
@@ -2166,6 +2394,58 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       if (!reader.ok() || vehicle == vehicles_.end() || !vehicle->second.streamedIn) return false;
       vehicle->second.interior = interior;
       setEvent(event, RpcEventKind::VehicleChanged, id, "LinkVehicleToInterior");
+      return true;
+    }
+
+    // SetVehicleVelocity is special: the source writer carries only Type and
+    // a VEC3. It therefore applies solely to this recipient's currently seated
+    // driver vehicle, never to a guessed ID, a passenger, an unoccupied proxy,
+    // a missing StreamIn record, or a train. Both channels remain separate:
+    // a later angular command must not erase a retained linear vector and vice
+    // versa. This reducer intentionally retains the exact vector but does not
+    // fabricate a full GTA vehicle/rotation physics response here.
+    case kSetVehicleVelocity: {
+      constexpr uint8_t kLinearVelocity = 0u;
+      constexpr uint8_t kAngularVelocity = 1u;
+      if (rpcPayload.size() - 2u != 13u) break;
+      const uint8_t type = static_cast<uint8_t>(reader.readBits(8));
+      bool finite = true;
+      const float x = readFloat(reader, finite);
+      const float y = readFloat(reader, finite);
+      const float z = readFloat(reader, finite);
+      if (!reader.ok() || !finite || (type != kLinearVelocity && type != kAngularVelocity) ||
+          !validVelocity(x, y, z)) {
+        break;
+      }
+      const LocalPlayer& local = localPlayer_;
+      if (!local.vehicleKnown || !local.inVehicle || local.vehicleSeat != 0u ||
+          local.vehicleId == 0u) {
+        return false;
+      }
+      const auto target = vehicles_.find(local.vehicleId);
+      if (target == vehicles_.end() || !target->second.streamedIn ||
+          isTrainVehicleModel(target->second.model)) {
+        return false;
+      }
+      Vehicle& vehicle = target->second;
+      if (type == kLinearVelocity) {
+        vehicle.linearVelocityKnown = true;
+        vehicle.linearVelocityX = x;
+        vehicle.linearVelocityY = y;
+        vehicle.linearVelocityZ = z;
+        vehicle.linearVelocityRevision = nextDirectiveRevision(vehicle.linearVelocityRevision);
+      } else {
+        vehicle.angularVelocityKnown = true;
+        vehicle.angularVelocityX = x;
+        vehicle.angularVelocityY = y;
+        vehicle.angularVelocityZ = z;
+        vehicle.angularVelocityRevision = nextDirectiveRevision(vehicle.angularVelocityRevision);
+      }
+      setEvent(event, RpcEventKind::VehicleChanged, vehicle.id,
+               type == kLinearVelocity ? "SetVehicleVelocity linear" :
+                                         "SetVehicleVelocity angular");
+      event.localVehicleVelocityUpdated = true;
+      event.localVehicleVelocityAngular = type == kAngularVelocity;
       return true;
     }
 
@@ -2216,8 +2496,33 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
         return false;
       }
       vehicle->second.angle = normalizedAngle(angle);
+      // RPC-160 supplies Z only, so a previous Packet-200 roll/pitch must not
+      // survive as if this mutator had confirmed it.
+      vehicle->second.attitudeKnown = false;
+      vehicle->second.rotationX = 0.0f;
+      vehicle->second.rotationY = 0.0f;
+      vehicle->second.rotationZ = vehicle->second.angle;
       vehicle->second.dynamicSyncKnown = false;
       setEvent(event, RpcEventKind::VehicleChanged, id, "SetVehicleZAngle");
+      return true;
+    }
+
+    // Legacy SetVehicleParamsForPlayer writes the recipient's objective and
+    // lock state directly: u16 VehicleID, u8 objective, u8 doorsLocked. It is
+    // intentionally merged into the same retained presentation fields as RPC
+    // 24, while leaving unrelated engine/lights/siren facts untouched.
+    case kSetVehicleParamsForPlayer: {
+      if (rpcPayload.size() - 2u != 4u) break;
+      const uint16_t id = static_cast<uint16_t>(reader.readBits(16));
+      const uint8_t objective = static_cast<uint8_t>(reader.readBits(8));
+      const uint8_t doors = static_cast<uint8_t>(reader.readBits(8));
+      if (!reader.ok() || id == 0u || objective > 1u || doors > 1u) break;
+      const auto vehicle = vehicles_.find(id);
+      if (vehicle == vehicles_.end() || !vehicle->second.streamedIn) return false;
+      if (applyVehicleParametersForPlayer(objective, doors, vehicle->second.parameters)) {
+        setEvent(event, RpcEventKind::VehicleChanged, id, "SetVehicleParamsForPlayer");
+        event.vehicleParametersUpdated = true;
+      }
       return true;
     }
 
@@ -2385,6 +2690,38 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       audioStream_ = std::move(next);
       event.kind = RpcEventKind::WorldEnvironmentChanged;
       event.summary = "StopAudioStream";
+      return true;
+    }
+
+    // RemoveBuildingForPlayer (RPC 43) applies only to static GTA map placement
+    // data. Dynamic server objects remain a separate CreateObject lifecycle.
+    // The legacy writer is exactly uint32 model + x/y/z/radius floats; -1 is
+    // transported as UINT32_MAX and removes all stock models in the radius.
+    case kRemoveBuilding: {
+      if (rpcPayload.size() != 22u) break;
+      gta::removal::Directive removal;
+      removal.modelId = reader.readBits(32);
+      bool finite = true;
+      removal.x = readFloat(reader, finite);
+      removal.y = readFloat(reader, finite);
+      removal.z = readFloat(reader, finite);
+      removal.radius = readFloat(reader, finite);
+      if (!reader.ok() || !finite || !gta::removal::valid(removal)) break;
+      const auto existing = std::find_if(
+          buildingRemovals_.begin(), buildingRemovals_.end(),
+          [&](const gta::removal::Directive& value) { return gta::removal::same(value, removal); });
+      if (existing == buildingRemovals_.end()) {
+        if (buildingRemovals_.size() >= gta::removal::kMaxDirectives) {
+          // The record itself was valid but cannot be retained safely. Do not
+          // reinterpret it, grow the session, or terminate a live connection.
+          setEvent(event, RpcEventKind::Ignored,
+                   initialized_ ? playerInit_.playerId : 0, "RemoveBuilding capped");
+          return true;
+        }
+        buildingRemovals_.push_back(removal);
+      }
+      setEvent(event, RpcEventKind::BuildingRemovalChanged,
+               initialized_ ? playerInit_.playerId : 0, "RemoveBuilding");
       return true;
     }
 
@@ -3887,6 +4224,27 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       return true;
     }
 
+    // Global kill feed. Source writer sends KillerID (or INVALID_PLAYER_ID),
+    // PlayerID, then one raw reason byte. It is not the PlayerDeath (166)
+    // observer state and must never mutate local health/spawn/prediction.
+    case kSendDeathMessage: {
+      if (rpcPayload.size() - 2u != 5u) break;
+      const uint16_t killerId = static_cast<uint16_t>(reader.readBits(16));
+      const uint16_t victimId = static_cast<uint16_t>(reader.readBits(16));
+      const uint8_t reason = static_cast<uint8_t>(reader.readBits(8));
+      if (!reader.ok() || victimId == 0xFFFFu) break;
+      if (deathMessages_.size() >= kMaxDeathMessages) deathMessages_.pop_front();
+      DeathMessage message;
+      message.hasKiller = killerId != 0xFFFFu;
+      message.killerId = killerId;
+      message.victimId = victimId;
+      message.reason = reason;
+      message.expiresAtMs = monotonicMilliseconds() + kDeathMessagePresentationLifetimeMs;
+      deathMessages_.push_back(message);
+      setEvent(event, RpcEventKind::DeathMessageChanged, victimId, "SendDeathMessage");
+      return true;
+    }
+
     // Server chat/HUD line. Bound both line bytes and retained history before
     // allocation so a malformed peer cannot turn chat into unbounded memory.
     case kSendClientMessage: {
@@ -3978,6 +4336,28 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       event.kind = RpcEventKind::RaceCheckpointChanged;
       event.summary = "DisableRaceCheckpoint";
       return true;
+
+    case kPlayerClose:
+      // `PlayerClose` is an exact empty client-lifecycle control, not a world
+      // reset, class response, or a reason to keep local sync alive. The
+      // session transport receives this event and closes its peer socket.
+      if (rpcPayload.size() != 2u) break;
+      setEvent(event, RpcEventKind::SessionCloseRequested,
+               initialized_ ? playerInit_.playerId : 0, "PlayerClose");
+      return true;
+
+    case kConnectionRejected: {
+      // Legacy client source accepts only four one-byte rejection causes. Do
+      // not preserve/print arbitrary peer text here; surface the verified
+      // reason and stop the session instead of making it look like a timeout.
+      if (rpcPayload.size() != 3u) break;
+      const uint8_t reason = static_cast<uint8_t>(reader.readBits(8));
+      const char* summary = reader.ok() ? connectionRejectionSummary(reason) : nullptr;
+      if (summary == nullptr) break;
+      setEvent(event, RpcEventKind::SessionCloseRequested,
+               initialized_ ? playerInit_.playerId : 0, summary);
+      return true;
+    }
 
     // Legacy TogglePlayerSpectating is a uint32 boolean. It gates outgoing
     // local gameplay immediately; an optional following target comes through

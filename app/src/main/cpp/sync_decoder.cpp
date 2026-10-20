@@ -52,6 +52,16 @@ bool validVelocity(float x, float y, float z) {
   return std::isfinite(squared) && squared <= kMaxVelocitySquared;
 }
 
+// open.mp rejects client-originated trailer turn components outside [-1, 1]
+// before relaying them. Retain that source-compatible component envelope at
+// the Android receiver instead of accepting a hostile raw VEC3 as renderer
+// state. It remains a visual transform fact, not local trailer physics.
+bool validTrailerTurnVelocity(float x, float y, float z) {
+  return std::isfinite(x) && std::isfinite(y) && std::isfinite(z) &&
+         x >= -1.0f && x <= 1.0f && y >= -1.0f && y <= 1.0f &&
+         z >= -1.0f && z <= 1.0f;
+}
+
 bool validSurfingOffset(float x, float y, float z) {
   return std::isfinite(x) && std::isfinite(y) && std::isfinite(z) &&
          std::fabs(x) <= kMaxSurfingOffset && std::fabs(y) <= kMaxSurfingOffset &&
@@ -88,6 +98,40 @@ float normalizedDegrees(float value) {
   float result = std::fmod(value, 360.0f);
   if (result < 0.0f) result += 360.0f;
   return result;
+}
+
+// Packet-200 stores a GTA quaternion, while the portable user-data DFF batch
+// accepts GTA Euler X→Y→Z values (Rz * Ry * Rx). Existing renderer heading
+// already uses the inverse packet Z yaw (`angle = -packetYaw`), so decompose
+// the full inverse quaternion here. For a level vehicle this yields exactly
+// the established `rotationZ == angle` path; roll/pitch are no longer erased.
+bool gtaVehicleEulerFromPacketQuaternion(float qw, float qx, float qy, float qz,
+                                         float& rotationX, float& rotationY,
+                                         float& rotationZ) {
+  const double lengthSquared = static_cast<double>(qw) * qw +
+                               static_cast<double>(qx) * qx +
+                               static_cast<double>(qy) * qy +
+                               static_cast<double>(qz) * qz;
+  if (!std::isfinite(lengthSquared) || lengthSquared < 0.98 || lengthSquared > 1.02) {
+    return false;
+  }
+  const float reciprocalLength = 1.0f / static_cast<float>(std::sqrt(lengthSquared));
+  // Quaternion inverse after normalization. It preserves the legacy SA-MP
+  // negative-Z heading convention without inventing a separate Euler sign map.
+  const float w = qw * reciprocalLength;
+  const float x = -qx * reciprocalLength;
+  const float y = -qy * reciprocalLength;
+  const float z = -qz * reciprocalLength;
+  const float sinPitch = std::clamp(2.0f * (w * y - z * x), -1.0f, 1.0f);
+  constexpr float kRadiansToDegrees = 57.2957795130823208768f;
+  rotationX = std::atan2(2.0f * (w * x + y * z),
+                         1.0f - 2.0f * (x * x + y * y)) * kRadiansToDegrees;
+  rotationY = std::asin(sinPitch) * kRadiansToDegrees;
+  rotationZ = std::atan2(2.0f * (w * z + x * y),
+                         1.0f - 2.0f * (y * y + z * z)) * kRadiansToDegrees;
+  return std::isfinite(rotationX) && std::isfinite(rotationY) && std::isfinite(rotationZ) &&
+         std::fabs(rotationX) <= 180.001f && std::fabs(rotationY) <= 90.001f &&
+         std::fabs(rotationZ) <= 180.001f;
 }
 
 bool validVehicleHealth(float value) {
@@ -357,14 +401,14 @@ bool decodeRemoteVehicleBroadcast(const std::vector<uint8_t>& payload, RemoteVeh
         !validVehicleHealth(out.health)) {
       return false;
     }
-    // GTA's horizontal heading is the negative Z-axis quaternion yaw. Keep
-    // roll/pitch in the validation path without pretending this proxy renders
-    // full vehicle attitude.
-    const float yawRadians = std::atan2(2.0f * (qw * qz + qx * qy),
-                                        1.0f - 2.0f * (qy * qy + qz * qz));
-    out.angle = normalizedDegrees(-yawRadians * 180.0f / 3.14159265358979323846f);
-    out.angleKnown = std::isfinite(out.angle);
-    return out.angleKnown;
+    if (!gtaVehicleEulerFromPacketQuaternion(qw, qx, qy, qz, out.rotationX,
+                                              out.rotationY, out.rotationZ)) {
+      return false;
+    }
+    out.attitudeKnown = true;
+    out.angle = normalizedDegrees(out.rotationZ);
+    out.angleKnown = true;
+    return true;
   }
 
   // Packet 209 contains raw unoccupied rigid-body vectors. Its direction
@@ -383,6 +427,52 @@ bool decodeRemoteVehicleBroadcast(const std::vector<uint8_t>& payload, RemoteVeh
   out.health = readFloat(reader, finite);
   return reader.ok() && finite && validWorldPosition(out.x, out.y, out.z) &&
          validVelocity(out.velocityX, out.velocityY, out.velocityZ) && validVehicleHealth(out.health);
+}
+
+bool decodeRemoteTrailerBroadcast(const std::vector<uint8_t>& payload, RemoteTrailerSync& out,
+                                  size_t payloadBitLength) {
+  // Public open.mp writer: ID:u8, PlayerID:u16, VehicleID:u16, raw VEC3,
+  // raw VEC4 quaternion, raw VEC3 velocity, raw VEC3 turn velocity.
+  constexpr size_t kTrailerPacketBits = 456;
+  constexpr size_t kTrailerPacketBytes = kTrailerPacketBits / 8;
+  out = {};
+  if (payload.size() != kTrailerPacketBytes || payload.empty() ||
+      payload[0] != kPlayerTrailerSyncPacketId ||
+      (payloadBitLength != 0 && payloadBitLength != kTrailerPacketBits)) {
+    return false;
+  }
+
+  raknet::BitReader reader(payload.data(), payload.size(), payloadBitLength);
+  if (reader.readBits(8) != kPlayerTrailerSyncPacketId) return false;
+  out.playerId = static_cast<uint16_t>(reader.readBits(16));
+  out.vehicleId = static_cast<uint16_t>(reader.readBits(16));
+  bool finite = true;
+  out.x = readFloat(reader, finite);
+  out.y = readFloat(reader, finite);
+  out.z = readFloat(reader, finite);
+  // VehicleTrailerSyncPacket uses Vector4(q.w, q.x, q.y, q.z) at the
+  // compatible writer boundary, so raw VEC4 on the wire is w,x,y,z rather
+  // than an Android-chosen component ordering.
+  const float quaternionW = readFloat(reader, finite);
+  const float quaternionX = readFloat(reader, finite);
+  const float quaternionY = readFloat(reader, finite);
+  const float quaternionZ = readFloat(reader, finite);
+  out.velocityX = readFloat(reader, finite);
+  out.velocityY = readFloat(reader, finite);
+  out.velocityZ = readFloat(reader, finite);
+  out.turnVelocityX = readFloat(reader, finite);
+  out.turnVelocityY = readFloat(reader, finite);
+  out.turnVelocityZ = readFloat(reader, finite);
+  if (!reader.ok() || !finite || out.vehicleId == 0 ||
+      !validWorldPosition(out.x, out.y, out.z) ||
+      !validVelocity(out.velocityX, out.velocityY, out.velocityZ) ||
+      !validTrailerTurnVelocity(out.turnVelocityX, out.turnVelocityY, out.turnVelocityZ) ||
+      !gtaVehicleEulerFromPacketQuaternion(quaternionW, quaternionX, quaternionY, quaternionZ,
+                                           out.rotationX, out.rotationY, out.rotationZ)) {
+    return false;
+  }
+  out.attitudeKnown = true;
+  return true;
 }
 
 bool decodeRemotePassengerBroadcast(const std::vector<uint8_t>& payload, RemotePassengerSync& out,
@@ -445,6 +535,13 @@ std::string summarize(const RemoteVehicleSync& sync) {
   std::ostringstream out;
   out << (sync.driverSync ? "PlayerVehicleSync" : "PlayerUnoccupiedSync")
       << " vehicle #" << sync.vehicleId << " @ " << sync.x << "," << sync.y << "," << sync.z;
+  return out.str();
+}
+
+std::string summarize(const RemoteTrailerSync& sync) {
+  std::ostringstream out;
+  out << "PlayerTrailerSync #" << sync.playerId << " trailer #" << sync.vehicleId
+      << " @ " << sync.x << "," << sync.y << "," << sync.z;
   return out.str();
 }
 

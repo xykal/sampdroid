@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <vector>
 
 namespace samp::raknet {
@@ -100,6 +101,53 @@ private:
   std::array<uint16_t, 32> latest_{};
 };
 
+// RakNet acknowledges every reliable transport message, including duplicates,
+// but only delivers each message number once to higher layers. Keep a bounded
+// sliding receive window before split reassembly so duplicate RELIABLE frames
+// cannot repeat a control action or consume fragment resources.
+class ReliableMessageGate {
+public:
+  static constexpr uint16_t kHistoryWindow = 4096;
+
+  bool accept(uint16_t messageNumber);
+  void clear();
+  size_t seenCount() const { return seen_.size(); }
+
+private:
+  bool initialized_ = false;
+  uint16_t newest_ = 0;
+  std::set<uint16_t> seen_;
+};
+
+// RELIABLE_ORDERED is reliable at the transport layer, but a later UDP
+// datagram can still arrive before an earlier one. Retain bounded packets per
+// channel until the missing ordering index arrives, then release only the
+// contiguous application sequence. Overflow is terminal for a session rather
+// than silently ACKing-and-losing an ordered RPC that can never be recovered.
+class ReliableOrderedGate {
+public:
+  static constexpr size_t kMaxBufferedPacketsPerChannel = 64;
+  static constexpr size_t kMaxBufferedPacketsTotal = 128;
+  static constexpr size_t kMaxBufferedBytesTotal = 2u * 1024u * 1024u;
+
+  std::vector<IncomingPacket> push(IncomingPacket packet);
+  void clear();
+  size_t pendingCount() const { return pendingCount_; }
+  size_t pendingBytes() const { return pendingBytes_; }
+  bool overflowed() const { return overflowed_; }
+
+private:
+  struct ChannelState {
+    uint16_t nextExpected = 0;
+    std::map<uint16_t, IncomingPacket> pending;
+  };
+
+  std::array<ChannelState, 32> channels_{};
+  size_t pendingCount_ = 0;
+  size_t pendingBytes_ = 0;
+  bool overflowed_ = false;
+};
+
 std::vector<uint8_t> buildUnreliable(uint16_t messageNumber, const std::vector<uint8_t>& payload);
 
 // UNRELIABLE_SEQUENCED uses its own ordering stream. `payloadBitLength` is
@@ -123,21 +171,40 @@ Datagram decodeDatagram(const std::vector<uint8_t>& datagram);
 // before the higher-level RPC decoder sees them.
 class SplitReassembler {
 public:
+  static constexpr uint32_t kMaxSplitParts = 512;
+  static constexpr size_t kMaxPendingSequences = 64;
+  // Reassembled frames carry a u16 bit length, so retaining more than this
+  // cannot produce a representable IncomingPacket anyway.
+  static constexpr size_t kMaxReassembledPayloadBytes =
+      (static_cast<size_t>(UINT16_MAX) + 7u) / 8u;
+  static constexpr size_t kMaxPendingBytes = 256u * 1024u;
+
   std::vector<IncomingPacket> push(IncomingPacket packet);
   void clear();
   size_t pendingCount() const { return pending_.size(); }
+  size_t pendingBytes() const { return pendingBytes_; }
+  bool overflowed() const { return overflowed_; }
 
 private:
   struct PendingSplit {
     uint32_t expectedCount = 0;
+    // Every fragment produced by legacy RakNet copies the original transport
+    // metadata (only its message number changes). Keep that identity so a
+    // recycled split ID cannot splice unrelated packet bodies together.
     uint8_t reliability = 0;
+    uint8_t orderingChannel = 0;
+    uint16_t orderingIndex = 0;
     std::vector<std::vector<uint8_t>> parts;
     std::vector<uint16_t> partBitLengths;
     std::vector<bool> received;
     size_t receivedCount = 0;
+    size_t receivedBytes = 0;
+    size_t receivedBits = 0;
   };
 
   std::map<uint16_t, PendingSplit> pending_;
+  size_t pendingBytes_ = 0;
+  bool overflowed_ = false;
 };
 
 }  // namespace samp::raknet

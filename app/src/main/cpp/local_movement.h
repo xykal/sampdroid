@@ -55,7 +55,8 @@ bool resetFromAuthoritative(const gta::col::Vec3& position, float headingDegrees
 // separate work.
 StepResult advance(const gta::world::CollisionWorld& collisionWorld, const input::TouchIntent& intent,
                    float headingDegrees, float deltaSeconds, LocalMotionState& state,
-                   float serverGravity = kDefaultServerGravity);
+                   float serverGravity = kDefaultServerGravity,
+                   const std::vector<gta::removal::Directive>* removals = nullptr);
 
 const char* stepStatusName(StepStatus status);
 

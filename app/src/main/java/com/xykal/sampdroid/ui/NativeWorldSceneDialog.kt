@@ -10,9 +10,12 @@ import android.view.MotionEvent
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.xykal.sampdroid.NativeBridge
@@ -319,14 +322,20 @@ private fun loadDynamicModelPayload(
     }
     frame.vehicles.forEach { vehicle ->
         if (vehicle.model in 1L..65535L && vehicle.x.isFinite() && vehicle.y.isFinite() &&
-            vehicle.z.isFinite() && vehicle.angle.isFinite()
+            vehicle.z.isFinite() && vehicle.angle.isFinite() &&
+            (!vehicle.attitudeKnown ||
+                (vehicle.rotationX.isFinite() && vehicle.rotationY.isFinite() && vehicle.rotationZ.isFinite()))
         ) {
-            // GTA vehicle angle is a world-Z rotation. Preserve it as a native
-            // DFF transform; proxy geometry remains a safe companion marker if
-            // the selected data lacks this model or portable mesh support.
+            // Packet-200's compressed quaternion reaches this portable DFF path
+            // as a native source-derived GTA X→Y→Z attitude. A StreamIn/RPC-160
+            // vehicle remains yaw-only; neither branch invents suspension or
+            // physics, and proxy geometry stays the asset-missing fallback.
             dynamicInputs += DynamicModelInput(
                 vehicle.model, vehicle.x, vehicle.y, vehicle.z,
-                0f, 0f, vehicle.angle, budget.mapRadius
+                if (vehicle.attitudeKnown) vehicle.rotationX else 0f,
+                if (vehicle.attitudeKnown) vehicle.rotationY else 0f,
+                if (vehicle.attitudeKnown) vehicle.rotationZ else vehicle.angle,
+                budget.mapRadius
             )
         }
     }
@@ -459,15 +468,11 @@ object NativeWorldSceneDialog {
         val activityManager = activity.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         val glEsVersion = activityManager?.deviceConfigurationInfo?.reqGlEsVersion ?: 0
         if (glEsVersion < GLES_2_0_VERSION) {
-            MaterialAlertDialogBuilder(activity)
-                .setTitle("GPU OpenGL ES 2.0 belum tersedia")
-                .setMessage(
-                    "Scene 3D native memakai GPU Android lewat OpenGL ES 2.0. " +
-                        "Perangkat ini tetap bisa memakai radar/HUD dan tick collision native dari Dunia radar; " +
-                        "preview 3D dimatikan aman."
-                )
-                .setPositiveButton("OK", null)
-                .show()
+            // Do not dead-end the primary "Buka dunia" action on older ARMv7
+            // hardware. The Canvas surface retains the same native session,
+            // HUD, controls, and collision-tick path without pretending it is
+            // the GPU scene.
+            NativeWorldDialog.show(activity)
             return
         }
         val renderBudget = NativeRenderBudget.forDevice(activity)
@@ -482,11 +487,8 @@ object NativeWorldSceneDialog {
         }
         val intro = TextView(activity).apply {
             text = "DUNIA NATIVE · SCENE GPU + HUD\n" +
-                "Actor, vehicle sync, marker, vitals, chat, dan dialog datang dari state native. Jika folder GTA sudah " +
-                "tersinkron, scene memuat batch DFF placement IPL serta model vehicle dari IDE cars secara read-only; " +
-                "RPC kamera server (pos/look-at/interpolate) juga mengambil alih view saat aktif. Model/texture yang belum portable " +
-                "tetap dilewati aman. Touch, keyboard Bluetooth (WASD), dan gamepad mencoba gerak Packet-207 serta AimSync Packet-203 terbatas hanya saat collision/gate siap.\n" +
-                "${renderBudget.label}: budget map/model diturunkan otomatis pada perangkat RAM kecil agar scene tidak memaksa buffer desktop."
+                "Touch, keyboard Bluetooth, dan gamepad siap dipakai setelah spawn server + collision siap. " +
+                "Asset yang belum portable tetap ditampilkan sebagai marker aman. ${renderBudget.label}."
             textSize = 12f
             setTextColor(Color.rgb(215, 237, 247))
         }
@@ -607,17 +609,31 @@ object NativeWorldSceneDialog {
         var touchControlsVisible = true
         var gameplayInputEnabled = false
 
+        // Utility actions stay readable on narrow phones instead of being
+        // compressed into nine unusable weighted buttons beneath the scene.
         val controls = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = android.view.Gravity.CENTER
+            gravity = android.view.Gravity.CENTER_VERTICAL
             setPadding(0, (6f * density).toInt(), 0, 0)
+        }
+        val controlsScroller = HorizontalScrollView(activity).apply {
+            isHorizontalScrollBarEnabled = false
+            isFillViewport = false
+            contentDescription = "Toolbar scene native. Geser mendatar untuk aksi tambahan."
+            addView(controls, HorizontalScrollView.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
         }
         fun addButton(label: String, onClick: () -> Unit) {
             controls.addView(Button(activity).apply {
                 text = label
                 textSize = 10f
                 setOnClickListener { onClick() }
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            }, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
                 marginStart = (2f * density).toInt()
                 marginEnd = (2f * density).toInt()
             })
@@ -682,7 +698,10 @@ object NativeWorldSceneDialog {
         }
         root.addView(intro)
         root.addView(stage)
-        root.addView(controls)
+        root.addView(controlsScroller, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
         root.addView(status)
 
         val dialog = MaterialAlertDialogBuilder(activity)
@@ -702,24 +721,98 @@ object NativeWorldSceneDialog {
         // Every job is launched on the lifecycle main dispatcher; only copied
         // immutable frames cross into their IO calls.
         var latestWorldFrame = WorldFrame()
+        // Renderer-owned snapshot gate: a PlayerClose/disconnect must halt the
+        // separate gameplay ticker as soon as presentation observes it.
+        var sessionGameplayActive = false
+        val activityForeground = {
+            activity.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
+        }
+        // GLSurfaceView does not automatically follow the host Activity when
+        // embedded inside an AlertDialog. Own the EGL pause/resume explicitly
+        // so a backgrounded native scene cannot retain an active GL thread.
+        var sceneSurfaceResumed = false
+        fun resumeSceneSurface() {
+            if (!sceneSurfaceResumed) {
+                scene.onResume()
+                sceneSurfaceResumed = true
+            }
+        }
+        fun pauseSceneSurface() {
+            if (sceneSurfaceResumed) {
+                scene.onPause()
+                sceneSurfaceResumed = false
+            }
+        }
+        val sceneLifecycleObserver = object : DefaultLifecycleObserver {
+            override fun onResume(owner: LifecycleOwner) {
+                if (dialog.isShowing) resumeSceneSurface()
+            }
+
+            override fun onPause(owner: LifecycleOwner) {
+                pauseSceneSurface()
+            }
+        }
         dialog.setOnShowListener {
+            // This is the in-session play surface, not a diagnostics preview:
+            // retain every available dialog pixel for the scene, HUD, and
+            // touch layout on both phones and compact landscape devices.
             dialog.window?.setLayout(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                (activity.resources.displayMetrics.heightPixels * 0.88f).toInt()
+                ViewGroup.LayoutParams.MATCH_PARENT
             )
+            dialog.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            activity.lifecycle.addObserver(sceneLifecycleObserver)
             stage.requestFocus()
             gyroLook.setUserEnabled(touchControls.gyroLookEnabled())
-            scene.onResume()
+            // Wait for the first native snapshot before accepting a held touch,
+            // keyboard, controller, or gyro input. An old/ended session must
+            // never receive a creation-time sample from this full-screen UI.
+            touchControls.setGameplayEnabled(false, "MENUNGGU SESI NATIVE · INPUT OFF")
+            hardwareControls.setEnabled(false)
+            gyroLook.setGameplayEnabled(false)
+            if (activityForeground()) resumeSceneSurface()
             activity.lifecycleScope.launch {
                 val preview = withContext(Dispatchers.IO) { loadDffPreviewPayload(renderBudget) }
-                if (dialog.isShowing) {
+                if (dialog.isShowing && activityForeground()) {
                     scene.submitDffPreview(preview.colorVertices)
                     scene.submitTexturedDffPreview(preview.textured)
                 }
             }
             gameplayJob = activity.lifecycleScope.launch {
                 var previousTickNanos = System.nanoTime()
+                var backgroundControlsCleared = false
                 while (isActive && dialog.isShowing) {
+                    // lifecycleScope remains alive through STOP. Freeze this
+                    // visible-session bridge while the activity is hidden so a
+                    // held touch/gamepad sample can never keep moving/syncing
+                    // in background; its audio controller handles onPause itself.
+                    if (!activityForeground()) {
+                        if (!backgroundControlsCleared) {
+                            touchControls.setGameplayEnabled(false, "APP BACKGROUND · INPUT OFF")
+                            touchControls.clearControls()
+                            hardwareControls.setEnabled(false)
+                            hardwareControls.clear()
+                            gyroLook.setGameplayEnabled(false)
+                            inputMixer.clear()
+                            // The controller owns its own activity onPause/onResume
+                            // transition; release belongs only to dialog dismiss.
+                            withContext(Dispatchers.IO) {
+                                runCatching {
+                                    NativeBridge.nativeSessionUpdateControls(0f, 0f, 0f, 0f, 0)
+                                }
+                            }
+                            backgroundControlsCleared = true
+                        }
+                        previousTickNanos = System.nanoTime()
+                        delay(100)
+                        continue
+                    }
+                    backgroundControlsCleared = false
+                    if (!sessionGameplayActive) {
+                        previousTickNanos = System.nanoTime()
+                        delay(100)
+                        continue
+                    }
                     val nowNanos = System.nanoTime()
                     // Clamp delayed/background frames. Native applies the same
                     // bound before collision stepping, so resume jank cannot
@@ -736,9 +829,23 @@ object NativeWorldSceneDialog {
             }
             mapRenderJob = activity.lifecycleScope.launch {
                 while (isActive && dialog.isShowing) {
+                    if (!activityForeground()) {
+                        delay(100)
+                        continue
+                    }
                     val frameForMap = latestWorldFrame
+                    if (!frameForMap.active) {
+                        delay(MAP_RENDER_REFRESH_DELAY_MS)
+                        continue
+                    }
                     val payload = withContext(Dispatchers.IO) { loadNearbyWorldPayload(frameForMap, renderBudget) }
-                    if (dialog.isShowing) scene.submitNearbyWorldBatch(payload)
+                    // A terminal RPC/session close may arrive while bounded IMG
+                    // work runs off the UI thread. Re-check the current native
+                    // presentation gate before submitting so stale static GTA
+                    // geometry cannot repopulate after the terminal clear.
+                    if (dialog.isShowing && activityForeground() && latestWorldFrame.active) {
+                        scene.submitNearbyWorldBatch(payload)
+                    }
                     // Native may lazily decode only a bounded DFF subset per
                     // pass. Refreshing here gradually fills nearby placement
                     // geometry without doing filesystem work on the GL thread.
@@ -747,37 +854,82 @@ object NativeWorldSceneDialog {
             }
             dynamicModelRenderJob = activity.lifecycleScope.launch {
                 while (isActive && dialog.isShowing) {
+                    if (!activityForeground()) {
+                        delay(100)
+                        continue
+                    }
                     val frameForDynamicModels = latestWorldFrame
+                    if (!frameForDynamicModels.active) {
+                        delay(DYNAMIC_MODEL_REFRESH_DELAY_MS)
+                        continue
+                    }
                     val payload = withContext(Dispatchers.IO) {
                         loadDynamicModelPayload(frameForDynamicModels, renderBudget)
                     }
-                    if (dialog.isShowing) scene.submitDynamicModelBatch(payload)
+                    // Keep the same post-I/O terminal gate as the static map:
+                    // an inactive world is never allowed to re-install stale
+                    // server object/vehicle/actor geometry after cleanup.
+                    if (dialog.isShowing && activityForeground() && latestWorldFrame.active) {
+                        scene.submitDynamicModelBatch(payload)
+                    }
                     delay(DYNAMIC_MODEL_REFRESH_DELAY_MS)
                 }
             }
             renderJob = activity.lifecycleScope.launch {
                 while (isActive && dialog.isShowing) {
+                    if (!activityForeground()) {
+                        delay(100)
+                        continue
+                    }
                     val frame = runCatching {
                         val raw = withContext(Dispatchers.IO) {
                             NativeBridge.nativeSessionWorldSnapshot()
                         }
                         WorldFrame.from(JSONObject(raw))
                     }.getOrElse { WorldFrame(error = it.message ?: "snapshot world gagal") }
-                    latestWorldFrame = frame
-                    scene.submit(frame)
-                    hud.submit(frame)
-                    audioStreamController.submit(frame)
-                    hardwareDrivingMode = !frame.spectate.active &&
-                        frame.localVehicleKnown && frame.localInVehicle && frame.localVehicleSeat == 0
-                    val serverMarkedDead = frame.localHealthKnown && frame.localHealth.isFinite() &&
-                        frame.localHealth <= 0f && !frame.spectate.active
-                    val gameplayEnabled = (!frame.localControllableKnown || frame.localControllable) &&
-                        !frame.spectate.active && !serverMarkedDead
+                    if (!activityForeground()) {
+                        delay(100)
+                        continue
+                    }
+                    val wasSessionGameplayActive = sessionGameplayActive
+                    sessionGameplayActive = frame.active
+                    // Do not leave the last live world/assets/dialog/audio on
+                    // screen after PlayerClose or another terminal transport
+                    // result. The error remains for an actionable status line.
+                    val presentationFrame = if (frame.active) frame else WorldFrame(
+                        active = false,
+                        error = frame.error
+                    )
+                    latestWorldFrame = presentationFrame
+                    if (wasSessionGameplayActive && !sessionGameplayActive) {
+                        inputMixer.clear()
+                        // Map/model batches are cached separately from the
+                        // immutable entity frame. Explicitly clear each one on
+                        // the terminal transition so no old GTA geometry hangs
+                        // behind the ended-session status.
+                        scene.submitNearbyWorldBatch(null)
+                        scene.submitDynamicModelBatch(null)
+                        scene.submitDffPreview(FloatArray(0))
+                        scene.submitTexturedDffPreview(null)
+                    }
+                    scene.submit(presentationFrame)
+                    hud.submit(presentationFrame)
+                    audioStreamController.submit(presentationFrame)
+                    hardwareDrivingMode = presentationFrame.active && !presentationFrame.spectate.active &&
+                        presentationFrame.localVehicleKnown && presentationFrame.localInVehicle &&
+                        presentationFrame.localVehicleSeat == 0
+                    val serverMarkedDead = presentationFrame.localHealthKnown &&
+                        presentationFrame.localHealth.isFinite() && presentationFrame.localHealth <= 0f &&
+                        !presentationFrame.spectate.active
+                    val gameplayEnabled = presentationFrame.active &&
+                        (!presentationFrame.localControllableKnown || presentationFrame.localControllable) &&
+                        !presentationFrame.spectate.active && !serverMarkedDead
                     touchControls.setDrivingMode(hardwareDrivingMode)
                     touchControls.setGameplayEnabled(
                         gameplayEnabled,
                         when {
-                            frame.spectate.active -> "SPECTATOR · INPUT OFF"
+                            !presentationFrame.active -> "SESI BERAKHIR · INPUT OFF"
+                            presentationFrame.spectate.active -> "SPECTATOR · INPUT OFF"
                             serverMarkedDead -> "RESPAWN SERVER · INPUT OFF"
                             else -> "SERVER FREEZE · INPUT OFF"
                         }
@@ -785,9 +937,14 @@ object NativeWorldSceneDialog {
                     hardwareControls.setEnabled(gameplayEnabled)
                     gameplayInputEnabled = gameplayEnabled
                     gyroLook.setGameplayEnabled(gameplayEnabled && touchControlsVisible)
-                    NativeServerDialogController.submit(activity, frame)
-                    NativeServerMenuController.submit(activity, frame)
-                    status.text = "${frame.sceneStatusLine()} · ${renderBudget.label}"
+                    if (presentationFrame.active) {
+                        NativeServerDialogController.submit(activity, presentationFrame)
+                        NativeServerMenuController.submit(activity, presentationFrame)
+                    } else {
+                        NativeServerDialogController.clear()
+                        NativeServerMenuController.clear()
+                    }
+                    status.text = "${presentationFrame.sceneStatusLine()} · ${renderBudget.label}"
                     // ServerDetailDialog retains and polls UDP. The renderer
                     // receives immutable copies only; it has no socket or sync ownership.
                     delay(100)
@@ -795,6 +952,7 @@ object NativeWorldSceneDialog {
             }
         }
         dialog.setOnDismissListener {
+            dialog.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             gameplayJob?.cancel()
             renderJob?.cancel()
             mapRenderJob?.cancel()
@@ -812,13 +970,17 @@ object NativeWorldSceneDialog {
                 runCatching { NativeBridge.nativeSessionUpdateControls(0f, 0f, 0f, 0f, 0) }
             }
             labelProjection.submit(emptyList())
-            scene.onPause()
+            activity.lifecycle.removeObserver(sceneLifecycleObserver)
+            pauseSceneSurface()
         }
         dialog.show()
     }
 }
 
 private fun WorldFrame.sceneStatusLine(): String = when {
+    // Terminal session errors remain useful after `active` turns false; render
+    // them before the generic idle prompt so PlayerClose is not masked.
+    error.isNotBlank() -> "Sesi: $error"
     !active -> "Sesi belum aktif · buka Sesi native dari detail server."
     localHealthKnown && localHealth.isFinite() && localHealth <= 0f && !spectate.active ->
         if (spawnRequestPending) {
@@ -826,7 +988,6 @@ private fun WorldFrame.sceneStatusLine(): String = when {
         } else {
             "HP server 0 · input/sync lokal dihentikan; gunakan tombol RESPAWN."
         }
-    error.isNotBlank() -> "Sesi: $error"
     spectate.active -> when {
         spectate.targetKnown && sceneAnchor().followingSpectateTarget && spectate.targetVehicle ->
             "SPECTATOR server · kamera/asset anchor mengikuti vehicle #${spectate.targetId}; sync lokal berhenti."
@@ -1653,6 +1814,12 @@ private class NativeWorldSceneRenderer(
                     x, y, z, presentation.angle, vehicleColour(vehicle.colour1, vehicle.colour2),
                     vehicle.dynamicSyncKnown
                 )
+                if (vehicle.parametersKnown && vehicle.objective == 1) {
+                    // Server's per-recipient vehicle objective normally uses a
+                    // GTA arrow. This portable yellow marker keeps it visible
+                    // without claiming an asset-faithful arrow model.
+                    drawMarker(x, y + 4.0f, z, 1.25f, floatArrayOf(1f, 0.84f, 0.18f, 0.94f))
+                }
             }
         }
         snapshot.frame.pickups.forEach { pickup ->

@@ -11,6 +11,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -54,9 +55,9 @@ object NativeWorldDialog {
             setBackgroundColor(Color.rgb(12, 23, 32))
         }
         val intro = TextView(activity).apply {
-            text = "DUNIA NATIVE · RADAR ENTITY\n" +
-                "Local player, remote stream-in, vehicle sync, dan checkpoint dirender dari state native. " +
-                "Radar juga punya overlay touch, keyboard Bluetooth (WASD), dan gamepad untuk tick gerak collision native saat data GTA siap; renderer map GTA 3D penuh belum."
+            text = "DUNIA NATIVE · RADAR\n" +
+                "Fallback ringan: touch, keyboard Bluetooth, dan gamepad aktif. " +
+                "Gerak/sync hanya jalan setelah spawn server dan collision GTA siap."
             setTextColor(Color.rgb(215, 237, 247))
             textSize = 12f
         }
@@ -89,17 +90,32 @@ object NativeWorldDialog {
         // Switching to the GPU scene closes this lightweight radar first so an
         // ARMv7 device never keeps two renderer update loops alive at once.
         var activeDialog: androidx.appcompat.app.AlertDialog? = null
+        // Nine utility actions do not fit as weighted micro-buttons on a
+        // 320–360dp phone. Keep touch gameplay unobstructed and make this
+        // secondary toolbar horizontally scrollable with readable targets.
         val controls = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = android.view.Gravity.CENTER
+            gravity = android.view.Gravity.CENTER_VERTICAL
             setPadding(0, (6f * density).toInt(), 0, 0)
+        }
+        val controlsScroller = HorizontalScrollView(activity).apply {
+            isHorizontalScrollBarEnabled = false
+            isFillViewport = false
+            contentDescription = "Toolbar dunia native. Geser mendatar untuk aksi tambahan."
+            addView(controls, HorizontalScrollView.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
         }
         fun addButton(label: String, onClick: () -> Unit) {
             controls.addView(Button(activity).apply {
                 text = label
                 textSize = 11f
                 setOnClickListener { onClick() }
-            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            }, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
                 marginStart = (2f * density).toInt()
                 marginEnd = (2f * density).toInt()
             })
@@ -123,7 +139,10 @@ object NativeWorldDialog {
         }
         root.addView(intro)
         root.addView(stage)
-        root.addView(controls)
+        root.addView(controlsScroller, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
         root.addView(status)
 
         // Radar is also the low-GLES fallback gameplay surface, so hardware
@@ -220,20 +239,71 @@ object NativeWorldDialog {
         activeDialog = dialog
         var renderJob: Job? = null
         var gameplayJob: Job? = null
+        // Both collectors run on the lifecycle main dispatcher. The renderer
+        // owns this gate from immutable native snapshots so gameplay ticking
+        // stops immediately after a server-side close rather than repeatedly
+        // asking native to advance a dead socket.
+        var sessionGameplayActive = false
         dialog.setOnShowListener {
+            // The radar fallback is a real low-end gameplay surface, not a
+            // diagnostic card. Let controls and the world use the full dialog
+            // height on small/ARMv7 phones instead of throwing away the lower
+            // screen behind a developer-style margin.
             dialog.window?.setLayout(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                (activity.resources.displayMetrics.heightPixels * 0.88f).toInt()
+                ViewGroup.LayoutParams.MATCH_PARENT
             )
+            dialog.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             stage.requestFocus()
             // Layout opt-in is local; registration waits for the first
             // authoritative non-frozen/non-spectator frame below.
             gyroLook.setUserEnabled(touchControls.gyroLookEnabled())
+            // Fail closed until the first immutable native frame confirms that
+            // an accepted socket is still active. This avoids a touch/key held
+            // during dialog creation leaking into an already-ended session.
+            touchControls.setGameplayEnabled(false, "MENUNGGU SESI NATIVE · INPUT OFF")
+            hardwareControls.setEnabled(false)
+            gyroLook.setGameplayEnabled(false)
             // Keep base gameplay available even on devices without GLES 2.0:
             // this radar has the same collision/native tick as the GPU scene.
             gameplayJob = activity.lifecycleScope.launch {
                 var previousTickNanos = System.nanoTime()
+                var backgroundControlsCleared = false
                 while (isActive && dialog.isShowing) {
+                    // lifecycleScope survives STOP, so do not let a hidden
+                    // fallback surface keep advancing/sending movement or leave
+                    // a held touch/controller action latched in background.
+                    val foreground = activity.lifecycle.currentState.isAtLeast(
+                        androidx.lifecycle.Lifecycle.State.RESUMED
+                    )
+                    if (!foreground) {
+                        if (!backgroundControlsCleared) {
+                            touchControls.setGameplayEnabled(false, "APP BACKGROUND · INPUT OFF")
+                            touchControls.clearControls()
+                            hardwareControls.setEnabled(false)
+                            hardwareControls.clear()
+                            gyroLook.setGameplayEnabled(false)
+                            inputMixer.clear()
+                            // NativeAudioStreamController observes onPause itself;
+                            // do not call release here or it could not resume
+                            // with this still-visible world dialog.
+                            withContext(Dispatchers.IO) {
+                                runCatching {
+                                    NativeBridge.nativeSessionUpdateControls(0f, 0f, 0f, 0f, 0)
+                                }
+                            }
+                            backgroundControlsCleared = true
+                        }
+                        previousTickNanos = System.nanoTime()
+                        delay(100)
+                        continue
+                    }
+                    backgroundControlsCleared = false
+                    if (!sessionGameplayActive) {
+                        previousTickNanos = System.nanoTime()
+                        delay(100)
+                        continue
+                    }
                     val nowNanos = System.nanoTime()
                     val deltaSeconds = ((nowNanos - previousTickNanos) / 1_000_000_000.0)
                         .toFloat()
@@ -247,34 +317,65 @@ object NativeWorldDialog {
             }
             renderJob = activity.lifecycleScope.launch {
                 while (isActive && dialog.isShowing) {
+                    if (!activity.lifecycle.currentState.isAtLeast(
+                            androidx.lifecycle.Lifecycle.State.RESUMED
+                        )) {
+                        delay(100)
+                        continue
+                    }
                     val frame = runCatching {
                         val raw = withContext(Dispatchers.IO) {
                             NativeBridge.nativeSessionWorldSnapshot()
                         }
                         WorldFrame.from(JSONObject(raw))
                     }.getOrElse { WorldFrame(error = it.message ?: "snapshot world gagal") }
-                    hardwareDrivingMode = !frame.spectate.active &&
-                        frame.localVehicleKnown && frame.localInVehicle && frame.localVehicleSeat == 0
-                    val serverMarkedDead = frame.localHealthKnown && frame.localHealth.isFinite() &&
-                        frame.localHealth <= 0f && !frame.spectate.active
-                    val gameplayEnabled = (!frame.localControllableKnown || frame.localControllable) &&
-                        !frame.spectate.active && !serverMarkedDead
+                    if (!activity.lifecycle.currentState.isAtLeast(
+                            androidx.lifecycle.Lifecycle.State.RESUMED
+                        )) {
+                        delay(100)
+                        continue
+                    }
+                    val wasSessionGameplayActive = sessionGameplayActive
+                    sessionGameplayActive = frame.active
+                    // Never keep a stale server world, dialog/menu, or audio
+                    // directive visually alive after native reports its socket
+                    // inactive. Preserve only the bounded reason string.
+                    val presentationFrame = if (frame.active) frame else WorldFrame(
+                        active = false,
+                        error = frame.error
+                    )
+                    if (wasSessionGameplayActive && !sessionGameplayActive) inputMixer.clear()
+                    hardwareDrivingMode = presentationFrame.active && !presentationFrame.spectate.active &&
+                        presentationFrame.localVehicleKnown && presentationFrame.localInVehicle &&
+                        presentationFrame.localVehicleSeat == 0
+                    val serverMarkedDead = presentationFrame.localHealthKnown &&
+                        presentationFrame.localHealth.isFinite() && presentationFrame.localHealth <= 0f &&
+                        !presentationFrame.spectate.active
+                    val gameplayEnabled = presentationFrame.active &&
+                        (!presentationFrame.localControllableKnown || presentationFrame.localControllable) &&
+                        !presentationFrame.spectate.active && !serverMarkedDead
                     hardwareControls.setEnabled(gameplayEnabled)
                     gyroLook.setGameplayEnabled(gameplayEnabled)
                     touchControls.setDrivingMode(hardwareDrivingMode)
                     touchControls.setGameplayEnabled(
                         gameplayEnabled,
                         when {
-                            frame.spectate.active -> "SPECTATOR · INPUT OFF"
+                            !presentationFrame.active -> "SESI BERAKHIR · INPUT OFF"
+                            presentationFrame.spectate.active -> "SPECTATOR · INPUT OFF"
                             serverMarkedDead -> "RESPAWN SERVER · INPUT OFF"
                             else -> "SERVER FREEZE · INPUT OFF"
                         }
                     )
-                    surface.submit(frame)
-                    audioStreamController.submit(frame)
-                    NativeServerDialogController.submit(activity, frame)
-                    NativeServerMenuController.submit(activity, frame)
-                    status.text = frame.statusLine()
+                    surface.submit(presentationFrame)
+                    audioStreamController.submit(presentationFrame)
+                    if (presentationFrame.active) {
+                        NativeServerDialogController.submit(activity, presentationFrame)
+                        NativeServerMenuController.submit(activity, presentationFrame)
+                    } else {
+                        NativeServerDialogController.clear()
+                        NativeServerMenuController.clear()
+                    }
+                    status.text = presentationFrame.statusLine()
                     // ServerDetailDialog owns the network poll; this loop only
                     // paints copies of reduced state and never blocks UI input.
                     delay(100)
@@ -282,6 +383,7 @@ object NativeWorldDialog {
             }
         }
         dialog.setOnDismissListener {
+            dialog.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             gameplayJob?.cancel()
             renderJob?.cancel()
             audioStreamController.release()
@@ -419,6 +521,20 @@ internal data class WorldVehicle(
     val y: Float,
     val z: Float,
     val angle: Float,
+    // Packet-200 quaternion-derived DFF attitude. False keeps the compatible
+    // StreamIn/RPC-160 yaw-only fallback rather than inventing a tilt.
+    val attitudeKnown: Boolean = false,
+    val rotationX: Float = 0f,
+    val rotationY: Float = 0f,
+    val rotationZ: Float = 0f,
+    // Exact full SetVehicleParams facts retained native-side. `-1` is an
+    // explicit server unset state, never an Android-owned toggle.
+    val parametersKnown: Boolean = false,
+    val engine: Int = -1,
+    val lights: Int = -1,
+    val doors: Int = -1,
+    val objective: Int = -1,
+    val siren: Int = -1,
     val health: Float
 )
 
@@ -658,6 +774,20 @@ internal data class WorldMarker(
 internal data class WorldChat(
     val rgba: Long,
     val text: String
+)
+
+/**
+ * One short-lived global RPC-55 kill-feed row. It is server presentation only:
+ * `reason` remains raw, and the row cannot imply damage, local death, ammo, or
+ * a respawn outcome on Android.
+ */
+internal data class WorldDeathMessage(
+    val hasKiller: Boolean,
+    val killerId: Int,
+    val victimId: Int,
+    val reason: Int,
+    val killerName: String,
+    val victimName: String
 )
 
 /** Server-authored ShowDialog view already decoded and bounded by native code. */
@@ -908,6 +1038,8 @@ internal data class WorldFrame(
     val mapIcons: List<WorldMapIcon> = emptyList(),
     val textDraws: List<WorldTextDraw> = emptyList(),
     val chat: List<WorldChat> = emptyList(),
+    // Native filters RPC-55 expiration before this copied UI-only tail.
+    val deathMessages: List<WorldDeathMessage> = emptyList(),
     val error: String = ""
 ) {
     companion object {
@@ -1157,6 +1289,27 @@ internal data class WorldFrame(
                     for (i in 0 until source.length()) {
                         val vehicle = source.optJSONObject(i)
                         if (vehicle != null) {
+                            val rotationX = vehicle.optDouble("rotationX").toFloat()
+                            val rotationY = vehicle.optDouble("rotationY").toFloat()
+                            val rotationZ = vehicle.optDouble("rotationZ").toFloat()
+                            // This is visual data only. Recheck the compact
+                            // native quaternion-to-Euler hand-off before a
+                            // malformed JSON copy can tilt a GLES DFF wildly.
+                            val attitudeKnown = vehicle.optBoolean("attitudeKnown") &&
+                                rotationX.isFinite() && rotationY.isFinite() && rotationZ.isFinite() &&
+                                abs(rotationX) <= 180.001f && abs(rotationY) <= 90.001f &&
+                                abs(rotationZ) <= 180.001f
+                            // Never let malformed JSON invent an enabled local
+                            // engine/siren. Absent or out-of-domain values stay
+                            // at the source-compatible -1 sentinel.
+                            fun vehicleParam(name: String): Int =
+                                vehicle.optInt(name, -1).takeIf { it in -1..1 } ?: -1
+                            val engine = vehicleParam("engine")
+                            val lights = vehicleParam("lights")
+                            val doors = vehicleParam("doors")
+                            val objective = vehicleParam("objective")
+                            val siren = vehicleParam("siren")
+                            val parametersKnown = vehicle.optBoolean("parametersKnown")
                             add(
                                 WorldVehicle(
                                     id = vehicle.optInt("id"),
@@ -1171,6 +1324,16 @@ internal data class WorldFrame(
                                     y = vehicle.optDouble("y").toFloat(),
                                     z = vehicle.optDouble("z").toFloat(),
                                     angle = vehicle.optDouble("angle").toFloat(),
+                                    attitudeKnown = attitudeKnown,
+                                    rotationX = if (attitudeKnown) rotationX else 0f,
+                                    rotationY = if (attitudeKnown) rotationY else 0f,
+                                    rotationZ = if (attitudeKnown) rotationZ else 0f,
+                                    parametersKnown = parametersKnown,
+                                    engine = engine,
+                                    lights = lights,
+                                    doors = doors,
+                                    objective = objective,
+                                    siren = siren,
                                     health = vehicle.optDouble("health", 1000.0).toFloat()
                                 )
                             )
@@ -1489,6 +1652,40 @@ internal data class WorldFrame(
                     }
                 }
             }
+            val deathMessages = buildList {
+                val source = o.optJSONArray("deathMessages")
+                if (source != null) {
+                    for (i in 0 until minOf(source.length(), 8)) {
+                        val message = source.optJSONObject(i) ?: continue
+                        val hasKiller = message.optBoolean("hasKiller")
+                        val killerId = message.optInt("killerId", -1)
+                        val victimId = message.optInt("victimId", -1)
+                        val reason = message.optInt("reason", -1)
+                        if (victimId !in 0..65534 || reason !in 0..255 ||
+                            (hasKiller && killerId !in 0..65534)
+                        ) continue
+                        // IDs/names are native-owned. Strip controls and cap a
+                        // copied renderer string; do not look up or invent an
+                        // identity from actors on this untrusted JSON boundary.
+                        fun feedName(raw: String, fallback: String): String = raw
+                            .filterNot { it.isISOControl() }
+                            .take(24)
+                            .ifBlank { fallback }
+                        add(
+                            WorldDeathMessage(
+                                hasKiller = hasKiller,
+                                killerId = if (hasKiller) killerId else 65535,
+                                victimId = victimId,
+                                reason = reason,
+                                killerName = if (hasKiller) {
+                                    feedName(message.optString("killerName"), "#$killerId")
+                                } else "",
+                                victimName = feedName(message.optString("victimName"), "#$victimId")
+                            )
+                        )
+                    }
+                }
+            }
             val objectSelectionRevision = o.optLong("objectSelectionRevision")
             val objectSelectionActive = o.optBoolean("objectSelectionActive") &&
                 objectSelectionRevision > 0L
@@ -1730,14 +1927,52 @@ internal data class WorldFrame(
                 mapIcons = mapIcons,
                 textDraws = textDraws,
                 chat = chat,
+                deathMessages = deathMessages,
                 error = o.optString("error")
             )
         }
     }
 
+    /**
+     * Human-readable facts from the currently authoritative local driver
+     * vehicle only. The app has no engine/light/siren controls here: these are
+     * retained RPC-24 values, and an absent/-1 value is intentionally silent.
+     */
+    fun localDriverVehicleParameterSummary(compact: Boolean = false): String {
+        if (!localVehicleKnown || !localInVehicle || localVehicleSeat != 0) return ""
+        val vehicle = vehicles.firstOrNull { it.id == localVehicleId } ?: return ""
+        if (!vehicle.parametersKnown) return ""
+        val server = if (compact) "" else " SERVER"
+        return buildList {
+            when (vehicle.engine) {
+                0 -> add("MESIN${server} MATI")
+                1 -> add("MESIN${server} NYALA")
+            }
+            when (vehicle.lights) {
+                0 -> add("LAMPU${server} MATI")
+                1 -> add("LAMPU${server} NYALA")
+            }
+            when (vehicle.siren) {
+                0 -> add("SIREN${server} MATI")
+                1 -> add("SIREN${server} NYALA")
+            }
+            if (!compact) {
+                when (vehicle.doors) {
+                    0 -> add("PINTU${server} TERBUKA")
+                    1 -> add("PINTU${server} TERKUNCI")
+                }
+                if (vehicle.objective == 1) add("OBJEKTIF${server}")
+            }
+        }.joinToString(" · ")
+    }
+
     fun statusLine(): String = when {
-        !active -> "Sesi belum aktif · buka Sesi native dari detail server."
+        // A server PlayerClose/transport refusal makes the socket inactive, but
+        // its native error is the actionable explanation. Do not mask it with
+        // the generic inactive hint, otherwise a world surface looks like it
+        // simply never opened after a server explicitly ended the session.
         error.isNotBlank() -> "Sesi: $error"
+        !active -> "Sesi belum aktif · buka Sesi native dari detail server."
         spectate.active -> when {
             spectate.targetKnown && sceneAnchor().followingSpectateTarget && spectate.targetVehicle ->
                 "SPECTATOR · mengikuti kendaraan #${spectate.targetId} dari stream server."
@@ -1760,9 +1995,11 @@ internal data class WorldFrame(
         localVehicleKnown && localInVehicle && localVehicleSeat != 0 ->
             "Passenger #$localVehicleId kursi $localVehicleSeat · menunggu transform server."
         localVehicleKnown && localInVehicle && localPredictionActive ->
-            "Driver #$localVehicleId · kinematic collision + Packet-200 native aktif."
+            "Driver #$localVehicleId · kinematic collision + Packet-200 native aktif." +
+                localDriverVehicleParameterSummary().let { if (it.isBlank()) "" else " · $it" }
         localVehicleKnown && localInVehicle ->
-            "Driver #$localVehicleId · menunggu StreamInVehicle/COL native."
+            "Driver #$localVehicleId · menunggu StreamInVehicle/COL native." +
+                localDriverVehicleParameterSummary().let { if (it.isBlank()) "" else " · $it" }
         else -> {
             val dynamicVehicles = vehicles.count { it.dynamicSyncKnown }
             "${actors.size}/${streamedPlayers} player · ${serverActors.size}/$trackedServerActors NPC · " +
@@ -2330,6 +2567,24 @@ private class NativeWorldSurfaceView(context: Context) : View(context) {
     private fun drawVehicle(canvas: Canvas, vehicle: WorldVehicle, x: Float, y: Float) {
         if (!containsMapPoint(x, y)) return
         val bodyColor = vehicleMarkerColor(vehicle.colour1, vehicle.colour2)
+        val objective = vehicle.parametersKnown && vehicle.objective == 1
+        val locked = vehicle.parametersKnown && vehicle.doors == 1
+        if (objective) {
+            // Legacy SetVehicleParamsForPlayer/RPC-24 objective is a
+            // recipient-specific GTA arrow. Canvas has no GTA arrow asset, so
+            // draw a clearly portable yellow diamond cue from that exact fact.
+            val radius = dp(12f)
+            markerPath.reset()
+            markerPath.moveTo(x, y - radius)
+            markerPath.lineTo(x + radius * 0.7f, y)
+            markerPath.lineTo(x, y + radius)
+            markerPath.lineTo(x - radius * 0.7f, y)
+            markerPath.close()
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = dp(1.8f)
+            paint.color = Color.rgb(255, 222, 62)
+            canvas.drawPath(markerPath, paint)
+        }
         val halfWidth = dp(8f)
         val halfHeight = dp(4.5f)
         canvas.save()
@@ -2356,7 +2611,11 @@ private class NativeWorldSurfaceView(context: Context) : View(context) {
         paint.color = Color.argb(235, 10, 23, 30)
         canvas.drawLine(x, y - halfHeight, x, y + halfHeight, paint)
         canvas.restore()
-        val label = if (vehicle.dynamicSyncKnown) "V${vehicle.id} SYNC" else "V${vehicle.id}"
+        val label = buildString {
+            append(if (vehicle.dynamicSyncKnown) "V${vehicle.id} SYNC" else "V${vehicle.id}")
+            if (objective) append(" · OBJ")
+            if (locked) append(" · LOCK")
+        }
         drawLabel(canvas, label, x + dp(10f), y + dp(13f), bodyColor)
     }
 

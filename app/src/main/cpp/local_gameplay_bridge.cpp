@@ -11,6 +11,10 @@ namespace {
 constexpr float kMovementEpsilon = 0.0001f;
 constexpr float kVelocityEpsilon = 0.05f;
 constexpr float kPi = 3.14159265358979323846f;
+// Packet-200 CVector values use GTA's 50 Hz movement-speed convention, while
+// local pilots integrate world units per second. Keep outbound conversion in
+// this bridge paired with vehiclemotion::applyServerLinearVelocity.
+constexpr float kGtaPhysicsTicksPerSecond = 50.0f;
 // A deliberately close static-world probe avoids pretending this early port
 // owns GTA's full per-weapon trajectory/range model. It is only an optional
 // absolute HitType=None contact; unresolved distance remains the zero sentinel.
@@ -181,7 +185,8 @@ LocalGameplayStep advanceLocalOnFoot(const state::LocalPlayer& local,
                                      const gta::world::CollisionWorld& collisionWorld,
                                      float deltaSeconds, LocalGameplayState& state,
                                      float serverGravity,
-                                     const state::WorldEnvironment* environment) {
+                                     const state::WorldEnvironment* environment,
+                                     const std::vector<gta::removal::Directive>* removals) {
   LocalGameplayStep result;
   if (local.spectatingKnown && local.spectating) {
     invalidateLocalPrediction(state);
@@ -251,7 +256,8 @@ LocalGameplayStep advanceLocalOnFoot(const state::LocalPlayer& local,
   const movement::LocalMotionState previousMotion = state.motion;
   const gta::col::Vec3 previousPosition = previousMotion.position;
   const movement::StepResult motion = movement::advance(
-      collisionWorld, controls.intent(), wire.headingDegrees, deltaSeconds, state.motion, serverGravity);
+      collisionWorld, controls.intent(), wire.headingDegrees, deltaSeconds, state.motion,
+      serverGravity, removals);
   result.status = fromMovementStatus(motion.status);
   result.moved = motion.moved;
   result.jumped = motion.jumped;
@@ -321,7 +327,10 @@ LocalGameplayStep advanceLocalDriverVehicle(const state::LocalPlayer& local,
                                             const gta::world::CollisionWorld& collisionWorld,
                                             float deltaSeconds,
                                             LocalGameplayState& state,
-                                            const state::WorldEnvironment* environment) {
+                                            const state::WorldEnvironment* environment,
+                                            const std::vector<gta::removal::Directive>* removals,
+                                            const vehiclemotion::VehicleMotionTuning* tuning,
+                                            bool manualVehicleEngineAndLights) {
   LocalGameplayStep result;
   if (local.spectatingKnown && local.spectating) {
     invalidateLocalPrediction(state);
@@ -382,6 +391,15 @@ LocalGameplayStep advanceLocalDriverVehicle(const state::LocalPlayer& local,
   }
 
   const input::WireInput wire = controls.wireInput();
+  // A server's explicit engine-off parameter is a safe vehicle-control effect
+  // only when its PlayerInit manual-engine bit says scripts own GTA's automatic
+  // enter/night behavior. Keep steering/braking/coasting usable, but do not let
+  // held Android throttle produce local acceleration in that authoritative
+  // manual mode. Unset (-1), or a non-manual server, preserves the normal pilot.
+  const bool serverEngineOff = manualVehicleEngineAndLights && vehicle.parameters.known &&
+      vehicle.parameters.value(state::VehicleParameter::Engine) == 0;
+  input::TouchIntent vehicleIntent = controls.intent();
+  if (serverEngineOff) vehicleIntent.moveY = 0.0f;
   if (state.vehicleAuthoritativeResetPending || !state.vehicleMotion.initialized ||
       state.vehicleMotion.vehicleId != vehicle.id) {
     if (!vehiclemotion::resetFromAuthoritative(vehicle.id, {vehicle.x, vehicle.y, vehicle.z},
@@ -392,10 +410,35 @@ LocalGameplayStep advanceLocalDriverVehicle(const state::LocalPlayer& local,
     state.vehicleAuthoritativeResetPending = false;
   }
 
+  if (state.observedVehicleVelocityVehicleId != vehicle.id) {
+    state.observedVehicleVelocityVehicleId = vehicle.id;
+    state.consumedVehicleLinearVelocityRevision = 0;
+  }
+  // RPC 91 carries no vehicle ID and is retained only for this exact local
+  // streamed driver vehicle. Apply each linear revision once after an
+  // authoritative transform seed; angular velocity remains renderer/physics
+  // state until the port owns a full three-axis GTA vehicle orientation path.
+  if (vehicle.linearVelocityKnown &&
+      vehicle.linearVelocityRevision != state.consumedVehicleLinearVelocityRevision) {
+    if (!vehiclemotion::applyServerLinearVelocity(
+            vehicle.linearVelocityX, vehicle.linearVelocityY, vehicle.linearVelocityZ,
+            vehicle.linearVelocityRevision, state.vehicleMotion)) {
+      state.vehicleMotion = {};
+      state.vehiclePredictionActive = false;
+      state.vehicleAuthoritativeResetPending = true;
+      result.status = LocalGameplayStatus::ServerVelocityActive;
+      return result;
+    }
+    state.consumedVehicleLinearVelocityRevision = vehicle.linearVelocityRevision;
+  }
+
   const vehiclemotion::LocalVehicleMotionState previousMotion = state.vehicleMotion;
   const gta::col::Vec3 previousPosition = previousMotion.position;
+  const float vehicleGravity = environment != nullptr && environment->gravityKnown
+                                   ? environment->gravity
+                                   : 0.008f;
   const vehiclemotion::StepResult motion = vehiclemotion::advance(
-      collisionWorld, controls.intent(), deltaSeconds, state.vehicleMotion);
+      collisionWorld, vehicleIntent, deltaSeconds, state.vehicleMotion, removals, vehicleGravity, tuning);
   result.status = fromVehicleMovementStatus(motion.status);
   result.moved = motion.moved;
   result.grounded = motion.grounded;
@@ -417,6 +460,8 @@ LocalGameplayStep advanceLocalDriverVehicle(const state::LocalPlayer& local,
       state.vehicleMotion.grounded = true;
     }
     state.vehicleMotion.speed = 0.0f;
+    state.vehicleMotion.lateralSpeed = 0.0f;
+    state.vehicleMotion.verticalVelocity = 0.0f;
     result.status = LocalGameplayStatus::VehicleBlocked;
     result.moved = std::fabs(currentHeading - previousMotion.headingDegrees) > kMovementEpsilon;
     result.grounded = state.vehicleMotion.grounded;
@@ -433,7 +478,10 @@ LocalGameplayStep advanceLocalDriverVehicle(const state::LocalPlayer& local,
   sync::InCarState candidate;
   candidate.vehicleId = vehicle.id;
   candidate.leftRight = static_cast<uint16_t>(wire.leftRight);
-  candidate.upDown = static_cast<uint16_t>(wire.upDown);
+  // Match the bounded manual-engine-off pilot in outbound authoritative sync;
+  // otherwise a server could receive a fabricated held throttle despite the
+  // client correctly rendering/coasting an engine-off vehicle.
+  candidate.upDown = static_cast<uint16_t>(serverEngineOff ? 0 : wire.upDown);
   candidate.keys = wire.keys;
   const float halfRadians = -state.vehicleMotion.headingDegrees * kPi / 360.0f;
   candidate.quaternionW = std::cos(halfRadians);
@@ -448,21 +496,26 @@ LocalGameplayStep advanceLocalDriverVehicle(const state::LocalPlayer& local,
     result.status = LocalGameplayStatus::InvalidInput;
     return result;
   }
-  candidate.velocityX = (state.vehicleMotion.position.x - previousPosition.x) / elapsed;
-  candidate.velocityY = (state.vehicleMotion.position.y - previousPosition.y) / elapsed;
-  candidate.velocityZ = 0.0f;
+  candidate.velocityX = (state.vehicleMotion.position.x - previousPosition.x) /
+                        (elapsed * kGtaPhysicsTicksPerSecond);
+  candidate.velocityY = (state.vehicleMotion.position.y - previousPosition.y) /
+                        (elapsed * kGtaPhysicsTicksPerSecond);
+  candidate.velocityZ = state.vehicleMotion.grounded ? 0.0f :
+                        state.vehicleMotion.verticalVelocity / kGtaPhysicsTicksPerSecond;
   if (std::fabs(candidate.velocityX) < kMovementEpsilon) candidate.velocityX = 0.0f;
   if (std::fabs(candidate.velocityY) < kMovementEpsilon) candidate.velocityY = 0.0f;
+  if (std::fabs(candidate.velocityZ) < kMovementEpsilon) candidate.velocityZ = 0.0f;
   candidate.vehicleHealth = vehicle.health;
   candidate.playerHealth = percentByte(health);
   candidate.playerArmour = percentByte(armour);
   // The low six weapon bits come only from the server's exact armed-weapon
   // RPC. Driver FIRE/AIM never emits BulletSync or a hit/reward claim; the
-  // conservative no-target path is on-foot/AIM-only. Siren, landing gear,
-  // trailers, and Hydra thrust remain neutral until their
-  // own server-backed reducers exist.
+  // conservative no-target path is on-foot/AIM-only. Siren is likewise only
+  // mirrored when this exact streamed driver vehicle has a retained server
+  // RPC-24 value; landing gear, trailers, and Hydra thrust remain neutral.
   candidate.additionalKeyWeapon = local.armedWeaponKnown ? local.armedWeapon : 0;
-  candidate.siren = 0;
+  candidate.siren = vehicle.parameters.known &&
+          vehicle.parameters.value(state::VehicleParameter::Siren) == 1 ? 1 : 0;
   candidate.landingGear = 0;
   candidate.trailerId = 0;
   candidate.hydraThrustAngle = 0;
@@ -596,7 +649,8 @@ bool buildLocalNoTargetBulletSync(const state::LocalPlayer& local,
 bool applyLocalNoTargetStaticWorldImpact(const gta::world::CollisionWorld& collisionWorld,
                                          const LocalGameplayState& state,
                                          const sync::AimState& aim,
-                                         sync::BulletState& inOut) {
+                                         sync::BulletState& inOut,
+                                         const std::vector<gta::removal::Directive>* removals) {
   // This helper intentionally has no world-entity lookup. It can only replace
   // the zero no-impact sentinel with a close face from read-only user-owned
   // COL data after the same collision-grounded state that permitted AimSync.
@@ -611,7 +665,7 @@ bool applyLocalNoTargetStaticWorldImpact(const gta::world::CollisionWorld& colli
   const gta::col::Vec3 direction{aim.cameraFrontX, aim.cameraFrontY, aim.cameraFrontZ};
   gta::world::RaycastHit hit;
   if (!collisionWorld.raycastStaticWorld(origin, direction, kNoTargetStaticImpactDistance,
-                                         state.motion.interior, hit) ||
+                                         state.motion.interior, hit, removals) ||
       !hit.valid || !hit.hit) {
     return false;
   }

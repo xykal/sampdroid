@@ -9,9 +9,9 @@ Ini bukan wrapper `samp.exe`, bukan Wine/Winlator, dan bukan runtime modpack PC.
 user pilih server
   → native UDP socket
   → open/cookie/auth/accepted
-  → NEW_INCOMING_CONNECTION + ClientJoin
-  → socket + message counters + split reassembler TETAP hidup
-  → poll datagram / ACK reliable / reply internal ping / reduce RPC world state
+  → NEW_INCOMING_CONNECTION → internal ping → empty static-data → ClientJoin
+  → socket + message counters + gate receipt reliable + split reassembler + gate reliable-ordered TETAP hidup
+  → poll datagram / ACK reliable / retry bounded / reply ping/static-data request / reduce RPC world state
   → reliable transport keepalive otomatis saat idle
   → user memilih class lalu meminta spawn secara eksplisit
   → respons spawn nonzero → core kirim RPC PlayerSpawn (52) → tunggu ACK
@@ -23,6 +23,161 @@ user pilih server
 
 Tombol **Spawn** sekarang menjalankan handshake native eksplisit, bukan spawn
 otomatis saat connect. Ia tetap bukan kontrol gameplay atau renderer.
+
+### Kontrol RakPeer sesudah accept
+
+Untuk parity source offline dengan jalur client RakPeer 2.52 yang diaudit,
+setelah `ID_CONNECTION_REQUEST_ACCEPTED` core mengirim, dalam urutan transport,
+`ID_NEW_INCOMING_CONNECTION` reliable, `ID_INTERNAL_PING` unreliable dengan
+RakNetTime lokal, lalu `ID_RECEIVED_STATIC_DATA` reliable dengan payload lokal
+kosong, sebelum `ClientJoin`. Semua reliable sejak `CONNECTION_REQUEST` dicatat
+pada antrean kecil ACK/retry (750 ms, maksimal lima retransmit), dan record yang
+belum di-ACK dipindahkan ke session retained—tidak hilang di batas probe/session.
+`ID_REQUEST_STATIC_DATA` dari peer dibalas payload kosong yang sama; static data
+peer tidak diperlakukan sebagai data GTA/world. Ini berasal dari perilaku
+`RakPeer::PingInternal`/`SendStaticDataInternal`, bukan tebakan format payload.
+
+Parity ini sudah punya vector regresi host, tetapi **belum** merupakan klaim
+bahwa UIF atau server tertentu telah menerima gameplay SampDroid; uji live tetap
+ditunda sampai endpoint tidak lagi terkena ban percobaan malformed sebelumnya.
+
+## Static GTA world filter dari server (RPC 43)
+
+Sesudah reducer menerima `RemoveBuildingForPlayer` (`RPC 43`), directive
+`u32 model | VEC3 center | float radius` yang exact dan bounded diterapkan
+kepada **placement static** GTA milik user untuk recipient session itu. `u32`
+`0xFFFFFFFF` mempertahankan arti Pawn `modelid = -1`: hapus semua model static
+di radius, bukan model ID baru. Record pendek/bertail, float non-finite, atau
+range tidak aman ditolak; duplikat tidak tumbuh dan maksimum 1.000 directive
+retained.
+
+Satu filter yang sama berjalan di renderer IPL/DFF prelit, overlay IPL/TXD,
+dan collision world COL: query floor grounding, sweep on-foot/driver, dan ray
+static Packet-206 no-target semuanya mengabaikan placement yang matching.
+Saat directive berubah, retained session juga membuang prediksi on-foot/driver
+sebelum tick berikutnya; client tidak boleh mengirim langkah yang baru saja
+tervalidasi terhadap lantai/dinding yang sudah dihapus server. Artinya native
+tidak akan memperlihatkan gedung yang sudah server remove sambil masih
+membenturkannya ke player. Ini **tidak** menghapus/mengedit data GTA di
+SD card, dynamic `CreateObject`, vehicle, player, pickup, atau asset lain; bila
+model/placement belum ada di data user, path fail-closed tanpa proxy geometry.
+Directive bersifat session-local dan ikut hilang saat teardown/reset `WorldState`.
+
+## Recipient-local vehicle parameters (RPC 24)
+
+`SetVehicleParams` memakai RPC `24` dengan body fixed **18 byte**:
+`VehicleID:u16` diikuti enam belas byte parameter legacy dalam urutan `engine,
+lights, alarm, doors, bonnet, boot, objective, siren, driver/passenger/back-left/
+back-right door, driver/passenger/back-left/back-right window`. Byte wire dibaca
+sebagai signed `int8`: `0xFF` berarti `-1` (**unset**), sementara hanya `0` dan
+`1` yang valid sebagai nilai lain. Body pendek/bertail, ID nol, atau byte lain
+ditolak atomik.
+
+Audit writer open.mp ([vehicle.cpp](https://github.com/openmultiplayer/open.mp/blob/master/Server/Components/Vehicles/vehicle.cpp)) menetapkan `this->params = params` lalu selalu menulis
+**seluruh** struct `VehicleParams`; [Pawn vehicle natives](https://github.com/openmultiplayer/open.mp/blob/master/Server/Components/Pawn/Scripting/Vehicle/Natives.cpp)
+memperlihatkan `SetVehicleParamsEx` mengisi setiap field dari argumennya dan
+`SetVehicleParamsForPlayer` mengirim full struct global dengan override recipient.
+Karena itu satu RPC 24 adalah replacement snapshot:
+field `-1` membersihkan state retained ke unset, bukan delta/no-change. Ini
+memastikan engine/lock lama tidak bertahan setelah reset server. Reducer hanya
+menerima target `StreamInVehicle`; ia tidak dapat membuat vehicle atau menebak
+raw ID. State parameter juga dibersihkan pada `StreamOutVehicle` **dan**
+`StreamInVehicle` baru untuk raw ID yang sama. Perubahan snapshot menerbitkan
+event `VehicleChanged` bertanda parameter; karena RPC ini tidak membawa
+transform/velocity, pilot driver tidak disnap ulang—tick berikutnya saja
+mengonsumsi gate engine manual yang baru.
+
+UI driver menampilkan hanya fakta `MESIN`, `LAMPU`, dan `SIREN` yang eksplisit
+dari server. Bit `ManualVehicleEngineAndLights` PlayerInit juga diretain: hanya
+bila bit itu aktif pilot kinematic menghormati `engine=0` dengan menahan throttle
+lokal/outbound sambil membolehkan coast, steer, dan brake. Pada server automatic
+bit-off, engine/lights tetap fakta visual tetapi tidak menjadi pembatas drivetrain
+Android yang ditebak. `siren=1` disalin ke Packet-200 outbound hanya untuk exact
+current streamed driver vehicle. Tidak ada toggle Android untuk engine/lights/siren,
+tidak ada door/alarm/lampu visual GTA atau unlock/damage/system kendaraan lokal
+yang diinvent; door-lock eksplisit server hanya boleh menggate request masuk
+seperti dijelaskan di bawah. Field lain tetap retained sebagai state kompatibilitas dan dapat
+mendukung renderer/physics nyata kelak bila ada kontrak GTA user-data yang
+terverifikasi.
+
+### Legacy recipient objective/door lock (RPC 161)
+
+Legacy server paths use separate RPC `161` for `SetVehicleParamsForPlayer`,
+with exact body `VehicleID:u16 | objective:u8 | doorsLocked:u8`. (Current
+open.mp instead emits a full recipient RPC 24 snapshot; both forms are accepted
+for compatibility.) Both RPC-161 trailing fields are strict booleans `0/1`,
+never a signed unset value. It updates only the retained `objective` and `doors`
+slots for a currently streamed vehicle, preserving any engine/lights/siren facts
+established by the most recent RPC 24. A duplicate produces no fake
+transform update; malformed/unknown/unstreamed targets fail closed, and normal
+stream lifecycle clears it with all other parameter facts.
+
+The Android radar renders a portable yellow diamond and `OBJ` label for an
+explicit objective; GLES renders a small yellow marker above the vehicle rather
+than claiming an exact GTA arrow asset. An explicit `doorsLocked=1` also blocks
+the local USE → `EnterVehicle` request for this recipient, matching server
+lock authority. It does not synthesize an unlock, seat, animation, or optimistic
+entry: server RPC 70 remains the sole seat authority.
+
+## Recipient-local vehicle velocity (RPC 91)
+
+`SetVehicleVelocity` memakai RPC `91` dengan body exact **13 byte**:
+`Type:u8 | Velocity:VEC3 raw-f32`. Writer open.mp menetapkan `Type=0` sebagai
+linear dan `Type=1` sebagai angular; tidak ada `VehicleID` pada wire. Karena
+itu reducer hanya menerima directive ketika recipient lokal sudah diberi
+`PutPlayerInVehicle` seat `0` dan proxy ID tersebut masih `StreamIn`. Ia tidak
+memilih kendaraan terdekat/terakhir, tidak menarget passenger atau vehicle
+unoccupied, dan menolak keluarga rail GTA (`449, 537, 538, 569, 570, 590`) sesuai
+semantik SA-MP bahwa native velocity tidak memengaruhi train. Selector selain
+`0/1`, payload bertail/pendek, NaN/Inf, vector melewati envelope sync, atau
+context yang tidak cocok ditolak atomik tanpa mengubah state.
+
+Channel linear dan angular disimpan sendiri beserta revision monotonik; command
+angular tidak menghapus vektor linear sebelumnya. Stream-out atau `StreamIn`
+baru untuk raw ID yang sama membersihkan directive sehingga ID reuse tidak dapat
+mewarisi force lama. Perubahan valid juga membuang prediksi driver yang sedang
+berjalan pada batas reducer, sebelum tick berikutnya dapat membuat Packet-200
+stale.
+
+Untuk channel **linear** yang wajar bagi pilot saat ini (magnitudo sampai `3.0`
+dalam unit CVector GTA), bridge mengonsumsi masing-masing revision satu kali
+setelah reseed transform authoritative. Nilai CVector GTA dikonversi pada batas
+terpusat 50-Hz ke world-unit/detik, lalu horizontal/lateral dan launch-Z berjalan
+melalui floor/sweep COL yang sama dengan driver. Packet-200 berikutnya
+mengonversi kembali velocity ke CVector GTA. Bila COL tidak cukup, body bernilai
+ekstrem untuk pilot, atau bounds server dilanggar, path fail-closed alih-alih
+membuat rute/teleport bebas. Reset `SetVehiclePosition` untuk vehicle yang sama
+tidak memutar ulang revision lama.
+
+Channel **angular** tetap direduce dan disimpan sebagai fakta server, tetapi
+belum diubah menjadi yaw/pitch/roll: port ini belum mempunyai physics/orientasi
+kendaraan GTA tiga-sumbu. Ini disengaja agar `turn` tidak menjadi rotasi lokal
+palsu. Jadi increment ini mendukung jump/boost linear collision-bounded tanpa
+mengklaim suspension, damage, air/boat/train, atau rotasi GTA lengkap.
+
+Untuk throttle/steer biasa, pilot driver sekarang dapat memakai **envelope
+kinematic data-informed** bila user sudah memasang `data/handling.cfg` valid dan
+sinkronisasi `data/vehicles.ide` menemukan token handling untuk model vehicle
+server saat ini. Reader hanya mengizinkan profile bounded lalu menurunkan
+maksimum speed, accel/reverse, brake/handbrake, coast/lateral settle, dan steering
+rate ke envelope Android; profile disalin dari runtime read-only dan session
+mencocokkan model lagi tepat sebelum dipakai. Missing/invalid/stale profile selalu
+kembali ke constants generic dan tidak pernah memblokir seat server atau
+memaksa transform. Ini **bukan** full GTA handling: tidak ada wheel/suspension,
+gearbox, traction/contact physics, tyre/damage, boat/air/train behavior, atau
+angular vehicle simulation. Semua outcome masih melewati same COL/bounds/rate
+Packet-200/correction server gate.
+
+Terpisah dari RPC 91, **Packet-200 inbound** membawa quaternion compressed
+untuk transform vehicle remote. Decoder menormalisasi dan mendekomposisi inverse
+quaternion ke Euler GTA `X → Y → Z` sebelum DFF user-owned dirender, sehingga
+roll/pitch pesawat atau kendaraan yang terbalik tidak lagi dibuang menjadi yaw
+proxy. Konvensi inverse mempertahankan heading kompatibel yang sudah ada
+(`rotationZ == angle` untuk vehicle level). Packet-209 tidak punya quaternion
+melainkan vector roll/direction; ia mempertahankan attitude Packet-200 terakhir,
+dan `StreamInVehicle`/`SetVehicleZAngle` kembali ke fallback yaw-only. Semua ini
+**visual remote transform**: tidak memberi pilot lokal suspension, angular
+physics, collision baru, atau authority Packet-200 outbound.
 
 ## Fondasi outbound OnFootSync
 
@@ -47,9 +202,10 @@ berikut terpenuhi:
    langkah grounded yang valid;
 7. interval `OnFootRate` dari `PlayerInit` sudah jatuh tempo.
 
-Packet memakai `UNRELIABLE_SEQUENCED` (reliability `7`), ordering channel `1`,
-dan counter ordering channel-1 yang **terpisah** dari RPC reliable-ordered
-channel-2. Nilai rate `0`/abnormal dibatasi client ke 20–1000 ms (default 30 ms)
+Packet memakai `UNRELIABLE_SEQUENCED` (reliability `7`), ordering channel `0`,
+dan counter sequenced channel-0 yang **terpisah** dari counter RPC
+reliable-ordered channel-0. RakNet memang menyimpan write-index ordered dan
+sequenced pada array berbeda; nilai rate `0`/abnormal dibatasi client ke 20–1000 ms (default 30 ms)
 agar server malformed tidak dapat membuat client mem-flood atau freeze terlalu lama.
 
 Penting: layout client→server packet `207` berbeda dari layout broadcast
@@ -65,8 +221,8 @@ Saat player **on-foot**, tombol semantic **AIM** sedang ditahan, collision
 native sudah menghasilkan transform grounded, dan server sudah memberi
 `SetPlayerArmedWeapon` **serta** ammo untuk weapon aktif, tick gameplay juga
 boleh membangun Packet `203` (`PlayerAimSync`). Ini dikirim
-`UNRELIABLE_SEQUENCED` pada channel `1`, menggunakan ordering counter sync yang
-sama tetapi cadence tersendiri dari `WeaponRate` PlayerInit (dibatasi 20–1000
+`UNRELIABLE_SEQUENCED` pada channel `0`, menggunakan ordering counter sequenced
+yang sama tetapi tetap terpisah dari counter RPC ordered serta memiliki cadence tersendiri dari `WeaponRate` PlayerInit (dibatasi 20–1000
 ms, default 30 ms). Ia tetap memerlukan gate session/spawn/ACK yang sama dengan
 OnFootSync dan berhenti saat freeze, masuk vehicle, atau kamera endpoint sedang
 dikendalikan RPC server.
@@ -103,8 +259,8 @@ tersedia.
 Saat dan hanya saat on-foot collision bridge, spawn ACK, `AIM`, `FIRE`, weapon,
 ammo, freeze/death/vehicle, kamera-server, **dan** `PlayerInit.LagCompensation`
 server nonzero gate semuanya valid, native dapat mengirim form client
-**41 byte / 328 bit** berikut pada channel-1
-`UNRELIABLE_SEQUENCED`. Layout client ini sudah diaudit terhadap
+**41 byte / 328 bit** berikut pada channel-0
+`UNRELIABLE_SEQUENCED` (counter sequenced tetap terpisah dari RPC ordered). Layout client ini sudah diaudit terhadap
 `PlayerBulletSync::read` open.mp commit `3d20f3dc0e26917264cdc8585c65913e080a143c`
 dan generator NPC-nya; handler open.mp yang sama menolak Packet-206 bila
 `LagCompensation == 0`, sehingga Android fail-closed dan HUD menyatakan
@@ -177,11 +333,11 @@ ada Packet-206 target/raycast/hit/damage yang dipalsukan oleh Android.
 Setelah user menekan **Spawn**, urutan yang dipakai adalah:
 
 ```text
-client → PlayerRequestSpawn (RPC 129, RELIABLE_ORDERED channel 2)
+client → PlayerRequestSpawn (RPC 129, RELIABLE_ORDERED channel 0)
 server → RequestSpawn response (legacy u8 atau open.mp u32, nilai nonzero)
-client → PlayerSpawn (RPC 52 kosong, RELIABLE_ORDERED channel 2)
+client → PlayerSpawn (RPC 52 kosong, RELIABLE_ORDERED channel 0)
 server → transport ACK untuk RPC 52
-client → eligible untuk OnFootSync channel 1
+client → eligible untuk OnFootSync channel 0 (counter USeq terpisah dari RPC)
 ```
 
 Nilai respons `2` juga diperlakukan sebagai izin spawn, sehingga jalur
@@ -268,6 +424,15 @@ bubble setelah waktu habis (lifetime defensif maksimum satu jam), lalu snapshot
 hanya menyalurkan bubble aktif yang masih dalam draw-distance. Bubble tidak
 mengubah chat, position, combat, atau authority gameplay apa pun.
 
+RPC `SendDeathMessage` (55) juga memiliki surface HUD global yang terpisah
+dari RPC `PlayerDeath` (166). Wire exact-nya `u16 KillerID, u16 PlayerID, u8
+reason`; `0xFFFF` pada killer adalah sentinel no-killer dari writer server.
+Reducer menerima body 5 byte saja, menolak victim sentinel/trailing data, dan
+menyimpan maksimal 16 row selama delapan detik steady-clock. Snapshot Android
+mengirim paling banyak delapan row live dengan nama known atau label `#ID`; HUD
+menampilkan paling banyak empat row dan reason raw `R<n>`. Feed tidak mengubah
+HP, ammo, damage, respawn, atau menyatakan Android telah memahami weapon GTA.
+
 ## Touch input → preview aman
 
 `Kontrol touch` adalah pad multi-touch v1 di Android: stick bergerak, drag
@@ -301,9 +466,12 @@ Router hanya menyatukan state hardware dengan pad touch menjadi `ControlSample`
 terbatas lalu melewati JNI mapper yang sama. Sebelum shortcut membuka modal ia
 mengosongkan held hardware; composer sendiri masih memakai sender chat native
 ordered dan native yang memvalidasi sesi/pesan. Dead-zone controller, freeze
-`TogglePlayerControllable`, dismiss scene, dan state button tersangkut ditangani
-dengan clear fail-closed. Tidak ada key/controller Android yang langsung menulis
-RakNet atau mengarang transform dunia.
+`TogglePlayerControllable`, app masuk background, dismiss scene, dan state button
+tersangkut ditangani dengan clear fail-closed. Saat activity tidak `RESUMED`,
+radar/GPU menghentikan gameplay tick, render/asset refresh, dan playback stream,
+radar mengirim sample input nol sekali, sedangkan surface GLES juga menerima
+`onPause()` eksplisit untuk menjeda thread GL; tidak ada key/controller Android
+yang langsung menulis RakNet atau mengarang transform dunia.
 
 ## Ownership dan keamanan
 
@@ -311,10 +479,30 @@ RakNet atau mengarang transform dunia.
 - Membuka session baru menutup socket lama secara aman.
 - Menutup dialog/detail session juga mengirim disconnect best-effort dan menutup
   UDP socket; client tidak meninggalkan koneksi pemain tersembunyi.
+- RPC `PlayerClose` (40) body tepat kosong dan `ConnectionRejected` (130)
+  `u8 reason 1..4` juga terminal: native membersihkan hold input/prediksi lalu
+  menutup socket dan memberi status server-ended/rejection yang terverifikasi.
+  Byte tambahan/reason asing ditolak; keduanya bukan alasan untuk
+  mereset/mengarang world lokal. Jalur sebelum `PlayerInit` juga menghentikan
+  hand-off retained agar rejection eksplisit tidak menjadi status menunggu init.
+  Saat frame berikutnya inactive, radar/GLES menghentikan tick gameplay, asset
+  refresh, audio, dialog/menu server, dan visual world stale; hanya alasan
+  terminal yang tetap ditampilkan.
 - Datagram diterima hanya dari IP + port yang dipilih pengguna.
 - Split reassembly, player state, ACK record, pending reliable queue, dan retry
   semuanya dibatasi agar server/packet malformed tidak dapat mengalokasikan tanpa
-  batas.
+  batas. Receipt gate reliable mengingat maksimum 4.096 message number dalam
+  window `u16`, sehingga retransmit tetap di-ACK tetapi tidak mengulang control,
+  split fragment, atau reducer. Split membatasi 64 sequence pending, 256 KiB payload retained total,
+  serta total payload yang masih representable oleh bit-length `u16`; fragment
+  dengan split-ID yang sama juga wajib mempertahankan count, reliability, dan
+  metadata ordering yang sama—identitas berbeda mengganti state ID lama agar
+  body dua packet tidak pernah tersambung. Overflow menutup session sesudah ACK
+  transport, bukan mempertahankan stream rusak.
+- `RELIABLE_ORDERED` inbound baru masuk reducer setelah gate urutan per channel:
+  frame lebih awal dibuffer bounded, lalu hanya run index kontigu yang dirilis.
+  Jika batas packet/byte terlampaui, session ditutup jujur—bukan meng-ACK lalu
+  menghilangkan RPC ordered yang tidak mungkin dipulihkan.
 - Network call harus dari `Dispatchers.IO`, bukan UI thread.
 
 ## Reliable ordered client RPC
@@ -323,7 +511,7 @@ Class/spawn request dibungkus seperti ini:
 
 ```text
 RakNet RELIABLE_ORDERED (9)
-ordering channel: 2 (SyncRPC)
+ordering channel: 0 (legacy client RPC stream)
 RPC payload: [0x14][rpc id][bit-packed fields]
 ```
 
@@ -339,23 +527,35 @@ di diagnostic. Ini transport keepalive, **bukan** player/gameplay sync atau
 mekanisme reconnect. Full congestion control/resend window tetap pekerjaan
 session/sync berikutnya.
 
-## Android diagnostic surface sementara
+## Alur pemain Android
 
-Di detail server terdapat:
+Detail server menempatkan alur utama di bagian atas, bukan menjadikan log
+transport sebagai cara bermain:
 
-- **Sesi native** — membuka socket dan memulai poll lifecycle-aware otomatis
-  selama dialog masih terlihat;
-- **Class n/m** — setelah `PlayerInit`, tap meminta class berikutnya dan tahan
-  meminta sebelumnya dari `SetSpawnInfoCount`; native menolak ID di luar count,
-  menjaga satu request class pending, lalu mengizinkan retry setelah timeout
-  bounded agar response lama tidak dipakai sebagai izin spawn;
-- **Spawn** — user-triggered `PlayerRequestSpawn`; respons izin memicu
-  `PlayerSpawn` native dan diagnostic menunggu ACK-nya;
+- **Hubungkan native** — membuka socket dan memulai poll lifecycle-aware otomatis
+  selama dialog masih terlihat. Tap ganda tidak membuat handshake paralel;
+  koneksi yang sedang dibuka/ditutup diberi status yang jelas;
+- **Pilih class** — baru aktif setelah `PlayerInit` mengumumkan class. Tap meminta
+  class berikutnya dan tahan meminta sebelumnya dari `SetSpawnInfoCount`; native
+  menolak ID di luar count, menjaga satu request pending, lalu mengizinkan retry
+  setelah timeout bounded agar respons lama tidak dipakai sebagai izin spawn;
+- **Spawn** — baru aktif setelah class selectable diterima. Respons izin memicu
+  `PlayerSpawn` native dan UI menunggu ACK transportnya;
+- **Buka dunia** — memilih scene GLES sebagai jalur utama untuk HUD/kontrol/scene
+  entity; perangkat tanpa OpenGL ES 2.0 secara otomatis jatuh ke radar Canvas
+  native yang memakai session dan tick collision yang sama. Ini bukan klaim
+  bahwa renderer GTA/physics penuh sudah selesai;
+- Bagian bawah tetap menyimpan query, probe, chat, touch layout, dan kontrol
+  lanjutan untuk troubleshooting tanpa menggeser alur pemain utama.
 - **Scoreboard** — meminta RPC 155 body kosong dengan throttle satu detik;
   respons roster score/ping hanya ditampilkan dari state server bounded;
 - **Kontrol touch** — membuka semantic multi-touch pad dan scene/radar dapat
   menjalankan tick OnFoot collision-grounded serta driver Packet-200 terbatas
-  bila world data GTA valid. Saat AIM ditahan dan kandidat Packet-203 lolos gate native, scene memakai view aim orang-pertama dari yaw/pitch yang sama; HUD menunjukkan reticle/pitch dan status kandidat (tanpa target/hit marker). Tap **USE** tetap memilih pickup dulu lalu meminta
+  bila world data GTA valid; driver memakai profile `handling.cfg` model-matched
+  bila tersedia atau fallback generic aman. Saat AIM ditahan dan kandidat
+  Packet-203 lolos gate native, scene memakai view aim orang-pertama dari
+  yaw/pitch yang sama; HUD menunjukkan reticle/pitch dan status kandidat (tanpa
+  target/hit marker). Tap **USE** tetap memilih pickup dulu lalu meminta
   driver/exit; tahan USE mengirim intent passenger untuk vehicle dekat. Keduanya
   hanya request RPC 26/154—seat lokal tidak berubah sampai RPC 70/71 server.
   Setelah server men-seat player dan vehicle masih streamed, snapshot dunia boleh
@@ -367,21 +567,31 @@ Di detail server terdapat:
   bit drive-by bila passenger non-cuffed memegang Uzi/MP5/Tec-9 dengan ammo
   server-known; FIRE tetap key input dan tidak mengirim target/damage BulletSync.
   Untuk remote, Packet 211 inbound yang source-verified membawa anchor passenger sendiri ke
-  renderer. Saat on-foot dan AIM ditahan, Packet 203 terbatas dapat mengikuti
+  renderer. Packet 210 inbound juga menerima transform trailer exact 57-byte
+  (`player, vehicle, VEC3, raw w/x/y/z quaternion, linear/turn VEC3`) hanya
+  untuk vehicle yang sudah streamed; state ini mengubah transform DFF/proxy
+  tetapi tidak membuat cab relation, health/seat, local trailer simulation, atau
+  Packet-210 outbound. Saat on-foot dan AIM ditahan, Packet 203 terbatas dapat mengikuti
   `WeaponRate` dari transform collision + weapon/ammo server; AIM+FIRE juga
   dapat mengirim Packet-206 no-target rate-capped. Target/hit/damage dan fire
   gameplay GTA lengkap tetap belum dikirim;
-- **Putus sesi** — menghentikan poll lalu menutup socket native.
+- **Putus sesi** — menghentikan poll lalu menutup socket native. Jika handshake
+  masih berada di thread IO, teardown menunggunya selesai lebih dulu agar socket
+  terlambat tidak tertinggal setelah dialog ditutup.
 
-Loop memanggil native poll di `Dispatchers.IO` (timeout UDP 40 ms). Setiap poll
-melakukan paling banyak satu receive blocking, lalu hanya bila itu tidak timeout
-menguras maksimal 15 datagram siap secara nonblocking (16 attempt total); presentation
-JSON/UI hanya diperbarui sekitar 10 Hz. Saat dialog ditutup, coroutine dibatalkan dan
-disconnect best-effort dikirim. Poll juga menjalankan keepalive transport reliable
-dan reply internal ping. Dunia radar maupun scene GPU menjalankan gameplay tick
-periodik; encoder OnFoot/driver/passenger/AimSync tetap fail-closed bila
-collision, spawn/ACK, vehicle stream, camera endpoint, atau authority server
-tidak memenuhi gate.
+Loop memanggil native poll di `Dispatchers.IO` (timeout UDP foreground 40 ms).
+Setiap poll melakukan paling banyak satu receive blocking, lalu hanya bila itu
+tidak timeout menguras maksimal 15 datagram siap secara nonblocking (16 attempt
+total); presentation JSON/UI hanya diperbarui sekitar 10 Hz. Saat activity tidak
+`RESUMED`, socket eksplisit hanya mendapat cadence maintenance 200 ms/100 ms
+agar ACK/retry bounded tidak langsung putus, sementara snapshot, dialog/menu
+server, dan renderer tidak dipresentasikan; controller presentasi dibersihkan
+saat transisi background. Saat dialog ditutup, polling dibatalkan dan teardown
+socket diserialkan di belakang handshake IO yang mungkin masih berjalan. Poll
+juga menjalankan keepalive transport reliable dan reply internal ping. Dunia
+radar maupun scene GPU menjalankan gameplay tick periodik; encoder
+OnFoot/driver/passenger/AimSync tetap fail-closed bila collision, spawn/ACK,
+vehicle stream, camera endpoint, atau authority server tidak memenuhi gate.
 
 Surface ini masih **eksperimen** dan belum renderer/simulasi GTA lengkap. Ia
 menjalankan path gameplay native yang terbatas dan tervalidasi, bukan mengklaim

@@ -627,8 +627,8 @@ bool buildCollisionWorld(const CollisionCatalog& catalog, const std::vector<map:
       error = "transform placement collision tidak valid";
       return false;
     }
-    candidate.instances_.push_back({model, placement.position, rotation, placement.interior,
-                                    worldMinimum, worldMaximum});
+    candidate.instances_.push_back({model, placement.modelId, placement.position, rotation,
+                                    placement.interior, worldMinimum, worldMaximum});
     ++candidateReport.attachedPlacements;
   }
 
@@ -672,8 +672,9 @@ bool buildCollisionWorld(const CollisionCatalog& catalog, const std::vector<map:
   return true;
 }
 
-bool CollisionWorld::findHighestFloor(float x, float y, float minZ, float maxZ, int32_t interior,
-                                      col::FloorHit& out) const {
+bool CollisionWorld::findHighestFloor(
+    float x, float y, float minZ, float maxZ, int32_t interior, col::FloorHit& out,
+    const std::vector<removal::Directive>* removals) const {
   out = {};
   if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(minZ) || !std::isfinite(maxZ) ||
       minZ > maxZ) {
@@ -687,6 +688,8 @@ bool CollisionWorld::findHighestFloor(float x, float y, float minZ, float maxZ, 
     if (index >= instances_.size()) return;
     const Instance& instance = instances_[index];
     if (!instance.model || instance.interior != interior ||
+        removal::removesAny(removals, instance.modelId, instance.position.x,
+                            instance.position.y, instance.position.z) ||
         x < instance.worldMinimum.x - kEpsilon || x > instance.worldMaximum.x + kEpsilon ||
         y < instance.worldMinimum.y - kEpsilon || y > instance.worldMaximum.y + kEpsilon ||
         maxZ < instance.worldMinimum.z - kEpsilon || minZ > instance.worldMaximum.z + kEpsilon) {
@@ -703,9 +706,9 @@ bool CollisionWorld::findHighestFloor(float x, float y, float minZ, float maxZ, 
   return out.hit;
 }
 
-HorizontalMoveResult CollisionWorld::resolveHorizontalMove(float startX, float startY, float targetX,
-                                                            float targetY, float feetZ, float radius,
-                                                            float height, int32_t interior) const {
+HorizontalMoveResult CollisionWorld::resolveHorizontalMove(
+    float startX, float startY, float targetX, float targetY, float feetZ, float radius,
+    float height, int32_t interior, const std::vector<removal::Directive>* removals) const {
   HorizontalMoveResult result;
   result.position = {startX, startY, feetZ};
   if (!std::isfinite(startX) || !std::isfinite(startY) || !std::isfinite(targetX) ||
@@ -732,6 +735,8 @@ HorizontalMoveResult CollisionWorld::resolveHorizontalMove(float startX, float s
       if (index >= instances_.size()) return false;
       const Instance& instance = instances_[index];
       if (!instance.model || instance.interior != interior ||
+          removal::removesAny(removals, instance.modelId, instance.position.x,
+                            instance.position.y, instance.position.z) ||
           x + radius < instance.worldMinimum.x - kEpsilon ||
           x - radius > instance.worldMaximum.x + kEpsilon ||
           y + radius < instance.worldMinimum.y - kEpsilon ||
@@ -787,9 +792,9 @@ HorizontalMoveResult CollisionWorld::resolveHorizontalMove(float startX, float s
   return result;
 }
 
-bool CollisionWorld::raycastStaticWorld(const col::Vec3& origin, const col::Vec3& direction,
-                                        float maxDistance, int32_t interior,
-                                        RaycastHit& out) const {
+bool CollisionWorld::raycastStaticWorld(
+    const col::Vec3& origin, const col::Vec3& direction, float maxDistance, int32_t interior,
+    RaycastHit& out, const std::vector<removal::Directive>* removals) const {
   out = {};
   col::Vec3 normalized;
   if (!finiteVec(origin) || !normalizedDirection(direction, normalized) ||
@@ -823,7 +828,11 @@ bool CollisionWorld::raycastStaticWorld(const col::Vec3& origin, const col::Vec3
   const auto addCandidate = [&](uint32_t index) {
     if (index >= instances_.size()) return true;
     const Instance& instance = instances_[index];
-    if (!instance.model || instance.interior != interior) return true;
+    if (!instance.model || instance.interior != interior ||
+        removal::removesAny(removals, instance.modelId, instance.position.x,
+                            instance.position.y, instance.position.z)) {
+      return true;
+    }
     RayAabbIntersection boundsHit;
     if (!intersectRayAabb(origin, normalized, instance.worldMinimum, instance.worldMaximum,
                           maxDistance, boundsHit)) {

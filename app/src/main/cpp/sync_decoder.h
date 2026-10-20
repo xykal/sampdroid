@@ -17,6 +17,7 @@ constexpr uint8_t kPlayerAimSyncPacketId = 203;
 constexpr uint8_t kPlayerBulletSyncPacketId = 206;
 constexpr uint8_t kPlayerFootSyncPacketId = 207;
 constexpr uint8_t kPlayerUnoccupiedSyncPacketId = 209;
+constexpr uint8_t kPlayerTrailerSyncPacketId = 210;
 constexpr uint8_t kPlayerPassengerSyncPacketId = 211;
 
 struct RemoteVehicleSync {
@@ -24,6 +25,13 @@ struct RemoteVehicleSync {
   uint16_t vehicleId = 0;
   bool driverSync = false;
   bool angleKnown = false;
+  // Packet-200 compressed quaternion reduced to GTA X→Y→Z DFF Euler values.
+  // Packet-209 has only roll/direction vectors, so it does not manufacture a
+  // new full attitude and leaves this false for its own decoded frame.
+  bool attitudeKnown = false;
+  float rotationX = 0.0f;
+  float rotationY = 0.0f;
+  float rotationZ = 0.0f;
   float x = 0.0f;
   float y = 0.0f;
   float z = 0.0f;
@@ -32,6 +40,29 @@ struct RemoteVehicleSync {
   float velocityX = 0.0f;
   float velocityY = 0.0f;
   float velocityZ = 0.0f;
+};
+
+// Exact server-to-recipient Packet 210 trailer transform. It carries a raw
+// quaternion (wire order w,x,y,z) and has no health or seat claim, so consumers
+// may update only an already streamed trailer vehicle's transform. It must not
+// fabricate a cab/trailer attachment, driver, passenger, or local trailer
+// physics from this packet alone.
+struct RemoteTrailerSync {
+  uint16_t playerId = 0;
+  uint16_t vehicleId = 0;
+  bool attitudeKnown = false;
+  float rotationX = 0.0f;
+  float rotationY = 0.0f;
+  float rotationZ = 0.0f;
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  float velocityX = 0.0f;
+  float velocityY = 0.0f;
+  float velocityZ = 0.0f;
+  float turnVelocityX = 0.0f;
+  float turnVelocityY = 0.0f;
+  float turnVelocityZ = 0.0f;
 };
 
 // Packet 211 is exact server-to-client passenger state. Position comes from
@@ -147,6 +178,12 @@ bool decodeRemoteOnFootBroadcast(const std::vector<uint8_t>& payload, RemoteOnFo
 bool decodeRemoteVehicleBroadcast(const std::vector<uint8_t>& payload, RemoteVehicleSync& out,
                                   size_t payloadBitLength = 0);
 
+// Decodes the fixed-size server-to-recipient Packet 210 PlayerTrailerSync:
+// player/vehicle IDs, raw VEC3 position, raw VEC4 quaternion in w,x,y,z wire
+// order, raw VEC3 linear velocity, then raw VEC3 turn velocity. Receive-only.
+bool decodeRemoteTrailerBroadcast(const std::vector<uint8_t>& payload, RemoteTrailerSync& out,
+                                  size_t payloadBitLength = 0);
+
 // Decodes open.mp/SA-MP Packet 211 `PlayerPassengerSync` exactly as its
 // public writer emits it: player/vehicle IDs, packed seat flags, raw u8
 // health+armour, input words, then raw VEC3 position.
@@ -157,6 +194,7 @@ std::string summarize(const RemoteAimSync& sync);
 std::string summarize(const RemoteBulletSync& sync);
 std::string summarize(const RemoteOnFootSync& sync);
 std::string summarize(const RemoteVehicleSync& sync);
+std::string summarize(const RemoteTrailerSync& sync);
 std::string summarize(const RemotePassengerSync& sync);
 
 }  // namespace samp::syncdecode

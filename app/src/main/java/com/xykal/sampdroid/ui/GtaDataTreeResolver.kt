@@ -13,14 +13,7 @@ internal class GtaDataTreeResolver private constructor(
 ) {
 
     fun findFile(relativePath: String): DocumentFile? {
-        val normalized = relativePath.trim().replace('\\', '/')
-        if (normalized.isBlank() || normalized.startsWith('/')) return null
-        val segments = normalized
-            .split('/')
-            .filter { it.isNotBlank() }
-        if (segments.isEmpty() || segments.size > MAX_PATH_SEGMENTS ||
-            segments.any { it == "." || it == ".." || it.indexOf('\u0000') >= 0 }
-        ) return null
+        val segments = safeSegments(relativePath) ?: return null
 
         var current = root
         segments.forEachIndexed { index, segment ->
@@ -34,6 +27,23 @@ internal class GtaDataTreeResolver private constructor(
             current = child
         }
         return current.takeIf { it.isFile }
+    }
+
+    /**
+     * Creates a resolver rooted at a bounded relative child directory. This is
+     * used for an installer staging result while retaining the original SAF tree
+     * URI/grant; DocumentFile.fromTreeUri intentionally always re-roots at the
+     * grant root and cannot represent an arbitrary child by itself.
+     */
+    fun subdirectory(relativePath: String): GtaDataTreeResolver? {
+        val segments = safeSegments(relativePath) ?: return null
+        var current = root
+        for (segment in segments) {
+            current = current.listFiles().firstOrNull { child ->
+                child.name?.equals(segment, ignoreCase = true) == true
+            }?.takeIf { it.isDirectory } ?: return null
+        }
+        return GtaDataTreeResolver(current)
     }
 
     fun firstFile(paths: Iterable<String>): DocumentFile? = paths.firstNotNullOfOrNull(::findFile)
@@ -60,9 +70,27 @@ internal class GtaDataTreeResolver private constructor(
         val missingPaths: List<String>
     )
 
+    private fun safeSegments(relativePath: String): List<String>? {
+        val normalized = relativePath.trim().replace('\\', '/')
+        if (normalized.isBlank() || normalized.length > MAX_PATH_CHARS || normalized.startsWith('/')) {
+            return null
+        }
+        val segments = normalized.split('/').filter { it.isNotBlank() }
+        if (segments.isEmpty() || segments.size > MAX_PATH_SEGMENTS || segments.any { segment ->
+                segment == "." || segment == ".." || segment.indexOf('\u0000') >= 0 ||
+                    segment.length > MAX_PATH_SEGMENT_CHARS
+            }) {
+            return null
+        }
+        return segments
+    }
+
     companion object {
         private const val MAX_PATH_SEGMENTS = 24
+        private const val MAX_PATH_CHARS = 512
+        private const val MAX_PATH_SEGMENT_CHARS = 128
 
+        /** Opens the exact ACTION_OPEN_DOCUMENT_TREE grant root. */
         fun fromTreeUri(context: Context, uri: Uri): GtaDataTreeResolver? =
             DocumentFile.fromTreeUri(context, uri)
                 ?.takeIf { it.isDirectory }

@@ -2,7 +2,10 @@ name: Build APK
 
 on:
   push:
-    branches: [main]
+    # `ci/**` is an explicit debug-validation lane. It never satisfies the
+    # tag-only official release condition below, but lets a maintained native
+    # batch compile both Android ABIs before any draft-release decision.
+    branches: [main, "ci/**"]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
@@ -40,6 +43,7 @@ jobs:
             app/src/main/cpp/gta_file_source.cpp \
             app/src/main/cpp/gta_map_manifest.cpp \
             app/src/main/cpp/gta_txd_texture.cpp \
+            app/src/main/cpp/gta_vehicle_handling.cpp \
             app/src/main/cpp/input_state.cpp \
             app/src/main/cpp/local_gameplay_bridge.cpp \
             app/src/main/cpp/local_movement.cpp \
@@ -47,6 +51,7 @@ jobs:
             app/src/main/cpp/local_player_sync.cpp \
             app/src/main/cpp/sync_decoder.cpp \
             app/src/main/cpp/raknet_codec.cpp \
+            app/src/main/cpp/raknet_handshake.cpp \
             app/src/main/cpp/raknet_string_compressor.cpp \
             app/src/main/cpp/samp_query.cpp \
             app/src/main/cpp/rpc_decoder.cpp \

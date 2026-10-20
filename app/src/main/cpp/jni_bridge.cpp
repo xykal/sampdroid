@@ -57,6 +57,7 @@ std::string game_data_json(bool ok, const samp::gta::runtime::Snapshot& data,
          << ",\"manifestColPaths\":" << data.manifestColPaths
          << ",\"manifestImgPaths\":" << data.manifestImgPaths
          << ",\"ideObjects\":" << data.ideObjects
+         << ",\"handlingProfiles\":" << data.handlingProfiles
          << ",\"iplPlacements\":" << data.iplPlacements
          << ",\"collisionInstances\":" << data.collisionInstances
          << ",\"missingCollisionPlacements\":" << data.missingCollisionPlacements
@@ -624,6 +625,27 @@ std::string world_json(const samp::WorldSnapshot& world) {
       << ",\"y\":" << vehicle.y
       << ",\"z\":" << vehicle.z
       << ",\"angle\":" << vehicle.angle
+      << ",\"attitudeKnown\":" << (vehicle.attitudeKnown ? "true" : "false")
+      << ",\"rotationX\":" << vehicle.rotationX
+      << ",\"rotationY\":" << vehicle.rotationY
+      << ",\"rotationZ\":" << vehicle.rotationZ
+      << ",\"parametersKnown\":" << (vehicle.parametersKnown ? "true" : "false")
+      << ",\"engine\":" << static_cast<int>(vehicle.parameters[0])
+      << ",\"lights\":" << static_cast<int>(vehicle.parameters[1])
+      << ",\"alarm\":" << static_cast<int>(vehicle.parameters[2])
+      << ",\"doors\":" << static_cast<int>(vehicle.parameters[3])
+      << ",\"bonnet\":" << static_cast<int>(vehicle.parameters[4])
+      << ",\"boot\":" << static_cast<int>(vehicle.parameters[5])
+      << ",\"objective\":" << static_cast<int>(vehicle.parameters[6])
+      << ",\"siren\":" << static_cast<int>(vehicle.parameters[7])
+      << ",\"doorDriver\":" << static_cast<int>(vehicle.parameters[8])
+      << ",\"doorPassenger\":" << static_cast<int>(vehicle.parameters[9])
+      << ",\"doorBackLeft\":" << static_cast<int>(vehicle.parameters[10])
+      << ",\"doorBackRight\":" << static_cast<int>(vehicle.parameters[11])
+      << ",\"windowDriver\":" << static_cast<int>(vehicle.parameters[12])
+      << ",\"windowPassenger\":" << static_cast<int>(vehicle.parameters[13])
+      << ",\"windowBackLeft\":" << static_cast<int>(vehicle.parameters[14])
+      << ",\"windowBackRight\":" << static_cast<int>(vehicle.parameters[15])
       << ",\"health\":" << vehicle.health << "}";
   }
   o << "],\"objects\":[";
@@ -777,6 +799,18 @@ std::string world_json(const samp::WorldSnapshot& world) {
     if (i) o << ",";
     o << "{\"rgba\":" << chat.rgba
       << ",\"text\":\"" << samp::json_escape(chat.text) << "\"}";
+  }
+  o << "]"
+    << ",\"deathMessages\":[";
+  for (size_t i = 0; i < world.deathMessages.size(); ++i) {
+    const samp::WorldDeathMessageSnapshot& death = world.deathMessages[i];
+    if (i) o << ",";
+    o << "{\"hasKiller\":" << (death.hasKiller ? "true" : "false")
+      << ",\"killerId\":" << death.killerId
+      << ",\"victimId\":" << death.victimId
+      << ",\"reason\":" << static_cast<unsigned>(death.reason)
+      << ",\"killerName\":\"" << samp::json_escape(death.killerName) << "\""
+      << ",\"victimName\":\"" << samp::json_escape(death.victimName) << "\"}";
   }
   o << "]}";
   return o.str();
@@ -971,6 +1005,15 @@ Java_com_xykal_sampdroid_NativeBridge_nativeGameDataLoadGtaDatFile(JNIEnv* env, 
 }
 
 JNIEXPORT jstring JNICALL
+Java_com_xykal_sampdroid_NativeBridge_nativeGameDataLoadHandlingFile(JNIEnv* env, jclass,
+                                                                     jint fileDescriptor) {
+  std::lock_guard<std::mutex> lock(game_data_mutex);
+  std::string error;
+  const bool ok = game_data_runtime.loadHandlingFileDescriptor(static_cast<int>(fileDescriptor), error);
+  return to_java(env, game_data_json(ok, game_data_runtime.snapshot(), error));
+}
+
+JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeGameDataManifest(JNIEnv* env, jclass) {
   std::lock_guard<std::mutex> lock(game_data_mutex);
   return to_java(env, manifest_json(game_data_runtime.assetManifest()));
@@ -1059,10 +1102,14 @@ Java_com_xykal_sampdroid_NativeBridge_nativeGameDataNearbyWorldPreview(
     std::lock_guard<std::mutex> lock(game_data_mutex);
     const size_t instanceLimit = maxInstances > 0 ? static_cast<size_t>(maxInstances) : 0;
     const size_t vertexLimit = maxVertices > 0 ? static_cast<size_t>(maxVertices) : 0;
+    // Keep the renderer aligned with the retained session's exact RPC-43
+    // directives. The order remains data mutex then session mutex, matching
+    // nativeSessionAdvanceGameplay and avoiding a lock-order inversion.
+    const auto removals = samp::raknet_session_building_removals();
     if (!game_data_runtime.copyNearbyWorldRenderBatch(
             static_cast<float>(anchorX), static_cast<float>(anchorY),
             static_cast<float>(anchorZ), static_cast<float>(radius), instanceLimit,
-            vertexLimit, batch, error, static_cast<int32_t>(interior))) {
+            vertexLimit, batch, error, static_cast<int32_t>(interior), &removals)) {
       return env->NewFloatArray(0);
     }
   }
@@ -1289,10 +1336,11 @@ Java_com_xykal_sampdroid_NativeBridge_nativeGameDataNearbyWorldTexturedPreview(
     std::lock_guard<std::mutex> lock(game_data_mutex);
     const size_t vertexLimit = maxVertices > 0 ? static_cast<size_t>(maxVertices) : 0;
     const size_t textureLimit = maxTexturePixels > 0 ? static_cast<size_t>(maxTexturePixels) : 0;
+    const auto removals = samp::raknet_session_building_removals();
     if (!game_data_runtime.copyNearbyWorldTexturedRenderBatch(
             static_cast<float>(anchorX), static_cast<float>(anchorY), static_cast<float>(anchorZ),
             static_cast<float>(radius), vertexLimit, textureLimit, batch, error,
-            static_cast<int32_t>(interior)) ||
+            static_cast<int32_t>(interior), &removals) ||
         batch.vertices.empty() || batch.textureRgba.empty()) {
       return nullptr;
     }
@@ -1353,10 +1401,11 @@ Java_com_xykal_sampdroid_NativeBridge_nativeGameDataNearbyWorldTexturedPreviews(
     const size_t batchLimit = maxBatches > 0 ? static_cast<size_t>(maxBatches) : 0;
     const size_t vertexLimit = maxVertices > 0 ? static_cast<size_t>(maxVertices) : 0;
     const size_t textureLimit = maxTexturePixels > 0 ? static_cast<size_t>(maxTexturePixels) : 0;
+    const auto removals = samp::raknet_session_building_removals();
     if (!game_data_runtime.copyNearbyWorldTexturedRenderBatches(
             static_cast<float>(anchorX), static_cast<float>(anchorY), static_cast<float>(anchorZ),
             static_cast<float>(radius), batchLimit, vertexLimit, textureLimit, batches, error,
-            static_cast<int32_t>(interior))) {
+            static_cast<int32_t>(interior), &removals)) {
       batches = {};
     }
   }
@@ -1724,9 +1773,11 @@ Java_com_xykal_sampdroid_NativeBridge_nativeRaknetProbe(JNIEnv* env, jclass, jst
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeSessionConnect(JNIEnv* env, jclass, jstring ip,
-                                                           jint port, jint timeoutMs) {
+                                                           jint port, jint timeoutMs,
+                                                           jstring nickname) {
   return to_java(env, session_json(samp::raknet_session_connect(
-                          to_std(env, ip), static_cast<uint16_t>(port), timeoutMs)));
+                          to_std(env, ip), static_cast<uint16_t>(port), timeoutMs,
+                          to_std(env, nickname))));
 }
 
 JNIEXPORT jstring JNICALL
@@ -1896,7 +1947,18 @@ Java_com_xykal_sampdroid_NativeBridge_nativeSessionAdvanceGameplay(JNIEnv*, jcla
   // step. No session path takes this data mutex first, so this order cannot
   // invert with the retained-session mutex inside the bridge.
   std::lock_guard<std::mutex> lock(game_data_mutex);
-  (void)samp::raknet_session_advance_gameplay(game_data_runtime.collisionWorld(), deltaSeconds);
+  // Resolve a source-owned handling envelope while holding the same immutable
+  // data-runtime lock as collision. The session rechecks `tuningModel` under
+  // its own mutex before use, so a concurrent seat/stream change falls back to
+  // generic bounded vehicle motion rather than borrowing another model's row.
+  const uint32_t tuningModel = samp::raknet_session_local_driver_vehicle_model();
+  samp::vehiclemotion::VehicleMotionTuning tuning;
+  const samp::vehiclemotion::VehicleMotionTuning* tuningPointer =
+      tuningModel != 0u && game_data_runtime.vehicleMotionTuning(tuningModel, tuning)
+          ? &tuning
+          : nullptr;
+  (void)samp::raknet_session_advance_gameplay(
+      game_data_runtime.collisionWorld(), deltaSeconds, tuningPointer, tuningModel);
 }
 
 JNIEXPORT jstring JNICALL

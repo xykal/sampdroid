@@ -6,7 +6,7 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 ## Milestone 0.6 — protocol/state observability
 
 - [x] Open connection, cookie, auth, accepted, ClientJoin.
-- [x] ACK reliable, multi-packet datagram, split reassembly.
+- [x] ACK reliable, multi-packet datagram, gate receipt reliable bounded, split reassembly, dan gate inbound `RELIABLE_ORDERED` per channel.
 - [x] `PlayerInit`, PlayerJoin/Quit/Name/Color state reducer.
 - [x] Host regression tests untuk wire vector dan lifecycle player state.
 - [x] Client `PlayerRequestClass` / `PlayerRequestSpawn` / `PlayerSpawn` builder,
@@ -26,7 +26,7 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 
 - [x] Explicit connect/disconnect dan clean UDP teardown dari Android shell.
 - [x] Socket retained setelah ClientJoin; peer IP/port filter dan bounded state.
-- [x] `RELIABLE_ORDERED` channel-2 class request, ACK consumption, bounded retry queue.
+- [x] `RELIABLE_ORDERED` channel-0 class request, ACK consumption, bounded retry queue.
 - [x] Class selection, SetSpawnInfo, local-player spawn/position/vitals, dan spawn response state reducer.
 - [x] Lifecycle-aware automatic poll saat detail session terlihat; setiap poll
   memakai paling banyak satu receive blocking pendek (40 ms), lalu—hanya bila
@@ -38,6 +38,7 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   coalesce, span/record cap) serta decoder inbound membatasi range; reconnect,
   ping/timeout metrics, dan resend window penuh masih berikutnya.
 - [x] Bounded `SendClientMessage` chat state.
+- [x] Exact RPC-55 `SendDeathMessage` global kill feed: bounded/expiry-filtered renderer rows with no-killer sentinel and raw reason, distinct from local death authority.
 - [x] Normal + race checkpoint native state.
 - [~] Dialog native lengkap untuk style umum + response reliable. Legacy menu
   source-verified `Init/Show/Hide` (`76/77/78`) kini juga menjadi Android row
@@ -47,11 +48,11 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   RPC 41/42 juga punya playback `MediaPlayer` HTTPS-only yang lifecycle-bound;
   HTTP/endpoint tidak aman sengaja tidak difetch. Font-4 TextDraw sprite `dictionary:texture` kini dapat memakai satu TXD RGBA user-owned yang bounded/cached (bukan Android drawable); font-5 juga dapat menampilkan mesh DFF prelit user-owned bounded bila model resolve. Kamera/material/font GTA, animasi, dan full style masih belum.
 - [x] Fondasi `OnFootSync` packet 207: vector regresi client→server,
-  `UNRELIABLE_SEQUENCED` channel 1, ordering counter terpisah, rate gate dari
+  `UNRELIABLE_SEQUENCED` channel 0, ordering counter sequenced terpisah dari RPC ordered, rate gate dari
   `PlayerInit`, serta spawn/session gate.
 - [x] `PlayerAimSync` packet 203 terbatas: writer client→server fixed 32 byte
   vector-tested, packed `CamZoom:6|WeaponState:2` source-verified, USeq
-  channel-1 + `WeaponRate` sendiri. Hanya dapat memakai transform
+  channel-0 + `WeaponRate` sendiri (counter sequenced tetap terpisah dari RPC ordered). Hanya dapat memakai transform
   collision-grounded, yaw/pitch native bounded, dan weapon+ammo authoritative
   saat AIM ditahan/on-foot; spawn/ACK/freeze/vehicle/kamera-server gate fail-closed.
   Kandidat yang lolos juga memasok view aim orang-pertama + reticle renderer dari
@@ -104,8 +105,10 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   membuka roster tanpa menjadi state gameplay. Overlay touch scene/radar sekarang juga membawa **DUCK**
   yang sama dengan key crouch dan dapat diposisikan lewat LAYOUT. Gyro look kini
   opt-in per layout: sensor hanya mengeluarkan delta yaw/pitch bounded ke mixer
-  semantic yang sama, berhenti saat freeze/spectate/dead/dismiss, dan tidak
-  membawa posisi/target/packet sendiri. Semua perubahan UI ini belum
+  semantic yang sama, berhenti saat freeze/spectate/dead, app background, atau
+  dismiss, dan tidak membawa posisi/target/packet sendiri. Saat activity tidak
+  `RESUMED`, kedua surface juga clear input nol fail-closed serta menghentikan
+  gameplay/render/asset refresh dan audio lifecycle-bound. Semua perubahan UI ini belum
   compile/package Android atau divalidasi perangkat/sensor nyata.
 - [x] Editor **LAYOUT** in-scene: drag joystick/tombol, scale per perangkat,
   reset, persistence internal, dan salin JSON v1 data-only ke clipboard.
@@ -165,14 +168,19 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   State interior memilih placement IPL GLES dan floor/sweep COL yang
   ber-ID sama; bila floor belum termuat, tick tetap fail-closed. `SetWorldBounds`
   server juga kini menahan prediction on-foot/driver hanya di exterior tanpa
-  mengarang push-back. Capsule/mesh physics penuh, handling/suspension vehicle GTA, streaming collision sekitar
-  player, dan live validation belum.
+  mengarang push-back. `handling.cfg` user sekarang dapat membedakan envelope
+  kinematic driver berdasarkan model `cars` yang persis cocok, tetapi capsule/
+  mesh physics penuh, suspension/wheel/drivetrain/damage vehicle GTA, streaming
+  collision sekitar player, dan live validation belum.
 - [~] Renderer asset path: parser DFF RenderWare portable vertex/triangle/UV/
   prelit/material reference dan decoder TXD RGBA/DXT PC sudah bounded. Scene
   GLES memuat batch DFF prelit placement IPL dekat player pada interior server
   yang cocok (exterior = 0) dari IMG user dan sampai empat overlay TXD/material
   IDE independen yang aman, termasuk
-  beberapa material resolvable dari satu DFF portable. Jalur transform sama kini
+  beberapa material resolvable dari satu DFF portable. Packet-200 remote kini juga
+  mempertahankan quaternion compressed sebagai attitude DFF X/Y/Z (roll/pitch/yaw)
+  source-derived; Packet-209 tetap memakai attitude terakhir atau fallback yaw tanpa
+  mengarang physics. Jalur transform sama kini
   juga memberi sampai empat overlay untuk subset static object, vehicle streamed,
   skin player/local, dan NPC `ShowActor` dinamis; vertex serta RGBA
   dibatasi bersama per jalur (total 1 MiB pixel), slot texture stale dibersihkan
@@ -202,7 +210,18 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   USE juga request enter/exit vehicle; local seat datang hanya dari Put/Remove
   RPC server dan menghentikan OnFoot. Seat driver 0 dapat memakai pilot
   kinematic floor/sweep dan Packet-200 client exact; correction/mutator vehicle
-  server mereset prediction. Hingga empat overlay TXD material bounded kini
+  server mereset prediction. `SetVehicleParams` RPC 24 kini direduce dengan body
+  exact `u16 + 16 int8`, sentinel raw `0xFF → -1` sebagai unset pada full
+  snapshot replacement, target StreamIn-only, dan clear raw-ID lifecycle.
+  Legacy recipient RPC 161 tetap merge objective/door-lock exact `u16,u8,u8`,
+  memberi marker portable dan memblokir intent enter yang terkunci. HUD driver
+  menunjukkan fakta mesin/lampu/siren server; engine-off menahan throttle
+  pilot/Packet-200 hanya bila bit
+  `ManualVehicleEngineAndLights` PlayerInit aktif, dan siren hanya dicopy dari
+  state server. Ini belum lampu/door/alarm GTA atau toggle lokal.
+  Bila `data/handling.cfg` user valid dan model `cars` IDE cocok, pilot juga memakai envelope speed/accel/brake/coast/steer
+  bounded per vehicle; profile stale/missing kembali generic dan tidak mengklaim
+  wheel/suspension/drivetrain GTA. Hingga empat overlay TXD material bounded kini
   memakai transform yang sama untuk subset static object/vehicle/actor DFF.
   Attachment object→vehicle/object/player kini di-resolve renderer-only secara
   bounded (parent hilang/stream-out/siklik disembunyikan; heading parent tersedia saja).
@@ -218,8 +237,11 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   tetap native-owned (ABGR inbound→ARGB outbound). Keduanya bukan gizmo PC atau
   mutasi optimistis. Belum raycast mesh/GTA click point penuh. Fidelity pitch/roll vehicle, override
   material object, binding semua material/texture vehicle, player-pickup variant,
-  drive-by/trailer sync, vehicle handling/fisika penuh, HUD GTA penuh, dan
-  gameplay loop masih berikutnya. Remote
+  drive-by, **outbound/local** trailer sync dan coupling/physics trailer,
+  vehicle handling/fisika penuh, HUD GTA penuh, dan gameplay loop masih
+  berikutnya. Packet-210 trailer **remote inbound** kini source-verified dan
+  mengganti transform/attitude visual trailer streamed tanpa mengarang health,
+  seat, atau hubungan cab. Remote
   Packet-211 passenger inbound kini punya anchor renderer source-verified dan
   tidak lagi diinferensi dari offset kursi. RPC 166 juga hanya memberi cue
   `WASTED` observer remote sementara (tidak pernah death lokal). `cars`/`peds` IDE kini memetakan model vehicle streamed, skin player remote/local

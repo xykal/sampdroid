@@ -1,8 +1,9 @@
 # Tabel ID RPC SA-MP / open.mp
 
-Diekstrak langsung dari header `Shared/NetCode/*.hpp` di
+ID dan body inbound diekstrak dari header `Shared/NetCode/*.hpp` di
 [openmultiplayer/open.mp](https://github.com/openmultiplayer/open.mp)
 (`NetworkPacketBase<ID, NetworkPacketType::RPC, OrderingChannel_SyncRPC>`).
+Label tipe itu tidak boleh dipakai untuk menebak angka channel wire client.
 
 Format wire RPC legacy:
 
@@ -10,8 +11,13 @@ Format wire RPC legacy:
 [0x14 = ID_RPC][rpc id (u8)][payload bit-packed]
 ```
 
-Semua RPC dikirim pada ordering channel 2 (`OrderingChannel_SyncRPC`),
-reliability `RELIABLE_ORDERED` (9).
+Untuk **client → server**, SampDroid memakai `RELIABLE_ORDERED` (9) ordering
+channel **0** secara konsisten, termasuk `ClientJoin`, class/spawn, chat,
+dialog, menu, interaksi, textdraw, dan editor. Angka ini mengikuti jalur
+`RakPeer::RPC(... RELIABLE_ORDERED, 0, ...)` client legacy yang diaudit; setiap
+RPC pada sesi memakai counter ordering channel-0 yang sama. Decoder inbound
+tetap membaca metadata channel dari frame RakNet, bukan mengasumsikan channel
+tertentu dari server.
 
 ## Client -> Server
 
@@ -23,6 +29,7 @@ reliability `RELIABLE_ORDERED` (9).
 | 116 | OnPlayerEditAttachedObject | current open.mp reader: `u32 response, u32 slot, u32 model, u32 bone, VEC3 attachment offset, VEC3 rotation, VEC3 scale, u32 colour1 ARGB, u32 colour2 ARGB`; hanya active local attachment edit server. Android mengizinkan Cancel=0/Save=1 dan native re-samples slot/model/bone/colour (RPC 113 ABGR→RPC 116 ARGB) |
 | 117 | OnPlayerEditObject | `bit PlayerObject, u16 ObjectID, u32 response, VEC3 position, VEC3 rotation`; hanya tuple edit server aktif, transform touch bounded/revalidated native; Cancel=0, Final=1, Update=2 |
 | 54 | NPCConnect | |
+| 55 | SendDeathMessage | exact `u16 KillerID, u16 PlayerID, u8 reason`; `KillerID=0xFFFF` is no-killer sentinel. Retained as bounded, expiry-filtered global kill-feed presentation only; raw reason is not Android damage/weapon simulation. |
 | 50 | PlayerCommandMessage | chat diawali `/` |
 | 101 | PlayerChatMessage | chat biasa |
 | 62 | OnPlayerDialogResponse | `i16 dialog ID, u8 response, i16 list item, DynStr8 text`; builder + reliable sender bounded |
@@ -59,6 +66,7 @@ u32   (opsional) IsUsingOfficialClient / OmpVersion
 | 20 | ResetPlayerMoney | payload kosong; reset counter money HUD ke nol |
 | 21 | ResetPlayerWeapons | payload kosong; clear ammo server-known dan mengarm unarmed |
 | 22 | GivePlayerWeapon | `u32 Weapon, u32 Ammo`; state ammo server-known per raw weapon ID |
+| 24 | SetVehicleParamsEx | exact `u16 VehicleID + 16 raw i8`: engine, lights, alarm, doors, bonnet, boot, objective, siren, 4 doors, 4 windows. `0xFF → -1` is explicit **unset** in the full server `VehicleParams` snapshot; only `-1/0/1` accepted, and all 16 retained facts are replaced atomically. Target must be currently StreamIn; raw-ID StreamOut/re-StreamIn clears retained params. Driver UI/pilot consumes explicit engine/lights/siren only—engine off suppresses throttle only with retained PlayerInit `ManualVehicleEngineAndLights`, siren mirrors Packet-200, without local vehicle toggles/full GTA systems. |
 | 27 | PlayerBeginObjectSelect | body kosong; membuka picker object bounded native dan memajukan revision pilihan (bukan geometry hit-test GTA penuh) sampai lifecycle cancel/edit server |
 | 28 | PlayerCancelObjectEdit | body kosong; menutup mode pilih, edit object (117), **dan** edit attachment (116) Android; juga menginvalidasi revision picker saat server mengakhiri lifecycle |
 | 29 | SetPlayerTime | `u8 Hour,u8 Minute`; waktu recipient-specific untuk HUD/sky proxy, tidak memengaruhi cadence/movement |
@@ -68,8 +76,10 @@ u32   (opsional) IsUsingOfficialClient / OmpVersion
 | 37 | DisableCheckpoint | payload kosong |
 | 38 | SetRaceCheckpoint | u8 type, VEC3 pos, VEC3 next pos, float size |
 | 39 | DisableRaceCheckpoint | payload kosong |
+| 40 | PlayerClose | exact body kosong; instruksi lifecycle server untuk menutup socket native, menghapus hold input/prediksi, dan menampilkan alasan sesi berakhir—bukan reset world lokal optimistis |
 | 41 | PlayAudioStream | `DynStr8 URL` (writer `HybridString<128>`, max 127 byte), `VEC3,float distance,u8 usepos`; reducer hanya menyimpan directive bounded. Android memutar **HTTPS** yang lolos validasi lifecycle; HTTP/URL tidak aman diblokir lokal tanpa response server |
 | 42 | StopAudioStream | payload kosong; menghentikan/release media Android lewat revision directive |
+| 43 | RemoveBuilding | exact `u32 model, VEC3 center, float radius`; `0xFFFFFFFF` = Pawn model `-1` wildcard. Menyaring **static IPL/DFF/TXD dan COL** matching pada receiver ini; bukan DestroyObject atau mutasi asset GTA |
 | 44 | CreateObject | legacy transform atau writer modern + attachment; `u8 materialCount`, lalu type/slot default/text record source-verified, max 16 slot |
 | 45 | SetObjectPos | `u16 ObjectID, VEC3` |
 | 46 | SetObjectRotation | `u16 ObjectID, VEC3 rot` |
@@ -98,6 +108,7 @@ u32   (opsional) IsUsingOfficialClient / OmpVersion
 | 85 | StopFlashGangZone | `i16 gang zone ID`; menghentikan fase flash visual |
 | 86 | ApplyPlayerAnimation | `u16 PlayerID, DynStr8 lib, DynStr8 name, float delta, 4 packed bit flags, u32 time`; retained bounded visual directive untuk local/remote streamed saja |
 | 87 | ClearPlayerTasks | `u16 PlayerID`; clears only retained RPC-86 visual directive |
+| 91 | SetVehicleVelocity | exact `u8 Type,VEC3`; `Type=0` linear dan `Type=1` angular. Payload **tidak memiliki VehicleID**: reducer transaksional hanya menerima bila receiver sedang seat-0 pada proxy kendaraan yang sudah `StreamIn`, bukan train, lalu menyimpan channel linear/angular terpisah + revision. Linear revision bounded dikonsumsi sekali oleh pilot COL (CVector GTA 50-Hz ↔ Packet-200), sedangkan angular tetap retained sampai orientasi GTA 3-sumbu tersedia. Passenger, unoccupied/missing proxy, train, selector/vector/body invalid ditolak tanpa menebak target atau mengubah state. |
 | 93 | SendClientMessage | u32 color, u32 len, char[] — reducer caps 144 bytes / 100 lines |
 | 94 | SetWorldTime | u8 hour `0..23`; drives generated scene ambience |
 | 95 | CreatePickup | `i32 PickupID, i32 model, i32 spawn type, VEC3`; visual/interaction record bounded |
@@ -117,6 +128,7 @@ u32   (opsional) IsUsingOfficialClient / OmpVersion
 | 127 | PlayerSpectateVehicle | current open.mp writer: exact `u16 VehicleID, u8 SpecCamMode`; copied visual target only, never aliases local vehicle authority |
 | 128 | PlayerRequestClassResponse | selectable, team, model, spawn, angle, 3 weapon/ammo slots |
 | 129 | PlayerRequestSpawnResponse | u32 Allow |
+| 130 | ConnectionRejected | exact `u8 reason` legacy `1..4` (versi, nickname, mod/version, slot); native menghentikan socket/input/prediksi dan menampilkan alasan terverifikasi, bukan timeout palsu |
 | 133 | SetPlayerWantedLevel | `u8 0..6`; star HUD server-authoritative, tanpa police/reward simulation lokal |
 | 134 | ShowTextDraw | fixed visual header + DynStr16 text; bounded Android Canvas text/box proxy |
 | 135 | HideTextDraw | `u16 raw wire ID` |
@@ -135,6 +147,7 @@ u32   (opsional) IsUsingOfficialClient / OmpVersion
 | 158 | SetPlayerCameraLookAt | `VEC3, u8 cut`; endpoint target kamera scene server-authoritative |
 | 159 | SetVehiclePosition | `u16 VehicleID, VEC3`; memperbarui proxy streamed |
 | 160 | SetVehicleZAngle | `u16 VehicleID, float`; memperbarui proxy streamed |
+| 161 | SetVehicleParamsForPlayer | exact `u16 VehicleID, u8 objective, u8 doorsLocked`; StreamIn-only recipient override. Merge only objective/doors into retained params; objective gets portable radar/GLES cue, locked doors block native EnterVehicle intent without fabricating a seat. |
 | 162 | SetCameraBehindPlayer | body kosong; menghapus endpoint server dan mengembalikan fallback touch/player-follow |
 | 163 | PlayerStreamOut | `u16 PlayerID`; reducer clears remote sync eligibility |
 | 164 | StreamInVehicle | full legacy initial vehicle layout; bounded proxy lifecycle/state |
@@ -147,6 +160,27 @@ u32   (opsional) IsUsingOfficialClient / OmpVersion
 | 175 | SetActorFacingAngle | `u16 ActorID, float angle`; only updates an existing ShowActor NPC |
 | 176 | SetActorPosition | `u16 ActorID, VEC3`; only updates an existing ShowActor NPC |
 | 178 | SetActorHealth | `u16 ActorID, float health`; only updates an existing ShowActor NPC |
+
+### Static RemoveBuilding receiver filter (43)
+
+`RemoveBuildingForPlayer` legacy menulis tepat `u32 dObjectModel | float X |
+float Y | float Z | float Radius` (20 body byte, total RPC 22 byte). Nilai Pawn
+`-1` dipertahankan sebagai `0xFFFFFFFF`, yang berarti semua model static dalam
+radius; nilai itu **bukan** model ID literal. Native menolak body pendek/bertail,
+NaN/inf, koordinat atau radius di luar envelope aman, lalu menyimpan maksimal
+1.000 directive unik per session. Duplikat retransmit tidak menambah state;
+record valid setelah cap diterima sebagai ignored bounded record, bukan alasan
+untuk membesar tanpa batas atau menjatuhkan socket.
+
+Filter dipakai bersama oleh tiga jalur data GTA milik user: pemilihan placement
+IPL untuk batch DFF prelit, overlay material/TXD, dan query COL static
+(`floor`, sweep capsule horizontal, serta ray no-target dekat). Jadi model yang
+server hilangkan tidak tersisa sebagai bangunan terlihat tetapi collision padat,
+atau sebaliknya. Radius dihitung terhadap origin placement GTA dalam 3-D; model
+server `CreateObject`, player, vehicle, pickup, dan asset asli tidak dihapus atau
+dimodifikasi. Bila data GTA user belum mengandung placement/model matching,
+client tidak menebak geometry pengganti. Filter hidup hanya pada retained native
+session dan hilang bersama `WorldState` saat disconnect/terminal lifecycle.
 
 ### Guarded spectator lifecycle (124 / 126 / 127)
 
@@ -248,7 +282,7 @@ menulis `PlayerBeginObjectSelect` (27) dan `PlayerCancelObjectEdit` (28) tanpa
 body. Saat mode 27 aktif, Android menampilkan maksimal 24 object yang memang
 sudah berada di snapshot renderer bounded. Tap mengirim arah sebaliknya dengan
 layout reader `OnPlayerSelectObject`: `u32 SelectType | u16 ObjectID | u32 Model
-| VEC3 Position`, melalui `RELIABLE_ORDERED` channel 2.
+| VEC3 Position`, melalui `RELIABLE_ORDERED` channel 0.
 
 Java hanya menyerahkan ID u16. Tepat sebelum enqueue, native memeriksa lagi mode
 server, lifecycle object, rantai parent yang masih resolve, model, dan origin
@@ -276,7 +310,7 @@ bawah session mutex memeriksa accepted + PlayerInit, kesamaan revision (tap lama
 fail-closed setelah Begin baru), tuple server yang masih aktif, object saat ini dan rantai
 attachment yang masih resolve, respons `Cancel=0`/`Final=1`/`Update=2`, finite
 world/rotasi envelope, cadence Update 90 ms, serta terminal Final/Cancel satu kali
-per revision. Paket kemudian `RELIABLE_ORDERED` channel 2. Baseline editor
+per revision. Paket kemudian `RELIABLE_ORDERED` channel 0. Baseline editor
 disalinkan sebagai snapshot native attachment-resolved khusus, bukan dicari dari
 list renderer 128 object; jadi `PlayerObject=true` dan ID yang berada di luar
 cap/sort frame tetap tidak bisa mewarisi transform object lain atau menjadi
@@ -304,7 +338,7 @@ slot yang sama (tap lama fail-closed), lalu menyalin model/bone dan dua warna. L
 `OnPlayerEditAttachedObject` memakai `Colour::FromARGB`; sender secara eksplisit
 menukar R/B ke ARGB sebelum membangun RPC 116. Offset dibatasi ±10.000, rotasi
 ±360.000°, scale nonzero |0.001..100|, bone 0..18, model 1..65535. Satu respons
-terminal reliable-ordered channel 2 boleh queue per revision. Tidak ada mutasi
+terminal reliable-ordered channel 0 boleh queue per revision. Tidak ada mutasi
 optimistis pada renderer: server tetap menentukan callback dan attachment
 berikutnya.
 
@@ -404,7 +438,7 @@ interior karena field tersebut tidak ada pada wire record ini. Marker radar/GLES
 hanyalah proxy interaksi, bukan model pickup GTA. Tombol **USE** Android
 menghasilkan satu edge ke native; hanya setelah PlayerSpawn sudah di-ACK, posisi
 lokal + controllable valid, interior zero, pickup dalam radius 2,15, dan interval
-450 ms, client mengantrikan `PickedUpPickup` (131) `RELIABLE_ORDERED` channel 2.
+450 ms, client mengantrikan `PickedUpPickup` (131) `RELIABLE_ORDERED` channel 0.
 Ia tidak memberikan item/uang/health lokal dan tidak menghapus pickup sebelum
 server mengirim DestroyPickup.
 
@@ -445,7 +479,7 @@ dan body 1024 byte. ID `-1` menutup dialog aktif.
 Android presenter mendukung message, input, password, list, tablist, dan
 header-tablist dalam UI native. Saat user menekan tombol, sender mencocokkan ID
 **dan revision** dialog aktif lalu mengirim RPC 62 lewat `RELIABLE_ORDERED`
-channel 2. Untuk Tablist, row sumber yang dipilih tetap mempertahankan tab pada
+channel 0. Untuk Tablist, row sumber yang dipilih tetap mempertahankan tab pada
 `inputText` (selain `listItem`) agar kompatibel. Dialog hanya disembunyikan
 lokal setelah packet berhasil masuk antrean reliable.
 
@@ -461,7 +495,7 @@ RPC 77. RPC 78 hides only the matching active menu.
 
 Android renders bounded native row buttons; two columns stay one server row.
 Selecting a row sends exact RPC 132 `u8`, while cancellation sends empty RPC
-140. Both calls are `RELIABLE_ORDERED` channel 2 and must match the active
+140. Both calls are `RELIABLE_ORDERED` channel 0 and must match the active
 menu ID **and revision**; disabled/missing rows, stale UI, unknown menu IDs,
 and failed sends leave server authority intact. Menu position/font/GTA frontend
 styling is intentionally not claimed.
@@ -488,7 +522,7 @@ mengurangi, atau membelanjakan money; tahap ini bukan inventory/economy client.
 ### Scoreboard server (155)
 
 Client mengirim `OnPlayerRequestScoresAndPings` (155) dengan body kosong lewat
-`RELIABLE_ORDERED` channel 2 dan native membatasi request ke satu per detik.
+`RELIABLE_ORDERED` channel 0 dan native membatasi request ke satu per detik.
 Respons memakai ID yang sama, tetapi writer compatible mengirim roster cache
 lengkap sebagai tuple berulang sampai payload habis: `u16 player ID | i32 score |
 u32 ping`, tanpa count. Reducer menolak payload yang bukan kelipatan 10 byte,
@@ -589,16 +623,31 @@ SetCameraBehindPlayer mengembalikan fallback pada snapshot berikutnya.
 ### Vehicle lifecycle dan broadcast sync
 
 `StreamInVehicle` (164) adalah satu-satunya pembuat entity vehicle bounded;
-Packet 200 (`PlayerVehicleSync`) dan Packet 209 (`PlayerUnoccupiedSync`) tidak
-boleh membuat vehicle baru. Keduanya hanya memperbarui posisi/health proxy yang
-sudah stream-in. RPC server `LinkVehicleToInterior` 65, `SetVehicleHealth` 147,
-`SetVehiclePosition` 159, dan `SetVehicleZAngle` 160 juga mengganti field proxy
-hanya jika lifecycle stream masih aktif; semua ukuran/layout diverifikasi dengan
-writer open.mp. Packet 200 juga memberi heading dari quaternion terkompresi;
-Packet 209 mempertahankan heading terakhir karena vector direction-nya bukan
-Euler angle. Snapshot renderer kini boleh mengganti transform **vehicle driver
-lokal** dengan prediksi collision-grounded yang terpisah; remote vehicle tetap
-hanya memakai transform authoritative tanpa interpolasi.
+Packet 200 (`PlayerVehicleSync`), Packet 209 (`PlayerUnoccupiedSync`), dan
+Packet 210 (`PlayerTrailerSync`) tidak boleh membuat vehicle baru. RPC server
+`LinkVehicleToInterior` 65, `SetVehicleHealth` 147, `SetVehiclePosition` 159,
+dan `SetVehicleZAngle` 160 juga mengganti field proxy hanya jika lifecycle
+stream masih aktif; RPC 24 dan legacy recipient RPC 161 hanya mengubah parameter
+retained tanpa mencipta/memindahkan vehicle. Semua ukuran/layout diverifikasi
+dengan writer open.mp atau vector legacy yang diaudit. Packet 200 juga memberi
+heading dari quaternion terkompresi; Packet 209 mempertahankan heading terakhir
+karena vector direction-nya bukan Euler angle. Snapshot renderer kini boleh
+mengganti transform **vehicle driver lokal** dengan prediksi collision-grounded
+yang terpisah; remote vehicle tetap hanya memakai transform authoritative tanpa
+interpolasi.
+
+Packet 210 server→client adalah fixed **57 byte**:
+`u8 210 | u16 PlayerID | u16 TrailerVehicleID | VEC3 Position | VEC4 Quaternion |
+VEC3 Velocity | VEC3 TurnVelocity`. [Writer open.mp](https://github.com/openmultiplayer/open.mp/blob/master/Shared/NetCode/vehicle.hpp)
+menulis `Vector4(q.w, q.x, q.y, q.z)`, maka raw quaternion dibaca tepat dalam
+urutan wire `w,x,y,z`,
+dinormalisasi/dekomposisi melalui jalur GTA DFF yang sama dengan Packet 200.
+Reducer menerima hanya trailer yang sudah `StreamInVehicle`, posisi/velocity
+bounded, quaternion finite-norm, dan setiap komponen turn velocity `[-1,1]`
+sesuai guard source open.mp. Ia memperbarui transform/attitude visual trailer
+saja: tidak mengubah health, driver/passenger, cab attachment, atau local
+trailer physics; packet ini juga tidak dapat mencipta entity atau membuat
+Android mengirim Packet 210.
 
 Packet 211 (`PlayerPassengerSync`) server→client juga sudah dibaca dari
 [`PlayerPassengerSync::write` open.mp](https://github.com/openmultiplayer/open.mp/blob/master/Shared/NetCode/vehicle.hpp)
@@ -631,21 +680,24 @@ u16 up/down | u16 keys | raw GTA quaternion | VEC3 pos | VEC3 velocity |
 float health | u8 health | u8 armour | u8 weapon/additional | u8 siren |
 u8 gear | u16 trailer | u32 hydra`; 64 byte) mengikuti
 [`PlayerVehicleSync::read`](https://github.com/openmultiplayer/open.mp/blob/master/Shared/NetCode/vehicle.hpp).
-Transportnya `UNRELIABLE_SEQUENCED` channel 1 dengan rate `PlayerInit.InCarRate`
+Transportnya `UNRELIABLE_SEQUENCED` channel 0 dengan counter sequenced yang tetap terpisah dari RPC ordered dan rate `PlayerInit.InCarRate`
 yang dibatasi. Pilot kinematic native hanya memakai gas/mundur, steer, rem,
 COL ground, dan sweep statik; ia berhenti pada geometri/ground yang tidak valid
 dan dapat diganti correction server kapan saja. Untuk seat nonzero dari RPC 70,
 SampDroid juga membangun Packet 211 **client→server** fixed 25-byte tanpa
 PlayerID (`211 | vehicle | packed seat/flags/weapon | health | armour | input |
-VEC3 vehicle anchor`) lalu mengirim USeq channel 1 pada `InCarRate`. Ia hanya
+VEC3 vehicle anchor`) lalu mengirim USeq channel 0 pada `InCarRate` (counter sequenced tetap terpisah dari RPC ordered). Ia hanya
 aktif jika vehicle masih streamed, spawn/ACK siap, dan server tidak freeze;
 seat/posisi tidak diprediksi. Bit cuffed hanya mengikuti `SetPlayerSpecialAction`
 server (Cuffed=24). Berdasarkan reader `PlayerPassengerSync` dan vehicle update
 open.mp commit `3d20f3dc`, held AIM boleh memasang drive-by hanya untuk Uzi/MP5/
 Tec-9 yang armed+berammo dari server dan passenger tidak cuffed; FIRE tetap
 masuk key bit, tanpa Packet-206 target/damage. Packet 211 **inbound remote**
-tetap menjadi anchor passenger renderer. Trailer, siren/gear/Hydra aktif, damage, handling/suspension, AI, dan
-physics GTA penuh belum diimplementasi. Tidak ada jaminan server menerima attempt.
+tetap menjadi anchor passenger renderer. Packet 210 **inbound remote** kini
+memperbarui transform trailer yang sudah streamed, tetapi outbound/local trailer
+sync, cab coupling, dan trailer physics belum diimplementasi. Siren/gear/Hydra
+aktif, damage, handling/suspension, AI, dan physics GTA penuh juga belum ada.
+Tidak ada jaminan server menerima attempt.
 
 ### Class selection / spawn response
 
@@ -706,4 +758,6 @@ u32    EnableVehicleFriendlyFire
 ```
 
 Catatan: `VEC3` / `float` di open.mp ditulis apa adanya (32 bit per komponen),
-bukan float terkompresi seperti client 0.3.7 legacy.
+bukan float terkompresi seperti client 0.3.7 legacy. `ManualVehicleEngineAndLights`
+kini diretain; ia mengizinkan pilot Android menghormati engine-off RPC 24 tanpa
+mengubah server automatic menjadi physics kendaraan lokal buatan.

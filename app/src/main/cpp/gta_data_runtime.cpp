@@ -1,6 +1,8 @@
 // Read-only user-owned GTA data runtime assembly.
 #include "gta_data_runtime.h"
 
+#include "gta_vehicle_handling.h"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -19,6 +21,7 @@ bool sameIdeDefinition(const map::IdeObject &left,
                        const map::IdeObject &right) {
   return left.modelId == right.modelId && left.modelName == right.modelName &&
          left.textureDictionary == right.textureDictionary &&
+         left.handlingName == right.handlingName &&
          left.drawDistance == right.drawDistance && left.flags == right.flags;
 }
 
@@ -546,6 +549,7 @@ void GameDataRuntime::clear() {
   textures_ = 0;
   texturePixels_ = 0;
   assetManifest_ = {};
+  handlingProfiles_.clear();
   auxiliaryImages_.clear();
   imageIndex_ = {};
   imageSource_.reset();
@@ -580,6 +584,7 @@ Snapshot GameDataRuntime::snapshot() const {
   out.manifestColPaths = assetManifest_.colPaths.size();
   out.manifestImgPaths = assetManifest_.imgPaths.size();
   out.ideObjects = ideObjects_.size();
+  out.handlingProfiles = handlingProfiles_.size();
   out.iplPlacements = placements_.size();
   out.collisionInstances = collisionWorld_.instanceCount();
   out.missingCollisionPlacements = worldReport_.missingCollisionModels;
@@ -670,6 +675,7 @@ bool GameDataRuntime::mountImgFileDescriptor(int fileDescriptor,
   textures_ = 0;
   texturePixels_ = 0;
   assetManifest_ = {};
+  handlingProfiles_.clear();
   collisionCatalog_.reset();
   auxiliaryImages_.clear();
   imageIndex_ = std::move(candidateIndex);
@@ -1431,13 +1437,10 @@ bool GameDataRuntime::copyTexturePreview(std::string_view dictionaryName,
   return true;
 }
 
-bool GameDataRuntime::copyNearbyWorldRenderBatch(float anchorX, float anchorY,
-                                                 float anchorZ, float radius,
-                                                 size_t maxInstances,
-                                                 size_t maxVertices,
-                                                 NearbyWorldRenderBatch &out,
-                                                 std::string &error,
-                                                 int32_t interior) {
+bool GameDataRuntime::copyNearbyWorldRenderBatch(
+    float anchorX, float anchorY, float anchorZ, float radius, size_t maxInstances,
+    size_t maxVertices, NearbyWorldRenderBatch &out, std::string &error, int32_t interior,
+    const std::vector<removal::Directive>* removals) {
   out = {};
   error.clear();
   if (!imageSource_ || imageIndex_.empty()) {
@@ -1485,6 +1488,8 @@ bool GameDataRuntime::copyNearbyWorldRenderBatch(float anchorX, float anchorY,
     // Never mix a retained IPL placement from another interior into this map
     // batch merely because its GTA-space coordinates happen to be nearby.
     if (placement.interior != interior || placement.modelName.empty() ||
+        removal::removesAny(removals, placement.modelId, placement.position.x,
+                            placement.position.y, placement.position.z) ||
         !std::isfinite(placement.position.x) ||
         !std::isfinite(placement.position.y) ||
         !std::isfinite(placement.position.z)) {
@@ -2273,7 +2278,8 @@ bool GameDataRuntime::copyServerObjectTexturedRenderBatches(
 bool GameDataRuntime::copyNearbyWorldTexturedRenderBatches(
     float anchorX, float anchorY, float anchorZ, float radius,
     size_t maxBatches, size_t maxVertices, size_t maxTexturePixels,
-    NearbyWorldTexturedRenderBatches &out, std::string &error, int32_t interior) {
+    NearbyWorldTexturedRenderBatches &out, std::string &error, int32_t interior,
+    const std::vector<removal::Directive>* removals) {
   out = {};
   error.clear();
   if (!imageSource_ || imageIndex_.empty()) {
@@ -2316,7 +2322,9 @@ bool GameDataRuntime::copyNearbyWorldTexturedRenderBatches(
   const float radiusSquared = radius * radius;
   for (size_t index = 0; index < placements_.size(); ++index) {
     const map::Instance &placement = placements_[index];
-    if (placement.interior != interior || placement.modelName.empty())
+    if (placement.interior != interior || placement.modelName.empty() ||
+        removal::removesAny(removals, placement.modelId, placement.position.x,
+                            placement.position.y, placement.position.z))
       continue;
     if (dffModels_.find(placement.modelName) == dffModels_.end())
       continue;
@@ -2548,12 +2556,13 @@ bool GameDataRuntime::copyNearbyWorldTexturedRenderBatches(
 bool GameDataRuntime::copyNearbyWorldTexturedRenderBatch(
     float anchorX, float anchorY, float anchorZ, float radius,
     size_t maxVertices, size_t maxTexturePixels,
-    NearbyWorldTexturedRenderBatch &out, std::string &error, int32_t interior) {
+    NearbyWorldTexturedRenderBatch &out, std::string &error, int32_t interior,
+    const std::vector<removal::Directive>* removals) {
   out = {};
   NearbyWorldTexturedRenderBatches batches;
   if (!copyNearbyWorldTexturedRenderBatches(anchorX, anchorY, anchorZ, radius,
                                             1u, maxVertices, maxTexturePixels,
-                                            batches, error, interior)) {
+                                            batches, error, interior, removals)) {
     return false;
   }
   if (!batches.batches.empty())
@@ -2569,7 +2578,12 @@ bool GameDataRuntime::loadGtaDatFileDescriptor(int fileDescriptor,
   map::AssetManifest candidate;
   if (!map::parseGtaDat(text, candidate, error))
     return false;
+  // A manifest identifies the selected GTA source tree. A newly accepted one
+  // must not retain handling coefficients from an earlier root even if callers
+  // have not yet replaced the IMG; the Android mount flow reloads handling.cfg
+  // explicitly after this manifest commits.
   assetManifest_ = std::move(candidate);
+  handlingProfiles_.clear();
   return true;
 }
 
@@ -2693,6 +2707,30 @@ bool GameDataRuntime::loadIdeFileDescriptors(
   collisionWorld_ = std::move(candidateWorld);
   worldReport_ = candidateReport;
   return true;
+}
+
+bool GameDataRuntime::loadHandlingFileDescriptor(int fileDescriptor,
+                                                 std::string &error) {
+  error.clear();
+  if (fileDescriptor < 0) {
+    error = "descriptor handling.cfg tidak valid";
+    return false;
+  }
+  std::string text;
+  if (!readDescriptorText(fileDescriptor, text, error)) return false;
+  std::unordered_map<std::string, handling::Profile> candidate;
+  if (!handling::parseHandlingCfg(text, candidate, error)) return false;
+  handlingProfiles_ = std::move(candidate);
+  return true;
+}
+
+bool GameDataRuntime::vehicleMotionTuning(
+    uint32_t modelId, vehiclemotion::VehicleMotionTuning &out) const {
+  const auto ide = ideObjects_.find(modelId);
+  if (ide == ideObjects_.end() || ide->second.handlingName.empty()) return false;
+  const auto profile = handlingProfiles_.find(ide->second.handlingName);
+  if (profile == handlingProfiles_.end()) return false;
+  return handling::makeMotionTuning(profile->second, out);
 }
 
 bool GameDataRuntime::loadIplFileDescriptor(int fileDescriptor,

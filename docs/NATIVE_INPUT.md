@@ -91,7 +91,7 @@ dengan batas finite/range lalu dipetakan ke field legacy berikut:
 | action tahan | `Keys` | bit SA-MP/open.mp audited (`ACTION`, `FIRE`, `SPRINT`, `JUMP`, `AIM`, dll.) |
 | swipe horizontal | quaternion W/X/Y/Z preview | heading diakumulasi dan dinormalisasi `0..360` |
 | swipe vertikal | front vector + `AimZ` Packet-203 saja | pitch relatif dibatasi `-75..75°`; tidak mengubah transform atau gerak dunia |
-| gyro opt-in | delta yaw/pitch relatif yang sama | angular velocity Android × waktu sample, remap orientasi layar, finite/range bounded; berhenti saat freeze/spectate/dead/scene dismiss dan tidak menyimpan orientasi absolut |
+| gyro opt-in | delta yaw/pitch relatif yang sama | angular velocity Android × waktu sample, remap orientasi layar, finite/range bounded; berhenti saat freeze/spectate/dead, app masuk background, atau scene dismiss dan tidak menyimpan orientasi absolut |
 
 Local-player bridge hanya memakai posisi, vital, velocity, special action, dan
 facing authoritative yang sudah direduce dari RPC. Ia tidak mengarang collision,

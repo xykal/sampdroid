@@ -9,6 +9,7 @@
 #include "gta_file_source.h"
 #include "gta_map_manifest.h"
 #include "gta_txd_texture.h"
+#include "gta_vehicle_handling.h"
 
 #include <array>
 #include <cstddef>
@@ -189,6 +190,7 @@ struct Snapshot {
   size_t manifestColPaths = 0;
   size_t manifestImgPaths = 0;
   size_t ideObjects = 0;
+  size_t handlingProfiles = 0;
   size_t iplPlacements = 0;
   size_t collisionInstances = 0;
   size_t missingCollisionPlacements = 0;
@@ -264,7 +266,8 @@ public:
   bool copyNearbyWorldRenderBatch(float anchorX, float anchorY, float anchorZ,
                                   float radius, size_t maxInstances,
                                   size_t maxVertices, NearbyWorldRenderBatch& out,
-                                  std::string& error, int32_t interior = 0);
+                                  std::string& error, int32_t interior = 0,
+                                  const std::vector<removal::Directive>* removals = nullptr);
 
   // Resolves a bounded copied set of static server-object or streamed-vehicle
   // model IDs through loaded IDE/IMG data, applies their Euler transforms, and
@@ -296,7 +299,8 @@ public:
                                           float radius, size_t maxVertices,
                                           size_t maxTexturePixels,
                                           NearbyWorldTexturedRenderBatch& out,
-                                          std::string& error, int32_t interior = 0);
+                                          std::string& error, int32_t interior = 0,
+                                          const std::vector<removal::Directive>* removals = nullptr);
 
   // Same bounded nearby-material path, but returns up to four independently
   // textured overlays ordered by nearest placement in the requested interior.
@@ -307,7 +311,8 @@ public:
                                             float radius, size_t maxBatches,
                                             size_t maxVertices, size_t maxTexturePixels,
                                             NearbyWorldTexturedRenderBatches& out,
-                                            std::string& error, int32_t interior = 0);
+                                            std::string& error, int32_t interior = 0,
+                                            const std::vector<removal::Directive>* removals = nullptr);
 
   // Parses a user-selected text gta.dat and retains only its normalized,
   // relative source manifest. The SAF tree resolver chooses/open files later.
@@ -324,6 +329,14 @@ public:
   // mapping; unsupported binary sections are never guessed.
   bool loadIdeFileDescriptor(int fileDescriptor, std::string& error);
   bool loadIdeFileDescriptors(const std::vector<int>& fileDescriptors, std::string& error);
+
+  // Parses the user-selected stock-compatible `data/handling.cfg` separately
+  // from map assembly. Its model join becomes usable only after cars IDE data
+  // has also been loaded, and it never writes/copies the selected SD-card tree.
+  bool loadHandlingFileDescriptor(int fileDescriptor, std::string& error);
+  bool vehicleMotionTuning(uint32_t modelId,
+                           vehiclemotion::VehicleMotionTuning& out) const;
+
   bool loadIplFileDescriptor(int fileDescriptor, std::string& error);
   bool loadIplFileDescriptors(const std::vector<int>& fileDescriptors, std::string& error);
 
@@ -380,6 +393,10 @@ private:
   size_t textures_ = 0;
   size_t texturePixels_ = 0;
   map::AssetManifest assetManifest_;
+  // Lowercase handling ID → parsed read-only source coefficients. It survives
+  // map-source rebuilds, but clear()/IMG replacement drops it with the selected
+  // GTA tree so stale user data cannot drive a later mount.
+  std::unordered_map<std::string, handling::Profile> handlingProfiles_;
   std::unordered_map<uint32_t, map::IdeObject> ideObjects_;
   // Lowercase child dictionary name → explicit lowercase fallback parent.
   // Retained only from validated `txdp` IDE sections; never user-supplied paths.

@@ -396,7 +396,18 @@ bool parseIdeFile(std::string_view text, IdeParseResult& out, std::string& error
     }
     if (section == Section::None || section == Section::Other) continue;
     const bool dynamicSection = section == Section::Vehicles || section == Section::Pedestrians;
-    if (dynamicSection ? !splitCsvPrefix(line, 4u, fields) : !splitCsv(line, fields)) {
+    bool parsedFields = false;
+    if (dynamicSection) {
+      // Prefer the fifth cars source field (handling ID), but preserve the
+      // historic four-field permissive resolver path for stripped/minimal GTA
+      // roots that can still render a streamed model without handling data.
+      parsedFields = section == Section::Vehicles
+                         ? (splitCsvPrefix(line, 5u, fields) || splitCsvPrefix(line, 4u, fields))
+                         : splitCsvPrefix(line, 4u, fields);
+    } else {
+      parsedFields = splitCsv(line, fields);
+    }
+    if (!parsedFields) {
       error = "record IDE tidak valid";
       return false;
     }
@@ -433,10 +444,10 @@ bool parseIdeFile(std::string_view text, IdeParseResult& out, std::string& error
     }
 
     if (section == Section::Vehicles || section == Section::Pedestrians) {
-      // GTA SA `cars`/`peds` have additional handling/class/animation fields
-      // which are intentionally not treated as physics or gameplay sources.
-      // Their first four fields safely bind a server model ID to user-owned
-      // DFF/TXD data without guessing any remaining metadata.
+      // GTA SA `cars`/`peds` carry a version-specific tail. The renderer uses
+      // only the safe model/TXD/type prefix. For cars, the one extra handling
+      // identifier is retained solely as a lookup key into the already
+      // user-selected handling.cfg; it is not full GTA physics authority.
       if (fields.size() < 4u) {
         error = section == Section::Vehicles ? "layout cars IDE tidak didukung"
                                              : "layout peds IDE tidak didukung";
@@ -457,6 +468,17 @@ bool parseIdeFile(std::string_view text, IdeParseResult& out, std::string& error
                     ? "nilai record cars IDE tidak valid atau model ID duplikat"
                     : "nilai record peds IDE tidak valid atau model ID duplikat";
         return false;
+      }
+      if (section == Section::Vehicles) {
+        // Normally this is field 4: id, dff, txd, type, handling. The narrow
+        // duplicate DFF/TXD repair above consumes one raw CSV column, making
+        // the source handling token field 3 instead.
+        const size_t handlingIndex = duplicatedDictionaryName ? 3u : 4u;
+        if (handlingIndex < fields.size() &&
+            !normalizeModelName(fields[handlingIndex], dynamicModel.handlingName)) {
+          error = "handling record cars IDE tidak valid";
+          return false;
+        }
       }
       // Stock peds.ide denotes CJ (skin/model ID zero) as `null`, while the
       // actual user-owned IMG member is `player.dff`. Preserve custom model-0

@@ -188,6 +188,108 @@ void SequencedPacketGate::clear() {
   latest_.fill(0);
 }
 
+bool ReliableMessageGate::accept(uint16_t messageNumber) {
+  if (!initialized_) {
+    initialized_ = true;
+    newest_ = messageNumber;
+    seen_.insert(messageNumber);
+    return true;
+  }
+
+  const uint16_t forwardDistance = static_cast<uint16_t>(messageNumber - newest_);
+  if (forwardDistance != 0u && forwardDistance < 0x8000u) {
+    // A newly highest message may advance across normal u16 wrap. Old entries
+    // are pruned below using their age relative to this new high-water mark.
+    newest_ = messageNumber;
+  } else {
+    const uint16_t age = static_cast<uint16_t>(newest_ - messageNumber);
+    // The upper half is stale/ambiguous; even an unseen number outside the
+    // retained receive window cannot safely be replayed into an application
+    // reducer after its transport ACK has long been sent.
+    if (age >= kHistoryWindow) return false;
+  }
+
+  const uint16_t age = static_cast<uint16_t>(newest_ - messageNumber);
+  if (age >= kHistoryWindow) return false;
+  const auto inserted = seen_.insert(messageNumber);
+  if (!inserted.second) return false;
+
+  // `seen_` is intentionally tiny and bounded. A full scan is deterministic
+  // and keeps holes/out-of-order packets within the active window valid.
+  for (auto it = seen_.begin(); it != seen_.end();) {
+    const uint16_t retainedAge = static_cast<uint16_t>(newest_ - *it);
+    if (retainedAge >= kHistoryWindow) {
+      it = seen_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  return true;
+}
+
+void ReliableMessageGate::clear() {
+  initialized_ = false;
+  newest_ = 0;
+  seen_.clear();
+}
+
+std::vector<IncomingPacket> ReliableOrderedGate::push(IncomingPacket packet) {
+  if (overflowed_ || packet.orderingChannel >= channels_.size()) return {};
+
+  ChannelState& channel = channels_[packet.orderingChannel];
+  const uint16_t forwardDistance =
+      static_cast<uint16_t>(packet.orderingIndex - channel.nextExpected);
+  if (forwardDistance == 0u) {
+    std::vector<IncomingPacket> delivered;
+    delivered.push_back(std::move(packet));
+    ++channel.nextExpected;
+
+    // A newly delivered frame can open a contiguous run that was received
+    // early. `nextExpected` wraps naturally at 16 bits like legacy RakNet.
+    while (true) {
+      auto pending = channel.pending.find(channel.nextExpected);
+      if (pending == channel.pending.end()) break;
+      pendingBytes_ -= pending->second.payload.size();
+      --pendingCount_;
+      delivered.push_back(std::move(pending->second));
+      channel.pending.erase(pending);
+      ++channel.nextExpected;
+    }
+    return delivered;
+  }
+
+  // A zero distance was handled above. The upper half of the u16 ring is old
+  // or ambiguous, so duplicate/stale reliable frames never reach reducers.
+  if (forwardDistance >= 0x8000u) return {};
+  if (channel.pending.find(packet.orderingIndex) != channel.pending.end()) return {};
+
+  const size_t packetBytes = packet.payload.size();
+  if (channel.pending.size() >= kMaxBufferedPacketsPerChannel ||
+      pendingCount_ >= kMaxBufferedPacketsTotal ||
+      packetBytes > kMaxBufferedBytesTotal - pendingBytes_) {
+    // The surrounding session closes on this flag. Dropping while retaining
+    // the session would be worse: its transport ACK has already told the peer
+    // not to retransmit the missing ordered application frame.
+    overflowed_ = true;
+    return {};
+  }
+
+  channel.pending.emplace(packet.orderingIndex, std::move(packet));
+  ++pendingCount_;
+  pendingBytes_ += packetBytes;
+  return {};
+}
+
+void ReliableOrderedGate::clear() {
+  for (ChannelState& channel : channels_) {
+    channel.nextExpected = 0;
+    channel.pending.clear();
+  }
+  pendingCount_ = 0;
+  pendingBytes_ = 0;
+  overflowed_ = false;
+}
+
 std::vector<uint8_t> buildUnreliable(uint16_t messageNumber, const std::vector<uint8_t>& payload) {
   BitWriter writer;
   writer.writeBit(false);  // hasAcks
@@ -373,12 +475,11 @@ std::vector<IncomingPacket> SplitReassembler::push(IncomingPacket packet) {
   if (packet.payloadBitLength == 0) {
     packet.payloadBitLength = static_cast<uint16_t>(availableBits);
   }
-  if (packet.payloadBitLength > availableBits) return {};
+  const size_t payloadBytes = (static_cast<size_t>(packet.payloadBitLength) + 7u) / 8u;
+  if (packet.payloadBitLength > availableBits || packet.payload.size() != payloadBytes) return {};
   if (!packet.split) return {std::move(packet)};
+  if (overflowed_) return {};
 
-  // MTU-sized SA-MP traffic should be tiny; this bound prevents an untrusted
-  // peer from making a phone reserve arbitrary memory through a malformed header.
-  constexpr uint32_t kMaxSplitParts = 512;
   if (packet.splitCount == 0 || packet.splitCount > kMaxSplitParts ||
       packet.splitIndex >= packet.splitCount) {
     return {};
@@ -390,63 +491,78 @@ std::vector<IncomingPacket> SplitReassembler::push(IncomingPacket packet) {
     return {};
   }
 
-  constexpr size_t kMaxPendingSequences = 64;
   auto it = pending_.find(packet.splitId);
-  if (it == pending_.end() && pending_.size() >= kMaxPendingSequences) {
-    return {};
+  if (it != pending_.end() &&
+      (it->second.expectedCount != packet.splitCount ||
+       it->second.reliability != packet.reliability ||
+       it->second.orderingChannel != packet.orderingChannel ||
+       it->second.orderingIndex != packet.orderingIndex)) {
+    // Split IDs eventually wrap. Legacy RakNet copies reliability and ordering
+    // metadata into every fragment of one packet, so a differing count or
+    // transport identity is a fresh/recycled sequence rather than a body that
+    // may safely be spliced into the retained one. Drop the incomplete prior
+    // state and its accounting before admitting the replacement.
+    pendingBytes_ -= it->second.receivedBytes;
+    pending_.erase(it);
+    it = pending_.end();
   }
-  if (it == pending_.end() || it->second.expectedCount != packet.splitCount) {
+  if (it == pending_.end()) {
+    if (pending_.size() >= kMaxPendingSequences) {
+      overflowed_ = true;
+      return {};
+    }
     PendingSplit fresh;
     fresh.expectedCount = packet.splitCount;
     fresh.reliability = packet.reliability;
+    fresh.orderingChannel = packet.orderingChannel;
+    fresh.orderingIndex = packet.orderingIndex;
     fresh.parts.resize(packet.splitCount);
     fresh.partBitLengths.resize(packet.splitCount);
     fresh.received.assign(packet.splitCount, false);
-    it = pending_.insert_or_assign(packet.splitId, std::move(fresh)).first;
+    it = pending_.emplace(packet.splitId, std::move(fresh)).first;
   }
 
   PendingSplit& pending = it->second;
   if (!pending.received[packet.splitIndex]) {
+    if (payloadBytes > kMaxReassembledPayloadBytes - pending.receivedBytes ||
+        packet.payloadBitLength > UINT16_MAX - pending.receivedBits ||
+        payloadBytes > kMaxPendingBytes - pendingBytes_) {
+      // The caller closes the session on overflow. Silently ACKing a fragment
+      // and losing its ordered parent would permanently stall that RPC stream.
+      overflowed_ = true;
+      return {};
+    }
     pending.parts[packet.splitIndex] = std::move(packet.payload);
     pending.partBitLengths[packet.splitIndex] = packet.payloadBitLength;
     pending.received[packet.splitIndex] = true;
     ++pending.receivedCount;
+    pending.receivedBytes += payloadBytes;
+    pending.receivedBits += packet.payloadBitLength;
+    pendingBytes_ += payloadBytes;
   }
 
   if (pending.receivedCount != pending.expectedCount) return {};
 
-  size_t totalBytes = 0;
-  size_t totalBits = 0;
-  for (size_t i = 0; i < pending.parts.size(); ++i) {
-    const auto& part = pending.parts[i];
-    const size_t partBits = pending.partBitLengths[i];
-    if (partBits > part.size() * 8 || (i + 1 < pending.parts.size() && partBits % 8 != 0)) {
-      pending_.erase(it);
-      return {};
-    }
-    totalBytes += part.size();
-    totalBits += partBits;
-  }
-  if (totalBits > UINT16_MAX) {
-    pending_.erase(it);
-    return {};
-  }
-
+  // The incremental bounds above make all total arithmetic representable and
+  // ensure no completed reassembly can exceed IncomingPacket's u16 bit length.
   IncomingPacket assembled = std::move(packet);
   assembled.split = false;
   assembled.reassembled = true;
-  assembled.payloadBitLength = static_cast<uint16_t>(totalBits);
+  assembled.payloadBitLength = static_cast<uint16_t>(pending.receivedBits);
   assembled.payload.clear();
-  assembled.payload.reserve(totalBytes);
+  assembled.payload.reserve(pending.receivedBytes);
   for (const auto& part : pending.parts) {
     assembled.payload.insert(assembled.payload.end(), part.begin(), part.end());
   }
+  pendingBytes_ -= pending.receivedBytes;
   pending_.erase(it);
   return {std::move(assembled)};
 }
 
 void SplitReassembler::clear() {
   pending_.clear();
+  pendingBytes_ = 0;
+  overflowed_ = false;
 }
 
 }  // namespace samp::raknet

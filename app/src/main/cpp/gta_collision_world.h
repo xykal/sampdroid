@@ -3,6 +3,7 @@
 // not perform unrestricted asset I/O or synthesize network movement.
 #pragma once
 
+#include "gta_building_removal.h"
 #include "gta_collision_catalog.h"
 #include "gta_map_manifest.h"
 
@@ -59,14 +60,16 @@ public:
   // quaternion, box, sphere, and mesh collision are all transformed into world
   // space. `interior` matches IPL interior exactly.
   bool findHighestFloor(float x, float y, float minZ, float maxZ, int32_t interior,
-                        col::FloorHit& out) const;
+                        col::FloorHit& out,
+                        const std::vector<removal::Directive>* removals = nullptr) const;
 
   // Resolves an upright player cylinder against nearby COL boxes, spheres, and
   // sufficiently vertical mesh faces. The target is clamped/slid horizontally;
   // callers retain authoritative floor/gravity handling separately.
   HorizontalMoveResult resolveHorizontalMove(float startX, float startY, float targetX,
                                              float targetY, float feetZ, float radius,
-                                             float height, int32_t interior) const;
+                                             float height, int32_t interior,
+                                             const std::vector<removal::Directive>* removals = nullptr) const;
 
   // Casts a normalized-or-normalizable ray through parsed COL boxes, spheres,
   // and mesh faces for one exact IPL interior. Max distance is deliberately
@@ -74,11 +77,13 @@ public:
   // result is static-data geometry only; callers must never treat it as a
   // network target/hit/damage authority.
   bool raycastStaticWorld(const col::Vec3& origin, const col::Vec3& direction,
-                          float maxDistance, int32_t interior, RaycastHit& out) const;
+                          float maxDistance, int32_t interior, RaycastHit& out,
+                          const std::vector<removal::Directive>* removals = nullptr) const;
 
 private:
   struct Instance {
     const col::Model* model = nullptr;
+    uint32_t modelId = 0;
     col::Vec3 position;
     map::Quaternion rotation;
     int32_t interior = 0;

@@ -1,7 +1,10 @@
-# RakNet + SA-MP: hasil reverse protocol (verified against live servers)
+# RakNet + SA-MP: catatan protocol dan status validasi
 
-Semua di bawah ini **diverifikasi langsung** terhadap server SA-MP/open.mp publik,
-bukan hasil bacaan dokumentasi saja. Tanggal: 2026-10-17.
+Dokumen ini membedakan bukti **live**, source-compatible, dan regression host.
+Hanya baris yang secara eksplisit berstatus ✅ live yang sudah dibuktikan langsung
+terhadap server SA-MP/open.mp publik; jalur SampDroid yang belum diuji live tetap
+ditandai 🧪/pending dan tidak boleh dipromosikan sebagai koneksi berhasil.
+Diperbarui: 2026-10-20.
 
 ---
 
@@ -33,13 +36,23 @@ ID paket (RakNet 2.52 / `RAKNET_LEGACY`):
 | 24 | ID_OPEN_CONNECTION_REQUEST |
 | 25 | ID_OPEN_CONNECTION_REPLY |
 | 26 | ID_OPEN_CONNECTION_COOKIE |
+| 28 | ID_RSA_PUBLIC_KEY_MISMATCH |
+| 29 | ID_CONNECTION_ATTEMPT_FAILED |
 | 30 | ID_NEW_INCOMING_CONNECTION |
 | 31 | ID_NO_FREE_INCOMING_CONNECTIONS |
 | 32 | ID_DISCONNECTION_NOTIFICATION |
+| 33 | ID_CONNECTION_LOST |
 | 34 | ID_CONNECTION_REQUEST_ACCEPTED |
+| 36 | ID_CONNECTION_BANNED |
+| 37 | ID_INVALID_PASSWORD |
 
 Sumber: `openmultiplayer/RakNet` → `Include/raknet/PacketEnumerations.h`,
 `Source/RakPeer.cpp`, `SAMPRakNet.cpp`.
+
+Client menyatukan `28/29/31/32/33/36/37` dalam classifier terminal murni.
+Classifier itu dipakai pada fase accepted, AUTH_KEY, dan setelah ClientJoin;
+penolakan eksplisit tidak boleh berubah menjadi pesan timeout AUTH_KEY yang
+menyesatkan.
 
 ---
 
@@ -162,6 +175,22 @@ keepalive ikut queue/ACK/retry bounded biasa. Bila server mengirim
 monotonic timestamp lokal. Ini behavior transport yang dicakup regression test,
 bukan pengganti `PlayerSync` atau validasi gameplay live.
 
+### Channel outbound RPC dan sync
+
+Referensi kompatibilitas independen `FakeBots` memakai `RELIABLE_ORDERED, 0`
+pada `SampBotClient::SendRpc()` **dan** `UNRELIABLE_SEQUENCED, 0` pada
+`SendSync()`. Ini dipakai sebagai bukti source-compatible untuk channel
+outbound, bukan sebagai klaim bahwa SampDroid sudah lulus sesi live.
+
+Karena kedua keluarga reliabilitas memakai angka channel yang sama, counter-nya
+**tidak boleh** ikut digabung. RakNet legacy menyimpan
+`waitingForOrderedPacketWriteIndex[channel]` dan
+`waitingForSequencedPacketWriteIndex[channel]` pada array terpisah. SampDroid
+juga menjaga `nextRpc` dan `nextSync` terpisah: ClientJoin reliable-ordered
+mengonsumsi channel 0/index 0 lalu RPC berikutnya index 1, sedangkan sync USeq
+pertama tetap channel 0/index 0. Regression host mengunci header USeq channel-0
+(non-byte-aligned fixture) dan independensi kedua counter itu.
+
 ---
 
 ## 5. Status implementasi
@@ -171,10 +200,10 @@ bukan pengganti `PlayerSync` atau validasi gameplay live.
 | Query protocol (i/r/c/d/p) | ✅ | 1.237 server dari open.mp index, live query |
 | Open connection + cookie | ✅ | server 185.169.134.67 membalas `19 00` |
 | Obfuscation layer | ✅ | semua fase di atas butuh ini |
-| Reliability datagram | ✅ **byte-identical** dengan BitStream RakNet |
+| Reliability datagram | ✅ **byte-identical** dengan BitStream RakNet; inbound `RELIABLE_ORDERED` kini juga dirilis per-channel hanya setelah run index kontigu (buffer bounded/overflow → close session) |
 | Connection request accepted | ✅ **diterima dari server live** |
 | AUTH_KEY challenge/response | ✅ 256 entri tabel, lookup runtime |
-| ClientJoin / PlayerConnect RPC 25 | ✅ server memproses dan mengirim stream balik |
+| ClientJoin / PlayerConnect RPC 25 | 🧪 exact builder/channel-0 vector + prior stream evidence; validasi live SampDroid pasca-migrasi masih pending |
 | ACK reliable | ✅ setiap fragment reliable di-ACK; outbound sort/dedupe serta range contiguous non-wrap bounded |
 | Multi-paket datagram + split reassembly | ✅ sebelum RPC diserahkan ke decoder |
 | PlayerInit RPC 139 | ✅ decoder wire format + test vector; observability di UI |
@@ -184,7 +213,7 @@ bukan pengganti `PlayerSync` atau validasi gameplay live.
 | SendClientMessage RPC 93 | ✅ bounded chat state + regression coverage; HUD renderer masih pending |
 | Checkpoint RPC 37/38/39/107 | ✅ normal + race marker state, finite/negative-size guards; renderer masih pending |
 | Retained native session | 🧪 auto-poll, bounded ACK/retry, 5s reliable keepalive, internal-ping pong; live capture multi-server masih pending |
-| Persistent game sync | ⏳ belum |
+| Persistent game sync | 🧪 | Packet client outbound inti memakai USeq channel 0 dengan counter sequenced terpisah dari RPC ordered; vector/regression host lulus, validasi live SampDroid masih pending |
 
 ### Bug yang ditemukan (dan diperbaiki)
 
@@ -201,31 +230,48 @@ membuang paket sebagai sampah. Versi yang benar menghasilkan:
 Diverifikasi dengan mengompilasi `BitStream` milik RakNet sendiri dan
 membandingkan output byte-per-byte.
 
-### Alur lengkap yang sekarang bekerja (terverifikasi live)
+### Urutan wire yang diimplementasikan
 
-```
-C -> S  [18 00 00]                    OPEN_CONNECTION_REQUEST (probe)
-S -> C  [1A xx xx]                    OPEN_CONNECTION_COOKIE
-C -> S  [18 lo hi]                    cookie ^ 0x6969
-S -> C  [19 00]                       OPEN_CONNECTION_REPLY
-C -> S  reliable msg=1 {0B}           CONNECTION_REQUEST
-S -> C  [E3 01 00]                    ACK untuk msg=1
-S -> C  reliable {0C 11 "4C67EC42..."}  AUTH_KEY challenge
-C -> S  reliable msg=2 {0C 28 "B64DC7..."}  AUTH_KEY response
-S -> C  reliable {22 ...}             CONNECTION_REQUEST_ACCEPTED
-C -> S  reliable msg=3 {13}           NEW_INCOMING_CONNECTION
-C -> S  reliable msg=4 {14 19 ...}    PlayerConnect / ClientJoin RPC 25
-S -> C  reliable RPC stream            PlayerJoin, time, PlayerInit, world RPC, dst.
+Berikut urutan outbound saat ini setelah `CONNECTION_REQUEST_ACCEPTED`. Angka
+message dan channel dikunci host regression; ini **bukan** klaim bahwa
+SampDroid pasca-migrasi sudah lolos sesi live server tertentu.
+
+```text
+C -> S  [18 00 00]                     OPEN_CONNECTION_REQUEST (probe)
+S -> C  [1A xx xx]                     OPEN_CONNECTION_COOKIE
+C -> S  [18 lo hi]                     cookie ^ 0x6969
+S -> C  [19 00]                        OPEN_CONNECTION_REPLY
+C -> S  reliable msg=0 {0B}            CONNECTION_REQUEST
+S -> C  ACK untuk msg=0
+S -> C  reliable {0C 11 "challenge"}  AUTH_KEY challenge
+C -> S  reliable msg=1 {0C 28 "reply"} AUTH_KEY response
+S -> C  reliable {22 ...}              CONNECTION_REQUEST_ACCEPTED
+C -> S  reliable msg=2 {1E ip4 port}   NEW_INCOMING_CONNECTION (7 byte)
+C -> S  unreliable msg=3 {06 time32}   INTERNAL_PING
+C -> S  reliable msg=4 {29}            empty static-data record
+C -> S  reliable ordered msg=5,
+        channel=0 index=0 {14 19 ...}  PlayerConnect / ClientJoin RPC 25
+S -> C  reliable RPC stream             PlayerJoin, time, PlayerInit, world RPC, dst.
 ```
 
 Setiap paket reliable yang diterima segera di-ACK, termasuk **setiap fragment**
-dari split packet. Fragment tidak boleh didecode sebagai RPC sendiri: codec
+dari split packet. Sesudah ACK, gate receipt transport yang dibatasi 4.096 nomor
+message `u16` membuang retransmit/nomor stale sebelum split maupun reducer;
+ini mengikuti urutan ReliabilityLayer legacy: ACK tetap dikirim, aplikasi tidak
+menerima payload reliable yang sama dua kali. Fragment tidak boleh didecode sebagai RPC sendiri: codec
 menyusun seluruh split sequence lebih dulu, baru `rpc_decoder` membaca payload.
-Ini penting karena `PlayerInit` dapat lebih besar daripada satu datagram.
+Selain `splitId`/count, semua fragment dalam satu retained sequence wajib punya
+reliability, ordering channel, dan ordering index yang sama seperti hasil
+`SplitPacket` legacy; identitas berbeda mengganti state split-ID lama alih-alih
+mencampur body dua packet. Ini penting karena `PlayerInit` dapat lebih besar
+daripada satu datagram.
 
 Tabel auth berisi 256 pasangan tetap `{"challenge", "response"}` di
 `app/src/main/cpp/samp_auth_table.inc`. Challenge dipilih acak oleh server,
-jadi response harus dicari saat runtime.
+jadi response harus dicari saat runtime. Inbound `AUTH_KEY` divalidasi sebagai
+`[12][len termasuk NUL][maksimal 16 byte challenge][satu NUL terminal]` dengan
+panjang tepat sebelum lookup, sehingga length palsu, NUL tersisip, atau trailing
+byte tidak pernah dibaca sebagai teks challenge.
 
 Catatan: server **SA-MP 0.3.7 legacy** memakai tabel berbeda yang tidak
 tersedia di source open.mp. Untuk server legacy, challenge tidak akan ketemu

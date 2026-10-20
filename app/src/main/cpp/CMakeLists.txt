@@ -18,6 +18,7 @@ add_library(sampdroid SHARED
         gta_file_source.cpp
         gta_map_manifest.cpp
         gta_txd_texture.cpp
+        gta_vehicle_handling.cpp
         input_state.cpp
         local_gameplay_bridge.cpp
         local_movement.cpp
@@ -25,6 +26,7 @@ add_library(sampdroid SHARED
         local_player_sync.cpp
         sync_decoder.cpp
         raknet_codec.cpp
+        raknet_handshake.cpp
         raknet_string_compressor.cpp
         rpc_decoder.cpp
         rpc_state.cpp

@@ -49,6 +49,8 @@ object NativeBridge {
     external fun nativeGameDataClear(): String
     external fun nativeGameDataClearMapSources(): String
     external fun nativeGameDataLoadGtaDatFile(fileDescriptor: Int): String
+    /** Parses a selected user-owned data/handling.cfg without copying it. */
+    external fun nativeGameDataLoadHandlingFile(fileDescriptor: Int): String
     external fun nativeGameDataManifest(): String
     external fun nativeGameDataMountImgFile(fileDescriptor: Int): String
     /**
@@ -208,12 +210,17 @@ object NativeBridge {
      * Explicit user-initiated persistent native session. Calls must run on
      * Dispatchers.IO; this owns a UDP socket until nativeSessionDisconnect().
      */
-    external fun nativeSessionConnect(ip: String, port: Int, timeoutMs: Int): String
+    external fun nativeSessionConnect(
+        ip: String,
+        port: Int,
+        timeoutMs: Int,
+        nickname: String
+    ): String
 
     /** Receives one datagram, ACKs reliable traffic, and returns reduced state JSON. */
     external fun nativeSessionPoll(timeoutMs: Int): String
 
-    /** Sends PlayerRequestClass on reliable ordered channel 2. */
+    /** Sends PlayerRequestClass on source-compatible reliable ordered channel 0. */
     external fun nativeSessionRequestClass(classId: Int): String
 
     /** Starts the explicit RequestSpawn → PlayerSpawn native handshake. */
@@ -228,7 +235,7 @@ object NativeBridge {
 
     /**
      * Responds to the currently active server ShowDialog on reliable ordered
-     * channel 2. The decoded revision must still match so a stale Android UI
+     * channel 0. The decoded revision must still match so a stale Android UI
      * cannot answer a reissued ID. `listItem` is -1 for non-list dialogs; text
      * is DynStr8-bounded natively and is never retained in diagnostics.
      */
@@ -319,10 +326,12 @@ object NativeBridge {
     ): String
 
     /**
-     * Advances collision-grounded on-foot gameplay once from the latest native
-     * touch state, then sends only a source-validated Packet-207 candidate at
-     * the server-advertised rate. It is intentionally void to avoid allocating
-     * JSON every gameplay frame; world/session snapshots expose its status.
+     * Advances collision-grounded on-foot or server-authorized driver gameplay
+     * once from the latest native touch state. A driver may use a model-matched,
+     * bounded user-owned handling.cfg envelope when available, then sends only
+     * source-validated sync candidates at the server-advertised rate. It is
+     * intentionally void to avoid allocating JSON every gameplay frame;
+     * world/session snapshots expose its status.
      */
     external fun nativeSessionAdvanceGameplay(deltaSeconds: Float)
 

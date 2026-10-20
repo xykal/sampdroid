@@ -17,9 +17,10 @@ constexpr uint32_t kDefaultWeaponRateMs = 30;
 constexpr uint32_t kMinOnFootRateMs = 20;
 constexpr uint32_t kMaxOnFootRateMs = 1000;
 
-// Ordering indices are scoped to an ordering channel. Keeping them in one
-// tiny state object makes accidental reuse of channel-2 RPC ordering for
-// channel-1 movement observable in host regression tests.
+// RakNet maintains separate ordered and sequenced write-index arrays even
+// when both reliability families use the same numeric channel. Keep the two
+// tiny counters distinct so channel-0 USeq movement can never consume the
+// reliable-ordered RPC index (or vice versa).
 struct OrderingCounters {
   uint16_t nextRpc = 0;
   uint16_t nextSync = 0;
@@ -29,9 +30,9 @@ struct OrderingCounters {
   uint16_t takeSync() { return nextSync++; }
 };
 
-// Channel 1 sync must never outrun the channel-2 spawn transition. A
-// transport ACK for the PlayerSpawn confirmation is the bounded local signal
-// that the server received that transition.
+// Channel-0 USeq sync must never outrun the channel-0 reliable spawn
+// transition. A transport ACK for the PlayerSpawn confirmation is the bounded
+// local signal that the server received that transition.
 inline bool onFootSessionReady(bool accepted, bool playerInit, bool spawnResponseKnown,
                                bool spawnAllowed, bool playerSpawnAcked) {
   return accepted && playerInit && spawnResponseKnown && spawnAllowed && playerSpawnAcked;

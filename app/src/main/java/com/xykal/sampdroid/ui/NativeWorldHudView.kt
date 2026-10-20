@@ -146,6 +146,7 @@ internal class NativeWorldHudView(context: Context) : View(context) {
         drawVitals(canvas)
         drawAimReticle(canvas)
         drawGameText(canvas)
+        drawDeathFeed(canvas)
         drawChat(canvas)
         drawProjectedWorldLabels(canvas)
         drawTextDraws(canvas)
@@ -157,9 +158,16 @@ internal class NativeWorldHudView(context: Context) : View(context) {
 
     private fun drawHeader(canvas: Canvas) {
         val title = frame.serverName.ifBlank { "SAMPDROID NATIVE" }.take(34)
+        // Retained RPC-24 facts get their own compact line instead of being
+        // appended past the header width. This remains presentation only: the
+        // chip offers no local engine/light/siren action.
+        val vehicleParameters = frame.localDriverVehicleParameterSummary(compact = true)
         paint.style = Paint.Style.FILL
         paint.color = Color.argb(190, 2, 12, 18)
-        panel.set(dp(8f), dp(8f), min(width - dp(8f), dp(274f)), dp(52f))
+        panel.set(
+            dp(8f), dp(8f), min(width - dp(8f), dp(274f)),
+            if (vehicleParameters.isBlank()) dp(52f) else dp(67f)
+        )
         canvas.drawRoundRect(panel, dp(6f), dp(6f), paint)
         paint.textAlign = Paint.Align.LEFT
         paint.textSize = dp(12f)
@@ -227,6 +235,13 @@ internal class NativeWorldHudView(context: Context) : View(context) {
             if (frame.worldBoundsKnown) append(" · BND EXT")
         }
         canvas.drawText("$state$local$environment", panel.left + dp(8f), panel.top + dp(34f), paint)
+        if (vehicleParameters.isNotBlank()) {
+            paint.textSize = dp(8.5f)
+            paint.color = Color.rgb(255, 213, 112)
+            canvas.drawText(
+                "SERVER · $vehicleParameters", panel.left + dp(8f), panel.top + dp(50f), paint
+            )
+        }
     }
 
     private fun drawVitals(canvas: Canvas) {
@@ -469,6 +484,40 @@ internal class NativeWorldHudView(context: Context) : View(context) {
             canvas.drawText(line, centerX, baseline, paint)
         }
         paint.typeface = android.graphics.Typeface.DEFAULT
+    }
+
+    /**
+     * Small global kill-feed surface for exact server RPC-55 rows. The native
+     * expiry and identities are authoritative; this deliberately prints the
+     * raw reason byte instead of claiming an Android weapon/damage simulation.
+     */
+    private fun drawDeathFeed(canvas: Canvas) {
+        if (frame.deathMessages.isEmpty()) return
+        val right = width - dp(8f)
+        var baseline = dp(119f)
+        frame.deathMessages.asReversed().take(MAX_VISIBLE_DEATH_MESSAGES).forEach { message ->
+            val killer = if (message.hasKiller) sanitize(message.killerName).take(24) else "DUNIA"
+            val victim = sanitize(message.victimName).take(24)
+            if (victim.isBlank()) return@forEach
+            val killerLabel = killer.ifBlank { "#${message.killerId}" }
+            val text = "$killerLabel > $victim · R${message.reason}"
+            paint.typeface = android.graphics.Typeface.DEFAULT_BOLD
+            paint.textAlign = Paint.Align.RIGHT
+            paint.textSize = dp(10f)
+            val textWidth = min(dp(266f), paint.measureText(text) + dp(14f))
+            paint.style = Paint.Style.FILL
+            paint.color = Color.argb(175, 1, 10, 15)
+            panel.set(right - textWidth, baseline - dp(14f), right, baseline + dp(5f))
+            canvas.drawRoundRect(panel, dp(4f), dp(4f), paint)
+            paint.color = when {
+                message.victimId == frame.localId -> Color.rgb(255, 142, 142)
+                message.hasKiller && message.killerId == frame.localId -> Color.rgb(132, 234, 255)
+                else -> Color.rgb(238, 239, 231)
+            }
+            canvas.drawText(text, right - dp(6f), baseline, paint)
+            paint.typeface = android.graphics.Typeface.DEFAULT
+            baseline += dp(21f)
+        }
     }
 
     private fun drawChat(canvas: Canvas) {
@@ -1028,6 +1077,7 @@ internal class NativeWorldHudView(context: Context) : View(context) {
     private companion object {
         const val MAX_VISIBLE_CHAT = 5
         const val MAX_CHAT_CHARS = 80
+        const val MAX_VISIBLE_DEATH_MESSAGES = 4
         // Compiled once: this view can redraw at display cadence while a timed
         // GameText banner is active. `h` is GTA's common highlight marker;
         // Canvas deliberately treats all these markers as presentation-only.

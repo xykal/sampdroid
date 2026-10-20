@@ -58,6 +58,11 @@ struct LocalGameplayState {
   vehiclemotion::LocalVehicleMotionState vehicleMotion;
   bool vehiclePredictionActive = false;
   bool vehicleAuthoritativeResetPending = true;
+  // Survives a same-vehicle authoritative reset so a previously consumed
+  // id-less RPC-91 command cannot be replayed after SetVehiclePosition. The
+  // reducer's monotonic per-lifecycle revision makes raw vehicle-ID reuse safe.
+  uint16_t observedVehicleVelocityVehicleId = 0;
+  uint64_t consumedVehicleLinearVelocityRevision = 0;
 };
 
 struct LocalGameplayStep {
@@ -96,12 +101,17 @@ LocalGameplayStep advanceLocalOnFoot(const state::LocalPlayer& local,
                                      const gta::world::CollisionWorld& collisionWorld,
                                      float deltaSeconds, LocalGameplayState& state,
                                      float serverGravity = movement::kDefaultServerGravity,
-                                     const state::WorldEnvironment* environment = nullptr);
+                                     const state::WorldEnvironment* environment = nullptr,
+                                     const std::vector<gta::removal::Directive>* removals = nullptr);
 
 // Advances only a server-authorized local driver (seat zero) using a streamed
 // vehicle's immutable facts. The output remains a bounded Packet-200 candidate;
-// a supplied RPC-17 environment constrains exterior prediction only. Passenger
-// sync, trailers, weapons, and full GTA vehicle physics are separate work rather
+// a supplied RPC-17 environment constrains exterior prediction only. An
+// optional validated user-owned handling profile may tune the conservative
+// kinematic envelope. `manualVehicleEngineAndLights` comes only from PlayerInit:
+// an explicit RPC-24 engine-off state suppresses throttle only when the server
+// declared that it owns GTA's automatic engine/light behavior. Passenger sync,
+// trailers, weapons, and full GTA vehicle physics remain separate work rather
 // than silently fabricated here.
 LocalGameplayStep advanceLocalDriverVehicle(const state::LocalPlayer& local,
                                             const state::Vehicle& vehicle,
@@ -109,7 +119,10 @@ LocalGameplayStep advanceLocalDriverVehicle(const state::LocalPlayer& local,
                                             const gta::world::CollisionWorld& collisionWorld,
                                             float deltaSeconds,
                                             LocalGameplayState& state,
-                                            const state::WorldEnvironment* environment = nullptr);
+                                            const state::WorldEnvironment* environment = nullptr,
+                                            const std::vector<gta::removal::Directive>* removals = nullptr,
+                                            const vehiclemotion::VehicleMotionTuning* tuning = nullptr,
+                                            bool manualVehicleEngineAndLights = false);
 
 // Builds Packet-203 aim state only while on foot and holding the native AIM
 // action. It uses the collision-grounded local transform plus bounded yaw/pitch
@@ -137,7 +150,8 @@ bool buildLocalNoTargetBulletSync(const state::LocalPlayer& local,
 bool applyLocalNoTargetStaticWorldImpact(const gta::world::CollisionWorld& collisionWorld,
                                          const LocalGameplayState& state,
                                          const sync::AimState& aim,
-                                         sync::BulletState& inOut);
+                                         sync::BulletState& inOut,
+                                         const std::vector<gta::removal::Directive>* removals = nullptr);
 
 // Builds Packet-211 passenger state only after the server has seated the local
 // player in a non-driver seat and the exact vehicle remains streamed. It has no

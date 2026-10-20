@@ -1,6 +1,7 @@
 // Small, renderer-independent state reducer for decoded player/chat/marker server RPCs.
 #pragma once
 
+#include "gta_building_removal.h"
 #include "rpc_decoder.h"
 #include "sync_decoder.h"
 
@@ -51,17 +52,29 @@ enum class RpcEventKind : uint8_t {
   RemoteAimSync,
   RemoteBulletSync,
   RemoteVehicleSync,
+  RemoteTrailerSync,
   RemotePassengerSync,
   ChatMessage,
+  // Global RPC-55 kill-feed presentation, separate from RPC-166 per-remote
+  // temporary wasted marker and never local death/respawn authority.
+  DeathMessageChanged,
   ChatBubbleChanged,
   MoneyChanged,
   ScoreboardChanged,
   ClassSelection,
   SpawnInfoChanged,
   SpawnResponse,
+  // Exact PlayerClose (40) and bounded ConnectionRejected (130) are
+  // server-owned session-terminal instructions. The transport owns the actual
+  // socket close after this event.
+  SessionCloseRequested,
   LocalPlayerChanged,
   WeaponStateChanged,
   WorldEnvironmentChanged,
+  // RPC 43 changes server-authoritative visibility/collision filtering for
+  // static user-owned GTA IPL placements. It is intentionally distinct from
+  // dynamic CreateObject state.
+  BuildingRemovalChanged,
   DialogChanged,
   MenuChanged,
   CheckpointChanged,
@@ -99,6 +112,19 @@ struct RpcEvent {
   // native input can reset the correct movement mode without conflating a
   // health/armour/local cosmetic update with an enter/exit transition.
   bool localVehicleUpdated = false;
+  // RPC 91 has no vehicle ID: a valid command can target only the already
+  // streamed vehicle currently assigned to this recipient as driver. This bit
+  // lets the session discard a stale scalar driver prediction before its next
+  // Packet-200 candidate; it is never set for a passenger/unoccupied context.
+  bool localVehicleVelocityUpdated = false;
+  // RPC 24 changes retained engine/lights/siren/etc. facts without changing an
+  // authoritative vehicle transform. The session uses this to preserve a safe
+  // current driver pilot (which will consume engine mode next tick) rather
+  // than snapping its position for a cosmetic/server-control update.
+  bool vehicleParametersUpdated = false;
+  // RPC 91 Type: zero selects linear velocity, one selects angular velocity.
+  // It is meaningful only when localVehicleVelocityUpdated is true.
+  bool localVehicleVelocityAngular = false;
   std::string summary;
 };
 
@@ -330,6 +356,42 @@ struct ScoreboardPlayerView {
   std::string name;
 };
 
+// RPC 24 carries one signed int8 state per legacy vehicle parameter. `-1`
+// means that field is explicitly unset in the server's full VehicleParams
+// snapshot; 0/1 are the other accepted values. Keep the full parameter set
+// source-owned even though the current Android presentation/pilot consumes
+// only engine, lights, doors, objective, and siren.
+constexpr size_t kVehicleParameterCount = 16;
+enum class VehicleParameter : uint8_t {
+  Engine = 0,
+  Lights,
+  Alarm,
+  Doors,
+  Bonnet,
+  Boot,
+  Objective,
+  Siren,
+  DoorDriver,
+  DoorPassenger,
+  DoorBackLeft,
+  DoorBackRight,
+  WindowDriver,
+  WindowPassenger,
+  WindowBackLeft,
+  WindowBackRight,
+};
+
+struct VehicleParameters {
+  bool known = false;
+  std::array<int8_t, kVehicleParameterCount> values{
+      -1, -1, -1, -1, -1, -1, -1, -1,
+      -1, -1, -1, -1, -1, -1, -1, -1};
+
+  int8_t value(VehicleParameter parameter) const {
+    return values[static_cast<size_t>(parameter)];
+  }
+};
+
 // Server-to-client vehicle facts. StreamInVehicle establishes identity and its
 // initial transform; Packet 200/209 may replace that transform only with a
 // decoded authoritative update. The renderer never invents in-between motion.
@@ -350,8 +412,41 @@ struct Vehicle {
   float y = 0.0f;
   float z = 0.0f;
   float angle = 0.0f;
+  // Source Packet-200 only: decompressed full rigid-body attitude for the DFF
+  // renderer. StreamIn/RPC-160 retain yaw-only fallback until a driver sync.
+  bool attitudeKnown = false;
+  float rotationX = 0.0f;
+  float rotationY = 0.0f;
+  float rotationZ = 0.0f;
+  // Exact recipient-local SetVehicleParams (RPC 24) state. It never grants
+  // Android a local engine/lights/door toggle or vehicle ownership.
+  VehicleParameters parameters;
   float health = 1000.0f;
+  // RPC 91 is recipient-local and implicit: it has no VehicleID. Keep its
+  // independently selected linear and angular CVector values on the exact
+  // streamed, seat-zero local vehicle only. Revision counters make a direct
+  // command observable exactly once by a later bounded driver bridge; neither
+  // channel is guessed from Packet-200 or applied to another vehicle.
+  bool linearVelocityKnown = false;
+  bool angularVelocityKnown = false;
+  uint64_t linearVelocityRevision = 0;
+  uint64_t angularVelocityRevision = 0;
+  float linearVelocityX = 0.0f;
+  float linearVelocityY = 0.0f;
+  float linearVelocityZ = 0.0f;
+  float angularVelocityX = 0.0f;
+  float angularVelocityY = 0.0f;
+  float angularVelocityZ = 0.0f;
 };
+
+// Recipient-local door state is the only vehicle-parameter fact that can block
+// Android from manufacturing an EnterVehicle request. Absent/unset (including
+// an all-unset full RPC-24 snapshot) is deliberately permissive; server RPC 70
+// remains the only seat authority either way.
+inline bool isRecipientVehicleEntryLocked(const Vehicle& vehicle) {
+  return vehicle.parameters.known &&
+         vehicle.parameters.value(VehicleParameter::Doors) == 1;
+}
 
 struct RemoteVehicleView {
   uint16_t id = 0;
@@ -366,6 +461,11 @@ struct RemoteVehicleView {
   float y = 0.0f;
   float z = 0.0f;
   float angle = 0.0f;
+  bool attitudeKnown = false;
+  float rotationX = 0.0f;
+  float rotationY = 0.0f;
+  float rotationZ = 0.0f;
+  VehicleParameters parameters;
   float health = 1000.0f;
 };
 
@@ -660,6 +760,17 @@ struct ChatLine {
   std::string text;
 };
 
+// Exact global SendDeathMessage (RPC 55) fact. `hasKiller=false` corresponds
+// to INVALID_PLAYER_ID on wire; reason remains a raw server weapon/death code.
+// It is intentionally presentation-only and has no local health/respawn effect.
+struct DeathMessage {
+  bool hasKiller = false;
+  uint16_t killerId = 0xFFFFu;
+  uint16_t victimId = 0xFFFFu;
+  uint8_t reason = 0;
+  uint64_t expiresAtMs = 0;
+};
+
 struct WorldEnvironment {
   // PlayerInit/SetWorldTime global hour. A later recipient-specific
   // SetPlayerTime can override only the local visual clock/environment sample.
@@ -911,11 +1022,17 @@ public:
   bool applyRemoteAim(const syncdecode::RemoteAimSync& sync, RpcEvent& event);
   bool applyRemoteBullet(const syncdecode::RemoteBulletSync& sync, RpcEvent& event);
   bool applyRemoteVehicle(const syncdecode::RemoteVehicleSync& sync, RpcEvent& event);
+  bool applyRemoteTrailer(const syncdecode::RemoteTrailerSync& sync, RpcEvent& event);
   bool applyRemotePassenger(const syncdecode::RemotePassengerSync& sync, RpcEvent& event);
 
   bool initialized() const { return initialized_; }
   const rpc::PlayerInitData& playerInit() const { return playerInit_; }
   const WorldEnvironment& environment() const { return environment_; }
+  // Copy-free immutable list used while the retained session mutex is held by
+  // gameplay/render bridges. Entries are bounded and validated at RPC ingress.
+  const std::vector<gta::removal::Directive>& buildingRemovals() const {
+    return buildingRemovals_;
+  }
   const AudioStream& audioStream() const { return audioStream_; }
   GameText gameText() const;
   const Dialog& dialog() const { return dialog_; }
@@ -1006,6 +1123,9 @@ public:
   // Returns only the newest bounded tail in chronological order. This isolates
   // the renderer/HUD from the larger retained diagnostic history.
   std::vector<ChatLine> recentChat(size_t maxLines = 6) const;
+  // Returns current, unexpired global death-feed entries in chronological order.
+  // The renderer receives copies only; no death message changes local gameplay.
+  std::vector<DeathMessage> recentDeathMessages(size_t maxMessages = 5) const;
   const ClassSelection& classSelection() const { return classSelection_; }
   // True only after the server explicitly returned this client to class
   // selection; it clears when the user requests/receives a new class view.
@@ -1051,6 +1171,7 @@ private:
   bool initialized_ = false;
   rpc::PlayerInitData playerInit_;
   WorldEnvironment environment_;
+  std::vector<gta::removal::Directive> buildingRemovals_;
   AudioStream audioStream_;
   GameText gameText_;
   Dialog dialog_;
@@ -1100,6 +1221,7 @@ private:
   // RPC 116 has a distinct mode from RPC 117 ObjectEdit; RPC 28 clears both.
   AttachedObjectEditState attachedObjectEdit_;
   std::deque<ChatLine> chatLines_;
+  std::deque<DeathMessage> deathMessages_;
 };
 
 }  // namespace samp::state
