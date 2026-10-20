@@ -1351,22 +1351,46 @@ internal data class WorldFrame(
                     }
                 }
             }
+            // JNI JSON is a presentation boundary, not an authority. Native
+            // may intentionally retain an unresolved DL custom object as
+            // model=0 until a validated ModelInfo base fallback arrives. Keep
+            // that lifecycle fact bounded here, but reject every negative or
+            // oversized raw model so GLES can never reinterpret a signed wire
+            // ID as a drawable model. The scene has its own `1..65535` gate,
+            // making model=0 explicitly non-renderable rather than a proxy.
             val objects = buildList {
                 val source = o.optJSONArray("objects")
                 if (source != null) {
-                    for (i in 0 until source.length()) {
-                        val objectValue = source.optJSONObject(i)
-                        if (objectValue != null) {
-                            val materials = buildList {
-                                val sourceMaterials = objectValue.optJSONArray("materials")
-                                val seenSlots = BooleanArray(16)
-                                if (sourceMaterials != null) {
-                                    for (materialIndex in 0 until sourceMaterials.length()) {
-                                        val material = sourceMaterials.optJSONObject(materialIndex)
-                                        if (material != null) {
-                                            val slot = material.optInt("slot", -1)
-                                            if (slot in 0..15 && !seenSlots[slot]) {
-                                                when (material.optString("kind", "default")) {
+                    for (i in 0 until min(128, source.length())) {
+                        val objectValue = source.optJSONObject(i) ?: continue
+                        val id = objectValue.optInt("id", -1)
+                        val model = objectValue.optLong("model", -1L)
+                        val x = objectValue.optDouble("x").toFloat()
+                        val y = objectValue.optDouble("y").toFloat()
+                        val z = objectValue.optDouble("z").toFloat()
+                        val rotationX = objectValue.optDouble("rotationX").toFloat()
+                        val rotationY = objectValue.optDouble("rotationY").toFloat()
+                        val rotationZ = objectValue.optDouble("rotationZ").toFloat()
+                        val drawDistance = objectValue.optDouble("drawDistance").toFloat()
+                        if (id !in 0..65535 || model !in 0L..65535L ||
+                            !x.isFinite() || !y.isFinite() || !z.isFinite() ||
+                            x !in -20_000f..20_000f || y !in -20_000f..20_000f ||
+                            z !in -1_000f..200_000f ||
+                            !rotationX.isFinite() || !rotationY.isFinite() || !rotationZ.isFinite() ||
+                            abs(rotationX) > 360_000f || abs(rotationY) > 360_000f ||
+                            abs(rotationZ) > 360_000f ||
+                            !drawDistance.isFinite() || drawDistance !in 0f..50_000f
+                        ) continue
+                        val materials = buildList {
+                            val sourceMaterials = objectValue.optJSONArray("materials")
+                            val seenSlots = BooleanArray(16)
+                            if (sourceMaterials != null) {
+                                for (materialIndex in 0 until min(16, sourceMaterials.length())) {
+                                    val material = sourceMaterials.optJSONObject(materialIndex)
+                                    if (material != null) {
+                                        val slot = material.optInt("slot", -1)
+                                        if (slot in 0..15 && !seenSlots[slot]) {
+                                            when (material.optString("kind", "default")) {
                                                 "default" -> {
                                                     val sourceModel = material.optInt("sourceModel", -1)
                                                     val dictionary = material.optString("dictionary")
@@ -1429,25 +1453,24 @@ internal data class WorldFrame(
                                             }
                                         }
                                     }
-                                    }
                                 }
                             }
-                            add(
-                                WorldObject(
-                                    id = objectValue.optInt("id"),
-                                    model = objectValue.optLong("model"),
-                                    moving = objectValue.optBoolean("moving"),
-                                    x = objectValue.optDouble("x").toFloat(),
-                                    y = objectValue.optDouble("y").toFloat(),
-                                    z = objectValue.optDouble("z").toFloat(),
-                                    rotationX = objectValue.optDouble("rotationX").toFloat(),
-                                    rotationY = objectValue.optDouble("rotationY").toFloat(),
-                                    rotationZ = objectValue.optDouble("rotationZ").toFloat(),
-                                    drawDistance = objectValue.optDouble("drawDistance").toFloat(),
-                                    materials = materials
-                                )
-                            )
                         }
+                        add(
+                            WorldObject(
+                                id = id,
+                                model = model,
+                                moving = objectValue.optBoolean("moving"),
+                                x = x,
+                                y = y,
+                                z = z,
+                                rotationX = rotationX,
+                                rotationY = rotationY,
+                                rotationZ = rotationZ,
+                                drawDistance = drawDistance,
+                                materials = materials
+                            )
+                        )
                     }
                 }
             }

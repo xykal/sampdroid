@@ -204,18 +204,26 @@ object NativeBridge {
      * @return JSON status handshake + stream: connection/auth/join, fragment
      * reassembly, RPC summary, and PlayerInit data when the server sends it.
      */
-    external fun nativeRaknetProbe(ip: String, port: Int, timeoutMs: Int): String
+    external fun nativeRaknetProbe(
+        ip: String,
+        port: Int,
+        timeoutMs: Int,
+        advertisedServerVersion: String
+    ): String
 
     /**
      * Explicit user-initiated persistent native session. Calls must run on
      * Dispatchers.IO; native bounds open/cookie/auth/post-accept before it
-     * retains the UDP socket for normal lifecycle polling.
+     * retains the UDP socket for normal lifecycle polling. `advertisedServerVersion`
+     * comes only from a fresh server query; native selects its DL R1 join profile
+     * only when it is an exact 0.3.DL-R1 match and otherwise stays legacy.
      */
     external fun nativeSessionConnect(
         ip: String,
         port: Int,
         timeoutMs: Int,
-        nickname: String
+        nickname: String,
+        advertisedServerVersion: String
     ): String
 
     /** Receives one datagram, ACKs reliable traffic, and returns reduced state JSON. */

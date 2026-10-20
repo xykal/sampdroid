@@ -90,7 +90,65 @@ juga membuang burst pertama dengan sengaja lalu mengunci retry individual reliab
 msg 2/4/5 beserta identity aslinya, sebelum mengunci ClientJoin msg=5, pong msg=6,
 dan bootstrap RequestClass berikutnya.
 
+### Profil ClientJoin 0.3.DL-R1 yang dibatasi
+
+Baseline tetap menulis `NetGameVersion=4057`, token accepted XOR `4057`, dan
+string `0.3.7-R2`. Sebelum socket dibuka, UI hanya meneruskan versi dari **query
+server yang baru dilakukan**; core memilih profile DL bila—dan hanya bila—nilai
+itu sama dengan `0.3.DL-R1` setelah trim whitespace ASCII dan perbandingan ASCII
+case-insensitive. Profile itu secara atomik menulis `NetGameVersion=4062`, token
+accepted XOR `4062`, dan string `0.3.DL-R1` dalam ClientJoin yang sama. Nilai
+lain (kosong, `open.mp`, `0.3.DL`, atau daftar versi campuran) tetap 4057 agar
+server tidak menerima identitas versi spekulatif.
+
+Dua profile adalah literal tetap, bukan field yang dapat diisi server/UI. Payload
+DL dan session retained loopback mengunci ketiga nilai bersama-sama, serta JSON
+status menampilkan `profil wire` yang dipilih. Netgame 4062 berasal dari audit
+source cabang [FakeSAMP 0.3.DL](https://github.com/cizaquita/FakeSAMP) (`NETGAME_VERSION`);
+string player `0.3.DL-R1` dicocokkan dengan batas versi player yang
+didokumentasikan [open.mp GetPlayerVersion](https://open.mp/docs/scripting/functions/GetPlayerVersion).
+
+Profile yang sama sekarang juga menjadi satu-satunya pemilih layout reducer
+server→client. Untuk DL R1, reducer membaca `CustomSkin/CustomModelID:u32`
+tepat sesudah base model pada `PlayerStreamIn` (32), `SetSpawnInfo` (68),
+`PlayerRequestClass` response (128), dan `ShowActor` (171). `SetPlayerSkin`
+(153) DL secara khusus adalah `u16 PlayerID | u32 Skin | u32 CustomSkin`, bukan
+layout legacy `u32 PlayerID | u32 Skin`. Base model dan custom ID disimpan
+terpisah sehingga renderer saat ini tetap boleh memakai model GTA stock/base
+yang lawful tanpa menggeser transform atau field berikutnya. Source writer
+open.mp yang diaudit untuk bentuk conditional itu adalah
+[`class.hpp`](https://github.com/openmultiplayer/open.mp/blob/3d20f3dc0e26917264cdc8585c65913e080a143c/Shared/NetCode/class.hpp),
+[`core.hpp`](https://github.com/openmultiplayer/open.mp/blob/3d20f3dc0e26917264cdc8585c65913e080a143c/Shared/NetCode/core.hpp), dan
+[`actor.hpp`](https://github.com/openmultiplayer/open.mp/blob/3d20f3dc0e26917264cdc8585c65913e080a143c/Shared/NetCode/actor.hpp).
+Fixture host mengunci kelima layout DL, ID custom, penolakan layout DL oleh
+reducer legacy, dan reset terminal yang tetap mempertahankan profile DL.
+
+Reducer juga menerima `ModelInfo`/`ModelRequest` (179) DL yang fixed 39 byte
+secara **pasif dan bounded**: hanya mapping custom object signed `-30000..-1000`
+ke `baseId` stock `1..65535` yang disimpan (maks. 4.096 entry). `CreateObject`
+dan attachment dengan ID custom yang sudah tercatat memakai base itu sebagai
+fallback; object yang datang lebih awal tetap retained tanpa visual yang
+dikarang lalu diperbaiki saat catalog valid tiba. Checksum, ukuran, virtual-world,
+dan waktu dibaca hanya untuk memastikan layout lalu dibuang. Bentuk ini diaudit
+pada [`custommodels.hpp`](https://github.com/openmultiplayer/open.mp/blob/3d20f3dc0e26917264cdc8585c65913e080a143c/Shared/NetCode/custommodels.hpp)
+dan rentang/type pada [open.mp-sdk](https://github.com/openmultiplayer/open.mp-sdk/blob/08cc69a32d96c0eb8fe063d26c78259e54ca853f/include/values.hpp). Snapshot JNI
+hanya meneruskan model efektif `0..65535`; `0` tetap catatan unresolved yang
+non-renderable. Parser Kotlin membatasi maksimal 128 object serta rentang/float
+snapshot itu lagi, dan GLES menerima drawable hanya `1..65535`, sehingga signed
+custom wire ID tidak pernah menjadi ID renderer melalui jalur fallback ini.
+
+Batasnya tetap eksplisit: ini **bukan** downloader/renderer custom-model DL
+penuh. `ModelFile`, request/receipt file DFF/TXD, unduh asset, validasi asset
+custom, dan artwork/model custom belum diaktifkan atau diklaim. Tidak ada URL
+server yang dibuka native atau completion-download yang dipalsukan.
+
 ### Catatan validasi UIF yang terpisah
+
+Pada 2026-10-20 query `INFO` UDP minimal ke `play.uifserver.net:7776` berhasil
+mengembalikan `UIF - United Islands Freeroam`, `UIF build 157`, `117/1000`, tanpa
+password. Ini hanya mengonfirmasi endpoint query publik saat itu; tidak membuka
+sesi RakNet, tidak mengirim ClientJoin/sync/chat, dan bukan bukti admission atau
+kompatibilitas gameplay.
 
 Pada 2026-10-20 terdapat **dua** observasi native UIF yang tidak boleh
 digabungkan atau dipromosikan menjadi admission/gameplay:

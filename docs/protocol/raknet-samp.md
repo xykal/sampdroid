@@ -283,6 +283,43 @@ retry individual reliable msg 2/4/5 dengan nomor/order asli; ping msg 3 memang
 tidak diretry. Ping inbound tetap dibalas sesudah join oleh receive loop yang
 retained.
 
+### Profile ClientJoin legacy vs 0.3.DL-R1
+
+SampDroid tidak menerima angka/string versi bebas dari UI atau server. Ia memiliki
+tepat dua literal profile ClientJoin berikut:
+
+| Profile | NetGameVersion field | Challenge response | client-version field |
+|---|---:|---:|---|
+| baseline | 4057 | `acceptedToken ^ 4057` | `0.3.7-R2` |
+| DL R1 | 4062 | `acceptedToken ^ 4062` | `0.3.DL-R1` |
+
+Pemilih profile hanya menerima hasil query yang dipotong whitespace ASCII dan
+cocok case-insensitive **persis** `0.3.DL-R1`; semua input lain memakai baseline.
+Ini mencegah `open.mp`, nilai parsial `0.3.DL`, atau banner versi campuran
+mengganti identity wire secara spekulatif. Konstanta 4062 telah diaudit pada
+source [FakeSAMP 0.3.DL](https://github.com/cizaquita/FakeSAMP)
+(`NETGAME_VERSION`), sedangkan string normal player `0.3.DL-R1` didokumentasikan
+oleh [open.mp GetPlayerVersion](https://open.mp/docs/scripting/functions/GetPlayerVersion).
+
+Regresi host mengunci payload DL (field `DE 0F 00 00`, XOR token, panjang/string
+9 byte) dan loopback retained yang membaca ClientJoin aktual sebelum mengirim
+PlayerInit. Profile tersebut juga mengunci **layout** reducer core DL: field
+`CustomSkin/CustomModelID:u32` setelah base model pada RPC 32/68/128/171, serta
+perbedaan RPC 153 (`u16 PlayerID | u32 Skin | u32 CustomSkin` untuk DL versus
+`u32 PlayerID | u32 Skin` legacy). Base model dan custom reference disimpan
+terpisah; renderer saat ini memakai base stock fallback. Bentuk writer ini
+diaudit pada open.mp [`class.hpp`](https://github.com/openmultiplayer/open.mp/blob/3d20f3dc0e26917264cdc8585c65913e080a143c/Shared/NetCode/class.hpp),
+[`core.hpp`](https://github.com/openmultiplayer/open.mp/blob/3d20f3dc0e26917264cdc8585c65913e080a143c/Shared/NetCode/core.hpp), dan
+[`actor.hpp`](https://github.com/openmultiplayer/open.mp/blob/3d20f3dc0e26917264cdc8585c65913e080a143c/Shared/NetCode/actor.hpp).
+DL `ModelInfo`/`ModelRequest` (179) juga didecode sebagai catalog pasif fixed
+39-byte yang dibatasi 4.096 mapping signed custom-object → base stock. Ini dapat
+membuat `CreateObject`/attachment memakai model base lawful dan memperbaiki
+proxy yang sudah retained, tetapi checksum/size/virtual-world/time dibuang
+sesudah validasi layout. Scope masih tidak mencakup `ModelFile`, request/receipt
+DFF/TXD, download/verifikasi asset, atau renderer custom model; client tidak
+membuka URL server atau memalsukan completion download. Semua ini juga bukan
+bukti admission/live gameplay server mana pun.
+
 ### Observasi UIF (bukan bukti admission)
 
 Dua observasi native UIF pada 2026-10-20 perlu dipisahkan: sebelum koreksi urutan

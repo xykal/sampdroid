@@ -919,6 +919,84 @@ std::vector<uint8_t> makeShowActor(uint16_t id, uint32_t model, float x, float y
   return writer.buffer;
 }
 
+// 0.3.DL-R1 conditionally inserts CustomSkin:u32 after the base skin in
+// these server-to-client records. Keep distinct fixtures so legacy byte
+// vectors above stay explicit and cannot accidentally gain a DL field.
+std::vector<uint8_t> makeDlPlayerStreamIn(uint16_t id, uint8_t team, uint32_t model,
+                                          uint32_t customModel, float x, float y, float z,
+                                          float angle, uint32_t rgba, uint8_t fightingStyle) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 32};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(id, 16);
+  writer.writeBits(team, 8);
+  writer.writeBits(model, 32);
+  writer.writeBits(customModel, 32);
+  writeFloat(writer, x);
+  writeFloat(writer, y);
+  writeFloat(writer, z);
+  writeFloat(writer, angle);
+  writer.writeBits(rgba, 32);
+  writer.writeBits(fightingStyle, 8);
+  for (int i = 0; i < 11; ++i) writer.writeBits(static_cast<uint32_t>(i), 16);
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makeDlSetPlayerSkin(uint16_t id, uint32_t model, uint32_t customModel) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 153};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(id, 16);
+  writer.writeBits(model, 32);
+  writer.writeBits(customModel, 32);
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makeDlShowActor(uint16_t id, uint32_t model, uint32_t customModel,
+                                     float x, float y, float z, float angle, float health,
+                                     uint8_t invulnerable) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 171};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(id, 16);
+  writer.writeBits(model, 32);
+  writer.writeBits(customModel, 32);
+  writeFloat(writer, x);
+  writeFloat(writer, y);
+  writeFloat(writer, z);
+  writeFloat(writer, angle);
+  writeFloat(writer, health);
+  writer.writeBits(invulnerable, 8);
+  return writer.buffer;
+}
+
+// open.mp ModelRequest (RPC 179) is exactly 39 body bytes. The fixture
+// purposefully carries valid-but-never-downloaded checksums/sizes: the native
+// reducer may retain a stock base fallback, never the asset metadata itself.
+std::vector<uint8_t> makeDlModelInfo(uint32_t poolId, int32_t count, uint8_t type,
+                                     int32_t virtualWorld, int32_t baseId, int32_t newId,
+                                     uint32_t dffChecksum = 0x11111111u,
+                                     uint32_t txdChecksum = 0x22222222u,
+                                     uint32_t dffSize = 1234u, uint32_t txdSize = 5678u,
+                                     uint8_t timeOn = 0u, uint8_t timeOff = 0u) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 179};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(poolId, 32);
+  writer.writeBits(static_cast<uint32_t>(count), 32);
+  writer.writeBits(type, 8);
+  writer.writeBits(static_cast<uint32_t>(virtualWorld), 32);
+  writer.writeBits(static_cast<uint32_t>(baseId), 32);
+  writer.writeBits(static_cast<uint32_t>(newId), 32);
+  writer.writeBits(dffChecksum, 32);
+  writer.writeBits(txdChecksum, 32);
+  writer.writeBits(dffSize, 32);
+  writer.writeBits(txdSize, 32);
+  writer.writeBits(timeOn, 8);
+  writer.writeBits(timeOff, 8);
+  return writer.buffer;
+}
+
 std::vector<uint8_t> makeHideActor(uint16_t id) {
   samp::raknet::BitWriter writer;
   const uint8_t header[] = {20, 172};
@@ -1292,6 +1370,51 @@ std::vector<uint8_t> makeSetSpawnInfo(uint8_t team, uint32_t model, float x, flo
   writer.writeBytes(header, sizeof(header));
   writer.writeBits(team, 8);
   writer.writeBits(model, 32);
+  writer.writeBits(7, 8);  // Unknown1
+  writeFloat(writer, x);
+  writeFloat(writer, y);
+  writeFloat(writer, z);
+  writeFloat(writer, angle);
+  writer.writeBits(24, 32);
+  writer.writeBits(25, 32);
+  writer.writeBits(0, 32);
+  writer.writeBits(100, 32);
+  writer.writeBits(50, 32);
+  writer.writeBits(0, 32);
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makeDlClassSelection(bool selectable, uint8_t team, uint32_t model,
+                                          uint32_t customModel) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 128};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(selectable ? 1u : 0u, 8);
+  writer.writeBits(team, 8);
+  writer.writeBits(model, 32);
+  writer.writeBits(customModel, 32);
+  writer.writeBits(0, 8);  // Unknown1
+  writeFloat(writer, 10.0f);
+  writeFloat(writer, 20.0f);
+  writeFloat(writer, 30.0f);
+  writeFloat(writer, 180.0f);
+  writer.writeBits(24, 32);
+  writer.writeBits(25, 32);
+  writer.writeBits(0, 32);
+  writer.writeBits(100, 32);
+  writer.writeBits(50, 32);
+  writer.writeBits(0, 32);
+  return writer.buffer;
+}
+
+std::vector<uint8_t> makeDlSetSpawnInfo(uint8_t team, uint32_t model, uint32_t customModel,
+                                        float x, float y, float z, float angle) {
+  samp::raknet::BitWriter writer;
+  const uint8_t header[] = {20, 68};
+  writer.writeBytes(header, sizeof(header));
+  writer.writeBits(team, 8);
+  writer.writeBits(model, 32);
+  writer.writeBits(customModel, 32);
   writer.writeBits(7, 8);  // Unknown1
   writeFloat(writer, x);
   writeFloat(writer, y);
@@ -2033,9 +2156,12 @@ std::vector<uint8_t> makeEmptyRpc(uint8_t rpcId) {
 void testLegacyHandshakeBuilders() {
   using samp::handshake::buildClientJoin;
   using samp::handshake::buildEmptyStaticData;
+  using samp::handshake::clientJoinChallengeResponse;
+  using samp::handshake::clientJoinProfileForAdvertisedVersion;
   using samp::handshake::buildInternalPing;
   using samp::handshake::buildNewIncoming;
   using samp::handshake::generateLegacySerial;
+  using samp::handshake::isExactDlR1AdvertisedVersion;
   using samp::handshake::isPostAcceptControlId;
   using samp::handshake::isTerminalSessionControlId;
   using samp::handshake::isValidLegacySerial;
@@ -2058,6 +2184,20 @@ void testLegacyHandshakeBuilders() {
   expect(isPostAcceptControlId(6u) && isPostAcceptControlId(41u) &&
              !isPostAcceptControlId(20u) && !isPostAcceptControlId(30u),
          "post-accept transport-control classification changed");
+
+  const auto legacyProfile = clientJoinProfileForAdvertisedVersion("");
+  const auto dlProfile = clientJoinProfileForAdvertisedVersion(" \t0.3.dl-r1\r\n");
+  expect(!isExactDlR1AdvertisedVersion("0.3.DL") &&
+             !isExactDlR1AdvertisedVersion("0.3.DL-R1 / 0.3.7-R2") &&
+             !isExactDlR1AdvertisedVersion("open.mp") &&
+             dlProfile.netGameVersion == 4062u &&
+             std::string(dlProfile.clientVersion) == "0.3.DL-R1" &&
+             legacyProfile.netGameVersion == 4057u &&
+             std::string(legacyProfile.clientVersion) == "0.3.7-R2",
+         "ClientJoin profile selector must allow only exact DL-R1 query identity");
+  expect(clientJoinChallengeResponse(0x12345678u, legacyProfile) == 0x123459A1u &&
+             clientJoinChallengeResponse(0x12345678u, dlProfile) == 0x123459A6u,
+         "ClientJoin profile challenge XOR changed");
 
   const std::string authText = "6C407EC29DE59E2";
   std::vector<uint8_t> authChallenge = {12u, static_cast<uint8_t>(authText.size() + 1u)};
@@ -2112,6 +2252,16 @@ void testLegacyHandshakeBuilders() {
       '0', '.', '3', '.', '7', '-', 'R', '2',
   };
   expect(join == expectedJoin, "ClientJoin field layout/version identity changed");
+  const auto dlJoin = buildClientJoin(clientJoinChallengeResponse(0x12345678u, dlProfile),
+                                      "Native_01", "3E9", dlProfile);
+  const std::vector<uint8_t> expectedDlJoin = {
+      20u, 25u, 0xDEu, 0x0Fu, 0x00u, 0x00u, 1u, 9u,
+      'N', 'a', 't', 'i', 'v', 'e', '_', '0', '1',
+      0xA6u, 0x59u, 0x34u, 0x12u, 3u, '3', 'E', '9', 9u,
+      '0', '.', '3', '.', 'D', 'L', '-', 'R', '1',
+  };
+  expect(dlJoin == expectedDlJoin,
+         "DL-R1 ClientJoin must bind 4062, XOR token, and reported version together");
   expect(buildClientJoin(0u, "bad nick", "3E9").empty() &&
              buildClientJoin(0u, "Native_01", "123").empty(),
          "ClientJoin must reject unsafe nickname or invalid serial before framing");
@@ -5798,6 +5948,12 @@ struct LoopbackClassBootstrapPeer {
   std::atomic<unsigned> bootstrapRetryMask{0u};
   std::atomic<bool> sawSourceBootstrapDatagram{false};
   std::atomic<bool> sawClientJoin{false};
+  // Lets the same offline peer assert both fixed, source-backed ClientJoin
+  // identities without sending any public-server traffic.
+  bool expectDlR1ClientJoin = false;
+  uint32_t receivedClientNetGameVersion = 0u;
+  uint32_t receivedClientChallengeResponse = 0u;
+  std::string receivedClientVersion;
   std::atomic<bool> sawPostAcceptPong{false};
   std::atomic<bool> sawInitialClass{false};
   std::atomic<unsigned> initialClassRequestMessages{0u};
@@ -5977,6 +6133,52 @@ struct LoopbackClassBootstrapPeer {
             error = "ClientJoin must preserve RakPeer post-accept message number 5";
             break;
           }
+          // Decode only enough fixed-layout ClientJoin state to prove the
+          // retained Android path passed one of the two immutable profiles.
+          // Every offset is length-bounded before it is consumed.
+          const std::vector<uint8_t>& join = packet.payload;
+          size_t offset = 2u;
+          const auto readLe32 = [&](size_t at) -> uint32_t {
+            return static_cast<uint32_t>(join[at]) |
+                   (static_cast<uint32_t>(join[at + 1u]) << 8u) |
+                   (static_cast<uint32_t>(join[at + 2u]) << 16u) |
+                   (static_cast<uint32_t>(join[at + 3u]) << 24u);
+          };
+          if (offset + 6u > join.size()) {
+            error = "ClientJoin profile header truncated";
+            break;
+          }
+          receivedClientNetGameVersion = readLe32(offset);
+          offset += 4u;
+          ++offset;  // fixed legacy modded-client capability byte
+          const size_t nicknameLength = join[offset++];
+          if (nicknameLength > join.size() - offset || join.size() - offset - nicknameLength < 5u) {
+            error = "ClientJoin profile nickname truncated";
+            break;
+          }
+          offset += nicknameLength;
+          receivedClientChallengeResponse = readLe32(offset);
+          offset += 4u;
+          const size_t serialLength = join[offset++];
+          if (serialLength > join.size() - offset || join.size() - offset - serialLength < 1u) {
+            error = "ClientJoin profile serial truncated";
+            break;
+          }
+          offset += serialLength;
+          const size_t versionLength = join[offset++];
+          if (versionLength != join.size() - offset) {
+            error = "ClientJoin profile version length invalid";
+            break;
+          }
+          receivedClientVersion.assign(reinterpret_cast<const char*>(join.data() + offset), versionLength);
+          const uint32_t expectedVersion = expectDlR1ClientJoin ? 4062u : 4057u;
+          const char* expectedText = expectDlR1ClientJoin ? "0.3.DL-R1" : "0.3.7-R2";
+          if (receivedClientNetGameVersion != expectedVersion ||
+              receivedClientChallengeResponse != (0x12345678u ^ expectedVersion) ||
+              receivedClientVersion != expectedText) {
+            error = "ClientJoin profile identity/challenge mismatch";
+            break;
+          }
           sawClientJoin = true;
           if (!sentPostAcceptPing) {
             // The normal server control still arrives and must be answered, but
@@ -6077,8 +6279,9 @@ void testRetainedSessionInitialClassBootstrap() {
   const samp::SessionSnapshot closed = samp::raknet_session_disconnect();
 
   expect(session.active && session.accepted && session.playerInit && session.joined &&
-             session.classRequestPending && session.requestedClassId == 0u,
-         "PlayerInit must retain an active session and queue its first class");
+             session.classRequestPending && session.requestedClassId == 0u &&
+             session.clientProtocol == "0.3.7-R2 (4057)",
+         "PlayerInit must retain the baseline session and queue its first class");
   expect(world.active && world.playerInit && world.classRequestPending &&
              !world.spawnResponseKnown && !world.spawnAllowed && !world.spawnRequestPending &&
              !world.spawnConfirmationSent && !world.spawnConfirmationAcked,
@@ -6087,6 +6290,31 @@ void testRetainedSessionInitialClassBootstrap() {
              peer.sawInitialClass && peer.error.empty(),
          "retained session must coalesce source bootstrap, then pong and initial RequestClass");
   expect(!closed.active, "loopback retained session must close cleanly");
+}
+
+void testRetainedSessionDlR1ClientJoinProfile() {
+  LoopbackClassBootstrapPeer peer;
+  peer.expectDlR1ClientJoin = true;
+  peer.start();
+  for (int attempt = 0; attempt < 200 && !peer.ready; ++attempt) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  expect(peer.ready && peer.port != 0u && peer.error.empty(),
+         "DL-R1 loopback peer did not initialize");
+
+  const samp::SessionSnapshot session = samp::raknet_session_connect(
+      "127.0.0.1", peer.port, 40, "LoopbackDl", " \t0.3.dl-r1\r\n");
+  peer.join();
+  const samp::SessionSnapshot closed = samp::raknet_session_disconnect();
+
+  expect(session.active && session.accepted && session.playerInit && session.joined &&
+             session.clientProtocol == "0.3.DL-R1 (4062)",
+         "exact queried DL-R1 must retain its bounded ClientJoin profile in session status");
+  expect(peer.sawSourceBootstrapDatagram && peer.sawClientJoin && peer.sawPostAcceptPong &&
+             peer.sawInitialClass && peer.receivedClientNetGameVersion == 4062u &&
+             peer.receivedClientVersion == "0.3.DL-R1" && peer.error.empty(),
+         "DL-R1 retained session must wire 4062/version/XOR profile before normal class bootstrap");
+  expect(!closed.active, "DL-R1 loopback retained session must close cleanly");
 }
 
 void testRetainedSessionCoalescedBootstrapRetriesIndividually() {
@@ -7743,6 +7971,183 @@ void testWorldStateReducer() {
 }
 
 
+void testDlR1RpcLayoutReducer() {
+  samp::state::WorldState dlWorld(samp::state::ClientWireProfile::DlR1);
+  samp::state::RpcEvent event;
+  expect(dlWorld.usesDlR1WireLayout() &&
+             dlWorld.wireProfile() == samp::state::ClientWireProfile::DlR1,
+         "DL R1 state reducer profile was not retained");
+  expect(dlWorld.applyRpc(makePlayerInit(), event),
+         "DL R1 state reducer rejected compatible PlayerInit");
+
+  const auto spawn = makeDlSetSpawnInfo(3u, 7u, 20001u, 101.5f, -22.25f, 8.0f, 91.0f);
+  expect(spawn.size() == 52u && dlWorld.applyRpc(spawn, event) &&
+             event.kind == samp::state::RpcEventKind::SpawnInfoChanged &&
+             dlWorld.localPlayer().model == 7u && dlWorld.localPlayer().customModel == 20001u &&
+             std::fabs(dlWorld.localPlayer().x - 101.5f) < 0.001f,
+         "DL R1 SetSpawnInfo CustomModelID/layout did not retain the stock fallback and source ID");
+
+  const auto classReply = makeDlClassSelection(true, 4u, 8u, 20002u);
+  expect(classReply.size() == 53u && dlWorld.applyRpc(classReply, event) &&
+             event.kind == samp::state::RpcEventKind::ClassSelection &&
+             dlWorld.classSelection().valid && dlWorld.classSelection().selectable &&
+             dlWorld.classSelection().model == 8u && dlWorld.classSelection().customModel == 20002u,
+         "DL R1 PlayerRequestClass CustomModelID/layout did not retain class facts");
+
+  expect(dlWorld.applyRpc(makePlayerJoin(7u, 0x11223344u, false, "DLRemote"), event) &&
+             dlWorld.applyRpc(makeDlPlayerStreamIn(7u, 5u, 9u, 20003u,
+                                                    1.5f, 2.5f, 3.5f, 45.0f,
+                                                    0xAABBCCDDu, 4u), event) &&
+             dlWorld.findPlayer(7u) != nullptr && dlWorld.findPlayer(7u)->model == 9u &&
+             dlWorld.findPlayer(7u)->customModel == 20003u &&
+             dlWorld.renderablePlayers().size() == 1u &&
+             dlWorld.renderablePlayers().front().customModel == 20003u &&
+             std::fabs(dlWorld.renderablePlayers().front().x - 1.5f) < 0.001f,
+         "DL R1 PlayerStreamIn CustomSkin must remain aligned with actor facts");
+
+  const auto remoteSkin = makeDlSetPlayerSkin(7u, 10u, 20004u);
+  expect(remoteSkin.size() == 12u && dlWorld.applyRpc(remoteSkin, event) &&
+             event.kind == samp::state::RpcEventKind::PlayerSkinChanged &&
+             dlWorld.findPlayer(7u)->model == 10u && dlWorld.findPlayer(7u)->customModel == 20004u,
+         "DL R1 SetPlayerSkin must use u16 player ID plus CustomSkin");
+  expect(dlWorld.applyRpc(makeDlSetPlayerSkin(42u, 11u, 20005u), event) &&
+             event.kind == samp::state::RpcEventKind::LocalPlayerChanged &&
+             dlWorld.localPlayer().model == 11u && dlWorld.localPlayer().customModel == 20005u,
+         "DL R1 local SetPlayerSkin must retain the custom reference");
+
+  const auto actor = makeDlShowActor(19u, 12u, 20006u, -2.0f, 4.0f, 6.0f, 270.0f, 75.0f, 1u);
+  expect(actor.size() == 33u && dlWorld.applyRpc(actor, event) &&
+             event.kind == samp::state::RpcEventKind::ServerActorCreated &&
+             dlWorld.renderableServerActors().size() == 1u &&
+             dlWorld.renderableServerActors().front().model == 12u &&
+             dlWorld.renderableServerActors().front().customModel == 20006u,
+         "DL R1 ShowActor CustomSkin must not misalign actor transforms");
+
+  // DL ModelInfo maps a negative custom object wire ID to its server-declared
+  // stock base model without retaining its URL/checksum/file or sending a
+  // download-completion RPC. A prior unresolved object is repaired in place.
+  const uint32_t customObjectWire = static_cast<uint32_t>(static_cast<int32_t>(-1003));
+  expect(dlWorld.applyRpc(makeCreateObject(88u, customObjectWire, 20.0f, 30.0f, 4.0f,
+                                           0.0f, 0.0f, 0.0f, 80.0f), event) &&
+             event.kind == samp::state::RpcEventKind::ObjectCreated &&
+             dlWorld.renderableObjects(8u).back().sourceModel == -1003 &&
+             dlWorld.renderableObjects(8u).back().model == 0u,
+         "unknown DL custom object must stay retained but have no invented visual model");
+  const auto modelInfo = makeDlModelInfo(0u, 1, 2u, -1, 19379, -1003);
+  expect(modelInfo.size() == 41u && dlWorld.applyRpc(modelInfo, event) &&
+             event.kind == samp::state::RpcEventKind::DlModelCatalogChanged &&
+             dlWorld.dlObjectFallbackCount() == 1u &&
+             dlWorld.renderableObjects(8u).back().sourceModel == -1003 &&
+             dlWorld.renderableObjects(8u).back().model == 19379u,
+         "DL ModelInfo must repair a retained custom object to its stock base fallback");
+  expect(dlWorld.applyRpc(makeSetPlayerAttachedObject(42u, 0u, true, customObjectWire), event) &&
+             dlWorld.renderablePlayerAttachedObjects(8u).size() == 1u &&
+             dlWorld.renderablePlayerAttachedObjects(8u).front().sourceModel == -1003 &&
+             dlWorld.renderablePlayerAttachedObjects(8u).front().model == 19379u,
+         "DL custom attached object must use the bounded ModelInfo base fallback");
+  const size_t catalogBeforeMalformed = dlWorld.dlObjectFallbackCount();
+  expect(!dlWorld.applyRpc(makeDlModelInfo(1u, 1, 2u, -1, 19380, -1004), event) &&
+             event.kind == samp::state::RpcEventKind::Malformed &&
+             dlWorld.dlObjectFallbackCount() == catalogBeforeMalformed,
+         "DL ModelInfo pool index outside count must fail closed without growing catalog");
+  auto truncatedModelInfo = modelInfo;
+  truncatedModelInfo.pop_back();
+  expect(!dlWorld.applyRpc(truncatedModelInfo, event) &&
+             event.kind == samp::state::RpcEventKind::Malformed &&
+             dlWorld.dlObjectFallbackCount() == catalogBeforeMalformed &&
+             dlWorld.renderableObjects(8u).front().model == 19379u,
+         "truncated DL ModelInfo must not alter its retained object or catalog");
+  expect(!dlWorld.applyRpc(makeDlModelInfo(0u, 1, 3u, -1, 19380, -1004), event) &&
+             event.kind == samp::state::RpcEventKind::Malformed &&
+             dlWorld.dlObjectFallbackCount() == catalogBeforeMalformed,
+         "unknown DL ModelInfo type must fail closed without catalog mutation");
+  expect(!dlWorld.applyRpc(makeDlModelInfo(0u, 1, 2u, -1, 0, -1004), event) &&
+             event.kind == samp::state::RpcEventKind::Malformed &&
+             dlWorld.dlObjectFallbackCount() == catalogBeforeMalformed,
+         "out-of-range DL ModelInfo base model must fail closed without catalog mutation");
+  expect(!dlWorld.applyRpc(makeDlModelInfo(0u, 1, 2u, -1, 19380, -999), event) &&
+             event.kind == samp::state::RpcEventKind::Malformed &&
+             dlWorld.dlObjectFallbackCount() == catalogBeforeMalformed,
+         "out-of-range DL ModelInfo custom object ID must fail closed without catalog mutation");
+  expect(!dlWorld.applyRpc(makeDlModelInfo(0u, 4097, 2u, -1, 19380, -1004), event) &&
+             event.kind == samp::state::RpcEventKind::Malformed &&
+             dlWorld.dlObjectFallbackCount() == catalogBeforeMalformed,
+         "oversized DL ModelInfo pool count must fail closed without catalog mutation");
+  // A valid skin catalog entry has no object fallback side effect; custom skin
+  // artwork is intentionally not fetched/rendered by this passive stage.
+  expect(dlWorld.applyRpc(makeDlModelInfo(0u, 1, 1u, -1, 7, 20001), event) &&
+             event.kind == samp::state::RpcEventKind::DlModelCatalogChanged &&
+             dlWorld.dlObjectFallbackCount() == catalogBeforeMalformed,
+         "DL skin ModelInfo must not populate the custom-object fallback catalog");
+
+  // A catalog entry that arrives before its object is used at CreateObject
+  // ingress, not by a later unsafe renderer-side reinterpretation.
+  expect(dlWorld.applyRpc(makeDlModelInfo(0u, 1, 2u, -1, 19380, -1005), event) &&
+             dlWorld.dlObjectFallbackCount() == catalogBeforeMalformed + 1u &&
+             dlWorld.applyRpc(makeCreateObject(89u,
+                 static_cast<uint32_t>(static_cast<int32_t>(-1005)),
+                 21.0f, 31.0f, 4.0f, 0.0f, 0.0f, 0.0f, 80.0f), event) &&
+             dlWorld.renderableObjects(8u).back().sourceModel == -1005 &&
+             dlWorld.renderableObjects(8u).back().model == 19380u,
+         "catalog-before-object DL fallback must remain signed at ingress and positive for GLES");
+  const size_t validObjectCount = dlWorld.renderableObjects(8u).size();
+  expect(!dlWorld.applyRpc(makeCreateObject(90u,
+                 static_cast<uint32_t>(static_cast<int32_t>(-999)),
+                 22.0f, 32.0f, 4.0f, 0.0f, 0.0f, 0.0f, 80.0f), event) &&
+             event.kind == samp::state::RpcEventKind::Malformed &&
+             dlWorld.renderableObjects(8u).size() == validObjectCount,
+         "invalid negative DL CreateObject model ID must not create a renderable proxy");
+  const size_t validAttachmentCount = dlWorld.renderablePlayerAttachedObjects(8u).size();
+  expect(!dlWorld.applyRpc(makeSetPlayerAttachedObject(42u, 1u, true,
+                 static_cast<uint32_t>(static_cast<int32_t>(-999))), event) &&
+             event.kind == samp::state::RpcEventKind::Malformed &&
+             dlWorld.renderablePlayerAttachedObjects(8u).size() == validAttachmentCount,
+         "invalid negative DL attachment model ID must not create a renderable proxy");
+
+  // The passive map itself has a hard cap independent of server-reported IDs;
+  // replacing an existing entry is still bounded, but a 4,097th key is not.
+  samp::state::WorldState cappedCatalog(samp::state::ClientWireProfile::DlR1);
+  for (int32_t index = 0; index < 4096; ++index) {
+    expect(cappedCatalog.applyRpc(makeDlModelInfo(0u, 1, 2u, -1, 1,
+              -1000 - index), event),
+           "bounded DL ModelInfo catalog fixture rejected before cap");
+  }
+  expect(cappedCatalog.dlObjectFallbackCount() == 4096u &&
+             !cappedCatalog.applyRpc(makeDlModelInfo(0u, 1, 2u, -1, 1, -5096), event) &&
+             event.kind == samp::state::RpcEventKind::Malformed &&
+             cappedCatalog.dlObjectFallbackCount() == 4096u,
+         "DL ModelInfo fallback catalog must reject a new key beyond its hard cap");
+  expect(cappedCatalog.applyRpc(makeDlModelInfo(0u, 1, 2u, -1, 2, -1000), event) &&
+             cappedCatalog.dlObjectFallbackCount() == 4096u,
+         "DL ModelInfo catalog must allow bounded replacement of an existing key");
+  cappedCatalog.resetForSession();
+  expect(cappedCatalog.usesDlR1WireLayout() && cappedCatalog.dlObjectFallbackCount() == 0u,
+         "session reset must clear passive DL catalog facts while retaining selected profile");
+
+  auto truncatedSkin = remoteSkin;
+  truncatedSkin.pop_back();
+  const uint32_t retainedCustomSkin = dlWorld.findPlayer(7u)->customModel;
+  expect(!dlWorld.applyRpc(truncatedSkin, event) && event.kind == samp::state::RpcEventKind::Malformed &&
+             dlWorld.findPlayer(7u)->customModel == retainedCustomSkin,
+         "truncated DL R1 SetPlayerSkin must fail closed");
+
+  // A legacy reducer has no ambiguous length-based upgrade path: the DL-only
+  // ten-byte SetPlayerSkin body is rejected rather than interpreted as a
+  // legacy u32 player ID plus trailing data.
+  samp::state::WorldState legacyWorld;
+  expect(!legacyWorld.applyRpc(remoteSkin, event) && event.kind == samp::state::RpcEventKind::Malformed,
+         "legacy reducer must reject a DL R1 SetPlayerSkin layout");
+  expect(!legacyWorld.applyRpc(modelInfo, event) && event.kind == samp::state::RpcEventKind::Ignored &&
+             legacyWorld.dlObjectFallbackCount() == 0u,
+         "legacy reducer must ignore DL ModelInfo rather than creating a fallback catalog");
+
+  dlWorld.resetForSession();
+  expect(dlWorld.usesDlR1WireLayout() && !dlWorld.initialized() &&
+             dlWorld.dlObjectFallbackCount() == 0u &&
+             dlWorld.renderablePlayers().empty() && dlWorld.renderableServerActors().empty(),
+         "terminal session reset must clear DL facts while preserving DL R1 wire layout");
+}
+
 void testSendDeathMessageReducer() {
   samp::state::WorldState world;
   samp::state::RpcEvent event;
@@ -8069,6 +8474,8 @@ int main() {
   testSessionSafetyWithoutSocket();
   testBoundedConnectErrors();
   testRetainedSessionInitialClassBootstrap();
+  testRetainedSessionDlR1ClientJoinProfile();
+  testDlR1RpcLayoutReducer();
   testRetainedSessionCoalescedBootstrapRetriesIndividually();
   testRetainedSessionLargeOrderedBootstrap();
   testRenderableWorldBoundary();

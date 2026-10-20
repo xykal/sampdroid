@@ -104,6 +104,13 @@ object ServerDetailDialog {
                 "kamu tetap dapat memilih class lain lalu Spawn sesuai respons server. Dunia menyediakan HUD/kontrol native setelah gate spawn/ACK. " +
                 "Hit/damage/ammo lokal dan gameplay GTA penuh belum diklaim.\n\n")
             append("aktif           : ").append(o.optBoolean("active")).append('\n')
+            append("profil wire     : ").append(o.optString("clientProtocol").ifBlank { "belum dipilih" }).append('\n')
+            if (o.optString("clientProtocol").startsWith("0.3.DL-R1")) {
+                val objectFallbacks = o.optInt("dlObjectFallbacks").coerceAtLeast(0)
+                append("DL R1          : ClientJoin + layout CustomSkin inti aktif. ")
+                append("Catalog object pasif: ").append(objectFallbacks)
+                    .append(" fallback custom→base stock; model/artwork custom tidak diunduh.\n")
+            }
             append("accepted        : ").append(o.optBoolean("accepted")).append('\n')
             append("ClientJoin stream: ").append(o.optBoolean("joined")).append('\n')
             append("PlayerInit       : ").append(o.optBoolean("playerInit")).append('\n')
@@ -279,6 +286,7 @@ object ServerDetailDialog {
                 (snapshot.optBoolean("spawnConfirmationSent") &&
                     !snapshot.optBoolean("spawnConfirmationAcked"))
             val transportError = snapshot.optString("error").trim()
+            val dlR1Profile = snapshot.optString("clientProtocol").startsWith("0.3.DL-R1")
             btnQuickConnect.text = if (active) "Sesi native aktif" else "Hubungkan native"
             // Opening a renderer while the transport is merely accepted made an
             // empty scene look like playable world state. Wait for the native
@@ -302,6 +310,8 @@ object ServerDetailDialog {
                 !active && transportError.isNotEmpty() ->
                     "Handshake native berhenti: $transportError. Periksa server/koneksi lalu coba lagi manual."
                 !active -> "Sesi belum aktif. Hubungkan native untuk memulai handshake."
+                !playerInit && dlR1Profile ->
+                    "Profil DL R1 aktif dari versi query; layout CustomSkin inti siap, tetapi unduh/artwork custom masih belum dijamin."
                 !playerInit -> "Transport aktif; menunggu PlayerInit dari server sebelum class/spawn."
                 snapshot.optBoolean("spawnConfirmationAcked") ->
                     "Spawn dikonfirmasi transport. Buka Dunia untuk kontrol, chat, dan HUD native."
@@ -478,8 +488,8 @@ object ServerDetailDialog {
                 log.text = "Menutup sesi lama dulu…"
                 return@setOnClickListener
             }
-            log.text = "Membuka sesi native…"
-            connectionHint.text = "Membuka socket native dan menjalankan handshake server…"
+            log.text = "Mengecek profil server lalu membuka sesi native…"
+            connectionHint.text = "Query ulang versi server untuk memilih profil ClientJoin aman, lalu membuka socket native…"
             sessionConnectJob = activity.lifecycleScope.launch {
                 try {
                     val raw = withContext(Dispatchers.IO) {
@@ -487,11 +497,24 @@ object ServerDetailDialog {
                         if (prior.optBoolean("active")) {
                             NativeBridge.nativeSessionPoll(SESSION_POLL_TIMEOUT_MS)
                         } else {
+                            // A directory/index value can be stale or describe a
+                            // compatibility range. Re-query immediately before
+                            // ClientJoin so the native DL profile is selected
+                            // only from this endpoint's fresh version response.
+                            val advertisedVersion = runCatching {
+                                val info = JSONObject(NativeBridge.nativeQueryInfo(
+                                    server.ip,
+                                    server.port,
+                                    1_500
+                                ))
+                                if (info.optBoolean("ok")) info.optString("version") else ""
+                            }.getOrElse { "" }
                             NativeBridge.nativeSessionConnect(
                                 server.ip,
                                 server.port,
                                 1000,
-                                PlayerProfile.nickname(activity)
+                                PlayerProfile.nickname(activity),
+                                advertisedVersion
                             )
                         }
                     }
@@ -668,13 +691,25 @@ object ServerDetailDialog {
 
         btnProbe.setOnClickListener {
             run {
-                val o = JSONObject(NativeBridge.nativeRaknetProbe(server.ip, server.port, 1500))
+                // Keep this diagnostic on the same fresh, bounded profile
+                // selection as the player-facing retained-session action.
+                val advertisedVersion = runCatching {
+                    val info = JSONObject(NativeBridge.nativeQueryInfo(server.ip, server.port, 1_500))
+                    if (info.optBoolean("ok")) info.optString("version") else ""
+                }.getOrElse { "" }
+                val o = JSONObject(NativeBridge.nativeRaknetProbe(
+                    server.ip,
+                    server.port,
+                    1500,
+                    advertisedVersion
+                ))
                 buildString {
                     append("=== RAKNET PROBE ===\n")
                     append(o.optString("log")).append('\n')
                     append("open connection : ").append(o.optBoolean("openConnection")).append('\n')
                     append("cookie ok       : ").append(o.optBoolean("cookieOk")).append('\n')
                     append("auth challenge  : ").append(o.optBoolean("authenticated")).append('\n')
+                    append("profil wire     : ").append(o.optString("clientProtocol").ifBlank { "-" }).append('\n')
                     append("client join     : ").append(o.optBoolean("joined")).append('\n')
                     append("accepted        : ").append(o.optBoolean("accepted")).append('\n')
                     append("PlayerInit RPC  : ").append(o.optBoolean("playerInit")).append('\n')

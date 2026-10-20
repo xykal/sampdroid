@@ -271,6 +271,8 @@ struct LiveSession {
   syncpolicy::OrderingCounters orderingCounters;
   bool accepted = false;
   bool joined = false;
+  // Copied from a fixed handshake profile before socket ownership is retained.
+  std::string clientProtocol;
   int receivedPackets = 0;
   int receivedRpcs = 0;
   int splitFragments = 0;
@@ -1142,7 +1144,7 @@ void processSessionDatagram(LiveSession& session, const std::vector<uint8_t>& by
           invalidateLocalGameplay(session);
           // No inactive snapshot may retain prior server world/audio/dialog
           // facts after a transport-level refusal/disconnect.
-          session.world = {};
+          session.world.resetForSession();
           session.joined = false;
           session.error = "server memutus atau menolak sesi native (RakNet id " +
                           std::to_string(static_cast<unsigned>(id)) + ")";
@@ -1284,7 +1286,7 @@ void processSessionDatagram(LiveSession& session, const std::vector<uint8_t>& by
             // The terminal reason lives in SessionSnapshot.error; clear the
             // server-derived reducer state so an inactive world snapshot cannot
             // retain stale audio, dialogs, menus, entities, or gameplay facts.
-            session.world = {};
+            session.world.resetForSession();
             session.error = "server mengakhiri sesi native (" + event.summary + ")";
             if (session.net) session.net->close();
             return;
@@ -1494,6 +1496,7 @@ SessionSnapshot snapshotFrom(const LiveSession* session) {
   snapshot.trackedVehicles = static_cast<int>(session->world.vehicleCount());
   snapshot.streamedVehicles = static_cast<int>(session->world.streamedVehicleCount());
   snapshot.trackedServerActors = static_cast<int>(session->world.serverActorCount());
+  snapshot.dlObjectFallbacks = static_cast<int>(session->world.dlObjectFallbackCount());
   snapshot.remoteOnFootPackets = session->remoteOnFootPackets;
   snapshot.remoteAimPackets = session->remoteAimPackets;
   snapshot.remoteBulletPackets = session->remoteBulletPackets;
@@ -1522,6 +1525,7 @@ SessionSnapshot snapshotFrom(const LiveSession* session) {
   snapshot.localOnFootStateKnown = session->localOnFootStateKnown;
   snapshot.localAimStateKnown = session->localAimStateKnown;
   snapshot.localPassengerStateKnown = session->localPassengerStateKnown;
+  snapshot.clientProtocol = session->clientProtocol;
   snapshot.serverName = snapshot.playerInit ? session->world.playerInit().serverName : "";
   snapshot.rpcSummary = session->rpcSummary;
   snapshot.syncSummary = session->syncSummary;
@@ -2144,8 +2148,10 @@ WorldSnapshot worldSnapshotFrom(const LiveSession* session) {
 }  // namespace
 
 static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int timeoutMs,
-                                       bool retainSession, const std::string& requestedNickname) {
+                                       bool retainSession, const std::string& requestedNickname,
+                                       const handshake::ClientJoinProfile& clientProfile) {
   ProbeResult res;
+  res.clientProtocol = clientProfile.displayName != nullptr ? clientProfile.displayName : "";
   // Android invokes this from an IO coroutine, but a dead UDP endpoint must not
   // hold the connect action for every historical retry/read loop. Keep each
   // receive caller-configurable within a sane range and cap the complete
@@ -2387,9 +2393,11 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   const uint16_t staticDataMessageNumber = msgNo++;
   const std::vector<uint8_t> staticDataPayload = handshake::buildEmptyStaticData();
 
-  const uint32_t challengeResponse = token ^ handshake::kLegacyNetGameVersion;
+  const uint32_t challengeResponse =
+      handshake::clientJoinChallengeResponse(token, clientProfile);
   const std::string serial = handshake::generateLegacySerial();
-  const auto join = handshake::buildClientJoin(challengeResponse, requestedNickname, serial);
+  const auto join = handshake::buildClientJoin(challengeResponse, requestedNickname, serial,
+                                               clientProfile);
   if (join.empty()) {
     res.error = "ClientJoin lokal tidak valid";
     return res;
@@ -2435,8 +2443,9 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   }
 
   char jb[160];
-  std::snprintf(jb, sizeof(jb), "[5] post-accept RakPeer + ClientJoin (nick %s, cr %u)",
-                requestedNickname.c_str(), challengeResponse);
+  std::snprintf(jb, sizeof(jb),
+                "[5] post-accept RakPeer + ClientJoin (profile %s, nick %s, cr %u)",
+                res.clientProtocol.c_str(), requestedNickname.c_str(), challengeResponse);
   logln(res, jb);
 
   // ---- 6. dengarkan stream server ----------------------------------------
@@ -2446,7 +2455,11 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   int reassembledPackets = 0;
   std::string rpcSummary;
   std::string stateSummary;
-  state::WorldState world;
+  const state::ClientWireProfile wireProfile =
+      clientProfile.netGameVersion == handshake::kDlR1NetGameVersion
+          ? state::ClientWireProfile::DlR1
+          : state::ClientWireProfile::Legacy037;
+  state::WorldState world(wireProfile);
   // A retained session must return control to Android promptly even if a
   // compatible server is quiet after ClientJoin. Further PlayerInit/world
   // packets are consumed by lifecycle polling rather than monopolising this
@@ -2606,6 +2619,7 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     live->lastReliableSent = std::chrono::steady_clock::now();
     live->accepted = res.accepted;
     live->joined = res.joined;
+    live->clientProtocol = res.clientProtocol;
     live->receivedPackets = rxPackets;
     live->receivedRpcs = rpcCount;
     live->splitFragments = splitFragments;
@@ -2629,22 +2643,30 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   return res;
 }
 
-ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs) {
-  return raknet_connect_impl(ip, port, timeoutMs, false, "SampDroid");
+ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs,
+                         const std::string& advertisedServerVersion) {
+  const handshake::ClientJoinProfile clientProfile =
+      handshake::clientJoinProfileForAdvertisedVersion(advertisedServerVersion);
+  return raknet_connect_impl(ip, port, timeoutMs, false, "SampDroid", clientProfile);
 }
 
 SessionSnapshot raknet_session_connect(const std::string& ip, uint16_t port, int timeoutMs,
-                                       const std::string& nickname) {
+                                       const std::string& nickname,
+                                       const std::string& advertisedServerVersion) {
   std::lock_guard<std::mutex> lock(gLiveSessionMutex);
   gLiveSession.reset();
 
-  const ProbeResult result = raknet_connect_impl(ip, port, timeoutMs, true, nickname);
+  const handshake::ClientJoinProfile clientProfile =
+      handshake::clientJoinProfileForAdvertisedVersion(advertisedServerVersion);
+  const ProbeResult result = raknet_connect_impl(ip, port, timeoutMs, true, nickname,
+                                                 clientProfile);
   if (!gLiveSession) {
     SessionSnapshot snapshot;
     snapshot.accepted = result.accepted;
     snapshot.joined = result.joined;
     snapshot.playerInit = result.playerInit;
     snapshot.playerId = result.playerId;
+    snapshot.clientProtocol = result.clientProtocol;
     snapshot.serverName = result.serverName;
     snapshot.receivedPackets = result.receivedPackets;
     snapshot.receivedRpcs = result.receivedRpcs;
