@@ -701,8 +701,8 @@ SessionSnapshot raknet_session_connect(const std::string& ip, uint16_t port,
 // reduces RPC state. Call from an IO coroutine while the user keeps the session.
 SessionSnapshot raknet_session_poll(int timeoutMs = 200);
 
-// Sends a RELIABLE_ORDERED channel-0 PlayerRequestClass RPC. The caller must
-// subsequently poll for the server reply before reading classSelectionKnown.
+// Sends a RELIABLE_ORDERED SyncRPC-channel-2 PlayerRequestClass RPC. The caller
+// must subsequently poll for the server reply before reading classSelectionKnown.
 SessionSnapshot raknet_session_request_class(uint16_t classId);
 
 // Starts the explicit spawn handshake. A nonzero server response automatically
@@ -729,8 +729,9 @@ SessionSnapshot raknet_session_respond_dialog(int16_t dialogId, uint64_t dialogR
                                               const std::string& text);
 
 // Selects/exits only a currently active source-verified legacy menu revision.
-// Both paths use RELIABLE_ORDERED channel 0 and clear Android presentation only
-// after queuing succeeds, so stale/cross-menu taps cannot forge a response.
+// Both paths use RELIABLE_ORDERED SyncRPC channel 2 and clear Android
+// presentation only after queuing succeeds, so stale/cross-menu taps cannot
+// forge a response.
 SessionSnapshot raknet_session_select_menu(uint8_t menuId, uint64_t menuRevision, uint8_t row);
 SessionSnapshot raknet_session_exit_menu(uint8_t menuId, uint64_t menuRevision);
 
@@ -758,7 +759,7 @@ SessionSnapshot raknet_session_select_object(uint16_t objectId, uint64_t expecte
 // Sends an OnPlayerEditObject (RPC 117) reply only for the exact active server
 // edit tuple. `response` is Cancel=0, Final=1, or Update=2; Java can never
 // supply the global/player flag or object ID. Transform bounds, current object
-// resolution, reliable ordered channel 0, and update cadence remain native.
+// resolution, reliable ordered SyncRPC channel 2, and update cadence remain native.
 // `expectedRevision` is a copied server revision, never an object identity.
 // It prevents a delayed touch coroutine from applying an old transform to a
 // newer BeginObjectEdit lifecycle that happened after the tap.
@@ -778,14 +779,15 @@ SessionSnapshot raknet_session_edit_attached_object(
 
 // Emits exactly one source-validated client PlayerFootSync packet only after
 // the active session has PlayerInit, a server-approved spawn response, and a
-// transport-ACKed PlayerSpawn confirmation. It uses UNRELIABLE_SEQUENCED/
-// channel 0 and its own sequenced ordering counter (separate from reliable
-// RPC despite the shared numeric channel), plus the server-advertised OnFootRate.
+// transport-ACKed PlayerSpawn confirmation. It uses UNRELIABLE_SEQUENCED on
+// SyncPacket channel 1 and its own sequenced ordering counter, separate from
+// the reliable SyncRPC stream, plus the server-advertised OnFootRate.
 SessionSnapshot raknet_session_send_onfoot(const sync::OnFootState& state);
 
 // Emits exactly one source-validated client PlayerVehicleSync / Packet 200
-// only for the current server-authorized driver vehicle. It shares channel 0
-// with on-foot sync but has independent cadence state from PlayerInit InCarRate.
+// only for the current server-authorized driver vehicle. It shares SyncPacket
+// channel 1 with on-foot sync but has independent cadence state from
+// PlayerInit InCarRate.
 SessionSnapshot raknet_session_send_incar(const sync::InCarState& state);
 
 // Advances the collision-grounded on-foot or driver-vehicle bridge once, then

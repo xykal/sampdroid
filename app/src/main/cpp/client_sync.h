@@ -16,10 +16,11 @@ constexpr uint8_t kPlayerAimSyncPacketId = 203;
 constexpr uint8_t kPlayerBulletSyncPacketId = 206;
 constexpr uint8_t kPlayerFootSyncPacketId = 207;
 constexpr uint8_t kPlayerPassengerSyncPacketId = 211;
-// SA-MP-compatible client references send both RPC and USeq sync on numeric
-// channel zero. RakNet keeps a distinct per-reliability-family write counter,
-// so sharing this numeric channel never permits sync to consume RPC indices.
-constexpr uint8_t kSyncOrderingChannel = 0u;
+// SA-MP/open.mp reserves the SyncPacket ordered stream for USeq movement.
+// Current open.mp's public OrderingChannel enum is Internal=0, SyncPacket=1,
+// SyncRPC=2. RakNet still keeps independent per-reliability-family counters,
+// but the numeric channels deliberately differ: sync=1 and RPC=2.
+constexpr uint8_t kSyncOrderingChannel = 1u;
 
 // Exact fixed-layout data consumed by the SA-MP-compatible server's
 // PlayerFootSync::read handler after the packet ID. The quaternion is emitted

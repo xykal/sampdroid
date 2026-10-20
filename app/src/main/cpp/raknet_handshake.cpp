@@ -108,6 +108,10 @@ bool isTerminalSessionControlId(uint8_t id) {
          id == kIdInvalidPassword;
 }
 
+bool isPostAcceptReadyControlId(uint8_t id) {
+  return id == kIdInternalPing || id == kIdReceivedStaticData;
+}
+
 std::vector<uint8_t> buildClientJoin(uint32_t challengeResponse, const std::string& nickname,
                                      const std::string& serial) {
   static constexpr char kVersion[] = "0.3.7-R2";

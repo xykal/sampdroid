@@ -53,11 +53,15 @@ reliable outbound yang pending, session mengirim reliable transport keepalive
 `ID_DETECT_LOST_CONNECTIONS`; inbound `ID_INTERNAL_PING` dibalas dengan
 unreliable `ID_CONNECTED_PONG`. Android shell memanggil JNI ini dari Kotlin IO
 coroutine; selama detail server terbuka, poll UDP berjalan otomatis dan
-berhenti/disconnect saat dialog ditutup.
+berhenti/disconnect saat dialog ditutup. Begitu `PlayerInit` valid membawa
+setidaknya satu class, native mengirim `PlayerRequestClass(0)` pada SyncRPC
+channel 2 sebelum round-trip presentasi UI; respons class, pilihan class lain,
+dan spawn tetap server-authoritative.
 
 Fondasi encoder `OnFootSync` sudah ada: payload client→server yang diuji,
-`UNRELIABLE_SEQUENCED` channel 0 (counter sequenced tetap terpisah dari
-counter RPC reliable-ordered), rate gate `PlayerInit`, dan spawn/session safety gate. Spawn gate sekarang mencakup `RequestSpawn` → respons → `PlayerSpawn`
+`UNRELIABLE_SEQUENCED` SyncPacket channel 1 (counter sequenced tetap terpisah
+dari counter SyncRPC reliable-ordered channel 2), rate gate `PlayerInit`, dan
+spawn/session safety gate. Spawn gate sekarang mencakup `RequestSpawn` → respons → `PlayerSpawn`
 (52) → transport ACK, sementara `WorldState` menahan template spawn/posisi/vitals
 lokal terverifikasi. Reducer juga menyimpan `ResetPlayerWeapons`/`GivePlayerWeapon`/
 `SetPlayerAmmo`/`SetPlayerArmedWeapon` sebagai raw weapon-ID/ammo + armed fact bounded. Armed fact itu mengisi weapon
@@ -167,8 +171,8 @@ bukan diganti gravity lokal tebak. Untuk seat driver 0 yang
 sudah diotorisasi `PutPlayerInVehicle`, bridge terpisah mereset dari transform
 `StreamInVehicle`, menjalankan pilot kinematic gas/mundur-steer-rem terhadap
 floor COL dan sweep statik, lalu membangun Packet-200 client-originated tepat
-64 byte. Session tetap menjadi satu-satunya sender USeq channel-0 rate-gated
-(dengan counter sequenced terpisah dari RPC ordered; `OnFootRate`/`InCarRate`); freeze, world collision kosong, server velocity,
+64 byte. Session tetap menjadi satu-satunya sender USeq SyncPacket channel 1 rate-gated
+(dengan counter sequenced terpisah dari SyncRPC channel 2; `OnFootRate`/`InCarRate`); freeze, world collision kosong, server velocity,
 stream vehicle hilang, dan input/state invalid berhenti fail-closed. Passenger
 menggunakan sender Packet-211 terpisah tanpa prediction; koreksi posisi/velocity
 atau mutator vehicle server membuang prediction driver tanpa memutasi

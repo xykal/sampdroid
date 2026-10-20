@@ -1,5 +1,5 @@
 // Client-to-server SA-MP/open.mp RPC payload builders.
-// A live session wraps these payloads in RakNet RELIABLE_ORDERED channel 0.
+// A live session wraps these payloads in RakNet RELIABLE_ORDERED channel 2.
 #pragma once
 
 #include <cstdint>
@@ -8,9 +8,11 @@
 
 namespace samp::clientrpc {
 
-// Exact legacy-client ordering stream for every client-originated RPC,
-// including ClientJoin. Keep this distinct from the USeq movement channel.
-constexpr uint8_t kReliableOrderedChannel = 0u;
+// Exact SA-MP/open.mp SyncRPC stream for every client-originated RPC,
+// including ClientJoin. Current open.mp's OrderingChannel enum assigns
+// SyncPacket=1 and SyncRPC=2; a live UIF capture also returns its RPC frames
+// on channel 2. Keep this stream distinct from the USeq movement channel.
+constexpr uint8_t kReliableOrderedChannel = 2u;
 
 std::vector<uint8_t> buildRequestClass(uint16_t classId);
 std::vector<uint8_t> buildRequestSpawn();

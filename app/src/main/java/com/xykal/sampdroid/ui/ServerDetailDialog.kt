@@ -99,7 +99,8 @@ object ServerDetailDialog {
         fun formatSession(o: JSONObject): String = buildString {
             append("=== STATUS SESI NATIVE ===\n")
             append("Android native tanpa Winlator/samp.exe. Stream dipoll otomatis selama sesi ini terbuka.\n")
-            append("Pilih class dan Spawn sesuai respons server; Dunia menyediakan HUD/kontrol native setelah gate spawn/ACK. " +
+            append("Saat PlayerInit membawa class, native langsung meminta class awal agar handshake legacy tidak kedaluwarsa; " +
+                "kamu tetap dapat memilih class lain lalu Spawn sesuai respons server. Dunia menyediakan HUD/kontrol native setelah gate spawn/ACK. " +
                 "Hit/damage/ammo lokal dan gameplay GTA penuh belum diklaim.\n\n")
             append("aktif           : ").append(o.optBoolean("active")).append('\n')
             append("accepted        : ").append(o.optBoolean("accepted")).append('\n')
@@ -279,6 +280,13 @@ object ServerDetailDialog {
             btnQuickConnect.text = if (active) "Sesi native aktif" else "Hubungkan native"
             btnOpenWorld.isEnabled = active
             btnClassZero.isEnabled = active && playerInit && classCount > 0L && !classPending && !spawnPending
+            btnClassZero.text = when {
+                classPending -> "Memuat class…"
+                snapshot.optBoolean("classSelectionKnown") && classCount > 0L ->
+                    "Ganti class ${snapshot.optInt("requestedClassId") + 1}/$classCount"
+                playerInit && classCount > 0L -> "Pilih class"
+                else -> "Class awal otomatis"
+            }
             btnSpawn.isEnabled = active && playerInit && snapshot.optBoolean("classSelectionKnown") &&
                 snapshot.optBoolean("classSelectable") && !spawnPending
             connectionHint.text = when {
@@ -291,7 +299,7 @@ object ServerDetailDialog {
                 snapshot.optBoolean("spawnResponseKnown") && !snapshot.optBoolean("spawnAllowed") ->
                     "Server menolak spawn saat ini. Pilih class lain atau ikuti instruksi server."
                 snapshot.optBoolean("classRequestPending") ->
-                    "Meminta class ke server; tunggu responsnya sebelum Spawn."
+                    "Meminta class awal/pilihan ke server; tunggu responsnya sebelum Spawn."
                 snapshot.optBoolean("classSelectionKnown") ->
                     "Class diterima. Tekan Spawn untuk meminta izin spawn dari server."
                 snapshot.optLong("spawnClassCount") > 0L ->

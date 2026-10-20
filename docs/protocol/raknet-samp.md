@@ -177,19 +177,29 @@ bukan pengganti `PlayerSync` atau validasi gameplay live.
 
 ### Channel outbound RPC dan sync
 
-Referensi kompatibilitas independen `FakeBots` memakai `RELIABLE_ORDERED, 0`
-pada `SampBotClient::SendRpc()` **dan** `UNRELIABLE_SEQUENCED, 0` pada
-`SendSync()`. Ini dipakai sebagai bukti source-compatible untuk channel
-outbound, bukan sebagai klaim bahwa SampDroid sudah lulus sesi live.
+Kontrak source open.mp yang diaudit di `SDK/include/network.hpp` menetapkan
+angka ini secara eksplisit:
 
-Karena kedua keluarga reliabilitas memakai angka channel yang sama, counter-nya
-**tidak boleh** ikut digabung. RakNet legacy menyimpan
-`waitingForOrderedPacketWriteIndex[channel]` dan
-`waitingForSequencedPacketWriteIndex[channel]` pada array terpisah. SampDroid
-juga menjaga `nextRpc` dan `nextSync` terpisah: ClientJoin reliable-ordered
-mengonsumsi channel 0/index 0 lalu RPC berikutnya index 1, sedangkan sync USeq
-pertama tetap channel 0/index 0. Regression host mengunci header USeq channel-0
-(non-byte-aligned fixture) dan independensi kedua counter itu.
+```text
+OrderingChannel_Internal   = 0
+OrderingChannel_SyncPacket = 1
+OrderingChannel_SyncRPC    = 2
+```
+
+`PlayerConnect`/`ClientJoin` (25), class/spawn, chat, dialog, menu, dan RPC
+client lain memakai `RELIABLE_ORDERED` pada **SyncRPC channel 2**. Movement
+client (`PlayerFootSync`, vehicle, aim, passenger, dan BulletSync no-target)
+memakai `UNRELIABLE_SEQUENCED` pada **SyncPacket channel 1**. Stand-alone
+RakNet reference probe yang diuji terhadap UIF juga mengirim ClientJoin pada
+channel 2 dan menerima `PlayerInit` tanpa memilih class/spawn.
+
+RakNet tetap mempunyai `waitingForOrderedPacketWriteIndex[channel]` dan
+`waitingForSequencedPacketWriteIndex[channel]` yang terpisah. SampDroid menjaga
+`nextRpc` dan `nextSync` terpisah **dan** memakai channel berbeda: ClientJoin
+mengonsumsi SyncRPC channel 2/index 0, RequestClass berikutnya channel 2/index
+1; sync USeq pertama memakai SyncPacket channel 1/index 0. Regression host
+mengunci header ClientJoin channel 2 serta fixture USeq channel 1 dan
+independensi kedua counter.
 
 ---
 
@@ -203,7 +213,7 @@ pertama tetap channel 0/index 0. Regression host mengunci header USeq channel-0
 | Reliability datagram | ✅ **byte-identical** dengan BitStream RakNet; inbound `RELIABLE_ORDERED` kini juga dirilis per-channel hanya setelah run index kontigu (buffer bounded/overflow → close session) |
 | Connection request accepted | ✅ **diterima dari server live** |
 | AUTH_KEY challenge/response | ✅ 256 entri tabel, lookup runtime |
-| ClientJoin / PlayerConnect RPC 25 | 🧪 exact builder/channel-0 vector + prior stream evidence; validasi live SampDroid pasca-migrasi masih pending |
+| ClientJoin / PlayerConnect RPC 25 | 🧪 exact builder/SyncRPC-channel-2 vector + ACK/retry/post-accept gate. UIF ACK transport untuk ClientJoin SampDroid; reference RakNet read-only menerima PlayerInit. PlayerInit/class/spawn APK SampDroid end-to-end masih pending |
 | ACK reliable | ✅ setiap fragment reliable di-ACK; outbound sort/dedupe serta range contiguous non-wrap bounded |
 | Multi-paket datagram + split reassembly | ✅ sebelum RPC diserahkan ke decoder |
 | PlayerInit RPC 139 | ✅ decoder wire format + test vector; observability di UI |
@@ -213,7 +223,7 @@ pertama tetap channel 0/index 0. Regression host mengunci header USeq channel-0
 | SendClientMessage RPC 93 | ✅ bounded chat state + regression coverage; HUD renderer masih pending |
 | Checkpoint RPC 37/38/39/107 | ✅ normal + race marker state, finite/negative-size guards; renderer masih pending |
 | Retained native session | 🧪 auto-poll, bounded ACK/retry, 5s reliable keepalive, internal-ping pong; live capture multi-server masih pending |
-| Persistent game sync | 🧪 | Packet client outbound inti memakai USeq channel 0 dengan counter sequenced terpisah dari RPC ordered; vector/regression host lulus, validasi live SampDroid masih pending |
+| Persistent game sync | 🧪 | Packet client outbound inti memakai USeq SyncPacket channel 1 dengan counter sequenced terpisah dari SyncRPC channel 2; vector/regression host lulus, validasi live SampDroid masih pending |
 
 ### Bug yang ditemukan (dan diperbaiki)
 
@@ -233,8 +243,9 @@ membandingkan output byte-per-byte.
 ### Urutan wire yang diimplementasikan
 
 Berikut urutan outbound saat ini setelah `CONNECTION_REQUEST_ACCEPTED`. Angka
-message dan channel dikunci host regression; ini **bukan** klaim bahwa
-SampDroid pasca-migrasi sudah lolos sesi live server tertentu.
+channel dan framing dikunci host regression; nomor message ClientJoin bergantung
+pada apakah pong post-accept mengonsumsi satu nomor global. Ini **bukan** klaim
+bahwa SampDroid sudah lolos sesi gameplay server tertentu.
 
 ```text
 C -> S  [18 00 00]                     OPEN_CONNECTION_REQUEST (probe)
@@ -249,8 +260,10 @@ S -> C  reliable {22 ...}              CONNECTION_REQUEST_ACCEPTED
 C -> S  reliable msg=2 {1E ip4 port}   NEW_INCOMING_CONNECTION (7 byte)
 C -> S  unreliable msg=3 {06 time32}   INTERNAL_PING
 C -> S  reliable msg=4 {29}            empty static-data record
-C -> S  reliable ordered msg=5,
-        channel=0 index=0 {14 19 ...}  PlayerConnect / ClientJoin RPC 25
+S -> C  INTERNAL_PING atau static-data  bukti post-accept server sudah CONNECTED
+C -> S  jika ping: pong unreliable msg=5
+C -> S  reliable ordered msg>=5,
+        channel=2 index=0 {14 19 ...}  PlayerConnect / ClientJoin SyncRPC 25
 S -> C  reliable RPC stream             PlayerJoin, time, PlayerInit, world RPC, dst.
 ```
 

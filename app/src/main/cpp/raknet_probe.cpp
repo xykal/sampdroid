@@ -244,9 +244,9 @@ struct LiveSession {
   std::unique_ptr<Net> net;
   uint16_t port = 0;
   uint16_t nextMessageNumber = 0;
-  // Compatible clients use numeric channel 0 for both reliable RPC and USeq
-  // sync. RakNet owns separate ordered/sequenced per-channel counters, so the
-  // two local counters below must remain independent despite that same channel.
+  // SA-MP/open.mp uses SyncPacket channel 1 for USeq movement and SyncRPC
+  // channel 2 for reliable application RPC. RakNet owns separate
+  // ordered/sequenced counters; keep the two local counter families distinct.
   syncpolicy::OrderingCounters orderingCounters;
   bool accepted = false;
   bool joined = false;
@@ -475,7 +475,7 @@ void consumeRemoteAcks(LiveSession& session, const std::vector<uint16_t>& messag
         : static_cast<uint32_t>((static_cast<uint64_t>(session.smoothedReliableRttMs) * 7u +
                                  rttMs) / 8u);
     if (it->purpose == ReliablePurpose::SpawnConfirmation) {
-      // The server has transport-ACKed RPC PlayerSpawn, so channel-0 USeq
+      // The server has transport-ACKed SyncRPC PlayerSpawn, so SyncPacket USeq
       // movement can no longer race in ahead of that spawned-state transition.
       session.spawnConfirmationAcked = true;
       appendBounded(session.stateSummary, "PlayerSpawn ACK", 240);
@@ -580,6 +580,44 @@ bool sendSpawnConfirmation(LiveSession& session) {
   session.spawnConfirmationSent = true;
   session.spawnConfirmationAcked = false;
   appendBounded(session.stateSummary, "PlayerSpawn dikirim", 240);
+  return true;
+}
+
+// A stock client asks for its first advertised class as soon as InitGame lands.
+// This is not a spawn or a local-world decision: it is the server-owned class
+// selection handshake. Waiting for a person to notice a UI button can make a
+// busy legacy server close the new peer before it reaches the class screen.
+// The response remains authoritative and the Android UI can then browse a
+// different class or explicitly request spawn.
+bool requestInitialClass(LiveSession& session) {
+  if (!session.net || session.net->fd < 0 || !session.accepted ||
+      !session.world.initialized() || session.classRequestPending) {
+    return false;
+  }
+  const uint32_t classCount = session.world.playerInit().spawnClassCount;
+  if (classCount == 0u) {
+    appendBounded(session.stateSummary, "PlayerInit tanpa class", 240);
+    return false;
+  }
+
+  const auto rpc = clientrpc::buildRequestClass(0u);
+  const uint16_t messageNumber = session.nextMessageNumber++;
+  const uint16_t orderingIndex = session.orderingCounters.takeRpc();
+  const auto packet = raknet::buildReliableOrdered(
+      messageNumber, clientrpc::kReliableOrderedChannel, orderingIndex, rpc);
+  if (!sendSessionReliable(session, packet, messageNumber)) {
+    session.error = "gagal mengirim PlayerRequestClass awal";
+    return false;
+  }
+
+  session.world.beginClassRequest();
+  session.spawnRequestPending = false;
+  session.spawnConfirmationSent = false;
+  session.spawnConfirmationAcked = false;
+  session.classRequestPending = true;
+  session.requestedClassId = 0u;
+  session.classRequestSent = std::chrono::steady_clock::now();
+  appendBounded(session.stateSummary, "PlayerInit → PlayerRequestClass #0", 240);
   return true;
 }
 
@@ -1203,6 +1241,13 @@ void processSessionDatagram(LiveSession& session, const std::vector<uint8_t>& by
         state::RpcEvent event;
         if (session.world.applyRpc(packet.payload, event)) {
           appendBounded(session.stateSummary, event.summary, 240);
+          if (event.kind == state::RpcEventKind::PlayerInitialized) {
+            // Legacy servers commonly expect RequestClass immediately after
+            // InitGame. Queue the first server-advertised class before the UI
+            // presentation round-trip, while leaving class changes/spawn under
+            // the normal explicit Android controls.
+            requestInitialClass(session);
+          }
           if (event.kind == state::RpcEventKind::SessionCloseRequested) {
             // PlayerClose/ConnectionRejected are exact server lifecycle
             // instructions. Stop all held semantic input and local prediction
@@ -2293,6 +2338,80 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     return res;
   }
 
+  // Do not send PlayerConnect in the same burst as NEW_INCOMING. RakPeer
+  // changes its server-side connection mode only while handling NEW_INCOMING;
+  // an early application RPC can be transport-ACKed but ignored before that
+  // transition. The stock peer then emits an internal ping and static-data
+  // record. Seeing either is the bounded, source-defined readiness signal.
+  bool postAcceptReady = false;
+  constexpr int kMaxPostAcceptReadinessPolls = 8;
+  for (int attempt = 0; attempt < kMaxPostAcceptReadinessPolls && !postAcceptReady; ++attempt) {
+    if (net.recv(resp) <= 0) {
+      if (!resendTrackedReliableDue(net, handshakePending, res.error)) return res;
+      continue;
+    }
+    raknet::Datagram datagram = raknet::decodeDatagram(resp);
+    consumeTrackedReliableAcks(handshakePending, datagram.receivedAckMessageNumbers);
+    if (!datagram.ackMessageNumbers.empty()) {
+      net.send(wrap_packet(raknet::buildAck(datagram.ackMessageNumbers), port));
+    }
+    for (const auto& raw : datagram.packets) {
+      if (isReliableTransport(raw.reliability) && !inboundReliable.accept(raw.messageNumber)) {
+        continue;
+      }
+      auto reassembled = reassembler.push(raw);
+      if (reassembler.overflowed()) {
+        res.error = "reassembly post-accept melebihi batas aman";
+        return res;
+      }
+      for (auto packet : reassembled) {
+        auto delivered = applyInboundReliableOrder(inboundOrdered, std::move(packet));
+        if (inboundOrdered.overflowed()) {
+          res.error = "antrean reliable-ordered post-accept melebihi batas aman";
+          return res;
+        }
+        for (const auto& ready : delivered) {
+          if (ready.payload.empty()) continue;
+          const uint8_t id = ready.payload[0];
+          if (handshake::isTerminalSessionControlId(id)) {
+            res.error = "server menolak atau memutus sebelum ClientJoin (RakNet id " +
+                        std::to_string(static_cast<unsigned>(id)) + ")";
+            return res;
+          }
+          if (handshake::isPostAcceptReadyControlId(id)) {
+            if (id == ID_INTERNAL_PING) {
+              if (!reply_to_internal_ping(net, port, msgNo, ready.payload)) {
+                res.error = "gagal membalas internal ping post-accept";
+                return res;
+              }
+              logln(res, "    post-accept ready: INTERNAL_PING server");
+            } else {
+              logln(res, "    post-accept ready: static-data server");
+            }
+            postAcceptReady = true;
+            continue;
+          }
+          if (id == ID_REQUEST_STATIC_DATA) {
+            const uint16_t responseMessageNumber = msgNo++;
+            if (!sendTrackedReliable(net, port, handshakePending,
+                                     raknet::buildReliable(responseMessageNumber,
+                                                           handshake::buildEmptyStaticData()),
+                                     responseMessageNumber)) {
+              res.error = "gagal membalas request static-data post-accept";
+              return res;
+            }
+            continue;
+          }
+        }
+      }
+    }
+    if (!postAcceptReady && !resendTrackedReliableDue(net, handshakePending, res.error)) return res;
+  }
+  if (!postAcceptReady) {
+    res.error = "server tidak mengonfirmasi post-accept sebelum ClientJoin";
+    return res;
+  }
+
   const uint32_t challengeResponse = token ^ handshake::kLegacyNetGameVersion;
   const std::string serial = handshake::generateLegacySerial();
   const auto join = handshake::buildClientJoin(challengeResponse, requestedNickname, serial);
@@ -2300,8 +2419,8 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     res.error = "ClientJoin lokal tidak valid";
     return res;
   }
-  // RakClient::RPC uses the ordered application stream on channel 0. Client
-  // join consumes index zero, so retained session RPCs must continue at one.
+  // Legacy/open.mp client RPC uses the ordered SyncRPC stream on channel 2.
+  // ClientJoin consumes index zero, so retained session RPCs continue at one.
   const uint16_t joinMessageNumber = msgNo++;
   if (!sendTrackedReliable(net, port, handshakePending,
                            raknet::buildReliableOrdered(joinMessageNumber, clientrpc::kReliableOrderedChannel, 0, join),
@@ -2461,9 +2580,9 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     live->port = port;
     live->nextMessageNumber = msgNo;
     live->orderingCounters = {};
-    // ClientJoin is the first RELIABLE_ORDERED packet on RPC channel 0.
+    // ClientJoin is the first RELIABLE_ORDERED packet on SyncRPC channel 2.
     // Continue at index one so RequestClass cannot be discarded as its stale
-    // duplicate by legacy servers.
+    // duplicate by legacy/open.mp servers.
     live->orderingCounters.nextRpc = 1u;
     // Continue source-equivalent ACK/retry ownership across the synchronous
     // handshake → retained-session hand-off. This includes any NEW_INCOMING,
@@ -2488,6 +2607,10 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     live->reassembler = std::move(reassembler);
     live->inboundOrdered = std::move(inboundOrdered);
     live->world = std::move(world);
+    // The synchronous handoff can already contain PlayerInit. Preserve the
+    // same stock-client class bootstrap that processSessionDatagram applies
+    // when InitGame arrives later during the retained poll loop.
+    if (live->world.initialized()) requestInitialClass(*live);
     gLiveSession = std::move(live);
   }
   return res;

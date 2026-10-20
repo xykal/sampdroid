@@ -12,7 +12,9 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 - [x] Client `PlayerRequestClass` / `PlayerRequestSpawn` / `PlayerSpawn` builder,
   response decoder dual legacy/open.mp, dan transport-ACK gate.
 - [x] Retain socket setelah ClientJoin dan kirim class/spawn flow lewat session native.
-- [ ] Live interoperability capture untuk class/spawn di beberapa server nyata.
+- [~] UIF read-only evidence: ClientJoin SampDroid menerima ACK transport dan
+  RakNet reference dengan ClientJoin R2/SyncRPC channel 2 menerima PlayerInit;
+  PlayerInit/class/spawn SampDroid pada APK/device dan server lain masih pending.
 - [x] Decode player StreamIn/StreamOut, exact non-DL `SetPlayerSkin` (153), dan
   broadcast remote `PlayerFootSync` (207) ke state entity bounded; model snapshot
   menuju renderer DFF/proxy bounded ada, tetapi animasi/capture nyata belum.
@@ -26,7 +28,9 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 
 - [x] Explicit connect/disconnect dan clean UDP teardown dari Android shell.
 - [x] Socket retained setelah ClientJoin; peer IP/port filter dan bounded state.
-- [x] `RELIABLE_ORDERED` channel-0 class request, ACK consumption, bounded retry queue.
+- [x] `RELIABLE_ORDERED` SyncRPC channel-2 class request, ACK consumption,
+  bounded retry queue, serta RequestClass #0 otomatis begitu PlayerInit valid
+  membawa class untuk menjaga handshake legacy.
 - [x] Class selection, SetSpawnInfo, local-player spawn/position/vitals, dan spawn response state reducer.
 - [x] Lifecycle-aware automatic poll saat detail session terlihat; setiap poll
   memakai paling banyak satu receive blocking pendek (40 ms), lalu—hanya bila
@@ -48,11 +52,11 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   RPC 41/42 juga punya playback `MediaPlayer` HTTPS-only yang lifecycle-bound;
   HTTP/endpoint tidak aman sengaja tidak difetch. Font-4 TextDraw sprite `dictionary:texture` kini dapat memakai satu TXD RGBA user-owned yang bounded/cached (bukan Android drawable); font-5 juga dapat menampilkan mesh DFF prelit user-owned bounded bila model resolve. Kamera/material/font GTA, animasi, dan full style masih belum.
 - [x] Fondasi `OnFootSync` packet 207: vector regresi client→server,
-  `UNRELIABLE_SEQUENCED` channel 0, ordering counter sequenced terpisah dari RPC ordered, rate gate dari
-  `PlayerInit`, serta spawn/session gate.
+  `UNRELIABLE_SEQUENCED` SyncPacket channel 1, ordering counter sequenced terpisah dari
+  SyncRPC ordered channel 2, rate gate dari `PlayerInit`, serta spawn/session gate.
 - [x] `PlayerAimSync` packet 203 terbatas: writer client→server fixed 32 byte
   vector-tested, packed `CamZoom:6|WeaponState:2` source-verified, USeq
-  channel-0 + `WeaponRate` sendiri (counter sequenced tetap terpisah dari RPC ordered). Hanya dapat memakai transform
+  SyncPacket channel-1 + `WeaponRate` sendiri (counter sequenced tetap terpisah dari SyncRPC channel-2). Hanya dapat memakai transform
   collision-grounded, yaw/pitch native bounded, dan weapon+ammo authoritative
   saat AIM ditahan/on-foot; spawn/ACK/freeze/vehicle/kamera-server gate fail-closed.
   Kandidat yang lolos juga memasok view aim orang-pertama + reticle renderer dari

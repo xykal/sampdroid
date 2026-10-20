@@ -13,7 +13,8 @@ user pilih server
   → socket + message counters + gate receipt reliable + split reassembler + gate reliable-ordered TETAP hidup
   → poll datagram / ACK reliable / retry bounded / reply ping/static-data request / reduce RPC world state
   → reliable transport keepalive otomatis saat idle
-  → user memilih class lalu meminta spawn secara eksplisit
+  → `PlayerInit` valid + class tersedia → core meminta class awal `#0` secara otomatis
+  → user dapat memilih class lain lalu meminta spawn secara eksplisit
   → respons spawn nonzero → core kirim RPC PlayerSpawn (52) → tunggu ACK
   → state spawn/posisi lokal direduce dari RPC server
   → touch/keyboard/gamepad → semantic input lokal
@@ -30,16 +31,22 @@ Untuk parity source offline dengan jalur client RakPeer 2.52 yang diaudit,
 setelah `ID_CONNECTION_REQUEST_ACCEPTED` core mengirim, dalam urutan transport,
 `ID_NEW_INCOMING_CONNECTION` reliable, `ID_INTERNAL_PING` unreliable dengan
 RakNetTime lokal, lalu `ID_RECEIVED_STATIC_DATA` reliable dengan payload lokal
-kosong, sebelum `ClientJoin`. Semua reliable sejak `CONNECTION_REQUEST` dicatat
-pada antrean kecil ACK/retry (750 ms, maksimal lima retransmit), dan record yang
-belum di-ACK dipindahkan ke session retained—tidak hilang di batas probe/session.
+kosong. Core lalu menunggu `ID_INTERNAL_PING` atau `ID_RECEIVED_STATIC_DATA` dari
+server sebagai bukti source-defined bahwa server sudah memproses NEW_INCOMING,
+baru mengirim `ClientJoin` pada SyncRPC channel 2. Semua reliable sejak
+`CONNECTION_REQUEST` dicatat pada antrean kecil ACK/retry (750 ms, maksimal lima
+retransmit), dan record yang belum di-ACK dipindahkan ke session retained—tidak
+hilang di batas probe/session.
 `ID_REQUEST_STATIC_DATA` dari peer dibalas payload kosong yang sama; static data
 peer tidak diperlakukan sebagai data GTA/world. Ini berasal dari perilaku
 `RakPeer::PingInternal`/`SendStaticDataInternal`, bukan tebakan format payload.
 
-Parity ini sudah punya vector regresi host, tetapi **belum** merupakan klaim
-bahwa UIF atau server tertentu telah menerima gameplay SampDroid; uji live tetap
-ditunda sampai endpoint tidak lagi terkena ban percobaan malformed sebelumnya.
+Parity ini sudah punya vector regresi host. Probe native SampDroid mengonfirmasi
+accepted, readiness post-accept, dan ACK transport untuk ClientJoin UIF; probe
+RakNet referensi yang read-only dengan `ClientJoin` R2/channel 2 menerima
+`PlayerInit` UIF tanpa class/spawn. Itu bukan klaim gameplay SampDroid: drain
+bootstrap, class/spawn, sync, dan perilaku client-facing masih perlu validasi
+APK/device yang terukur.
 
 ## Static GTA world filter dari server (RPC 43)
 
@@ -202,10 +209,11 @@ berikut terpenuhi:
    langkah grounded yang valid;
 7. interval `OnFootRate` dari `PlayerInit` sudah jatuh tempo.
 
-Packet memakai `UNRELIABLE_SEQUENCED` (reliability `7`), ordering channel `0`,
-dan counter sequenced channel-0 yang **terpisah** dari counter RPC
-reliable-ordered channel-0. RakNet memang menyimpan write-index ordered dan
-sequenced pada array berbeda; nilai rate `0`/abnormal dibatasi client ke 20–1000 ms (default 30 ms)
+Packet memakai `UNRELIABLE_SEQUENCED` (reliability `7`), ordering
+**SyncPacket channel `1`**, dan counter sequenced channel-1 yang **terpisah**
+dari counter **SyncRPC reliable-ordered channel `2`**. RakNet memang menyimpan
+write-index ordered dan sequenced pada array berbeda; nilai rate `0`/abnormal
+dibatasi client ke 20–1000 ms (default 30 ms)
 agar server malformed tidak dapat membuat client mem-flood atau freeze terlalu lama.
 
 Penting: layout client→server packet `207` berbeda dari layout broadcast
@@ -221,8 +229,9 @@ Saat player **on-foot**, tombol semantic **AIM** sedang ditahan, collision
 native sudah menghasilkan transform grounded, dan server sudah memberi
 `SetPlayerArmedWeapon` **serta** ammo untuk weapon aktif, tick gameplay juga
 boleh membangun Packet `203` (`PlayerAimSync`). Ini dikirim
-`UNRELIABLE_SEQUENCED` pada channel `0`, menggunakan ordering counter sequenced
-yang sama tetapi tetap terpisah dari counter RPC ordered serta memiliki cadence tersendiri dari `WeaponRate` PlayerInit (dibatasi 20–1000
+`UNRELIABLE_SEQUENCED` pada SyncPacket channel `1`, menggunakan ordering counter
+sequenced yang sama tetapi tetap terpisah dari counter SyncRPC ordered channel `2`
+serta memiliki cadence tersendiri dari `WeaponRate` PlayerInit (dibatasi 20–1000
 ms, default 30 ms). Ia tetap memerlukan gate session/spawn/ACK yang sama dengan
 OnFootSync dan berhenti saat freeze, masuk vehicle, atau kamera endpoint sedang
 dikendalikan RPC server.
@@ -259,8 +268,8 @@ tersedia.
 Saat dan hanya saat on-foot collision bridge, spawn ACK, `AIM`, `FIRE`, weapon,
 ammo, freeze/death/vehicle, kamera-server, **dan** `PlayerInit.LagCompensation`
 server nonzero gate semuanya valid, native dapat mengirim form client
-**41 byte / 328 bit** berikut pada channel-0
-`UNRELIABLE_SEQUENCED` (counter sequenced tetap terpisah dari RPC ordered). Layout client ini sudah diaudit terhadap
+**41 byte / 328 bit** berikut pada SyncPacket channel-1
+`UNRELIABLE_SEQUENCED` (counter sequenced tetap terpisah dari SyncRPC channel-2). Layout client ini sudah diaudit terhadap
 `PlayerBulletSync::read` open.mp commit `3d20f3dc0e26917264cdc8585c65913e080a143c`
 dan generator NPC-nya; handler open.mp yang sama menolak Packet-206 bila
 `LagCompensation == 0`, sehingga Android fail-closed dan HUD menyatakan
@@ -333,11 +342,11 @@ ada Packet-206 target/raycast/hit/damage yang dipalsukan oleh Android.
 Setelah user menekan **Spawn**, urutan yang dipakai adalah:
 
 ```text
-client → PlayerRequestSpawn (RPC 129, RELIABLE_ORDERED channel 0)
+client → PlayerRequestSpawn (RPC 129, RELIABLE_ORDERED SyncRPC channel 2)
 server → RequestSpawn response (legacy u8 atau open.mp u32, nilai nonzero)
-client → PlayerSpawn (RPC 52 kosong, RELIABLE_ORDERED channel 0)
+client → PlayerSpawn (RPC 52 kosong, RELIABLE_ORDERED SyncRPC channel 2)
 server → transport ACK untuk RPC 52
-client → eligible untuk OnFootSync channel 0 (counter USeq terpisah dari RPC)
+client → eligible untuk OnFootSync SyncPacket channel 1 (counter USeq terpisah dari RPC)
 ```
 
 Nilai respons `2` juga diperlakukan sebagai izin spawn, sehingga jalur
@@ -511,7 +520,7 @@ Class/spawn request dibungkus seperti ini:
 
 ```text
 RakNet RELIABLE_ORDERED (9)
-ordering channel: 0 (legacy client RPC stream)
+ordering channel: 2 (SyncRPC client stream; open.mp source contract)
 RPC payload: [0x14][rpc id][bit-packed fields]
 ```
 
@@ -535,7 +544,9 @@ transport sebagai cara bermain:
 - **Hubungkan native** — membuka socket dan memulai poll lifecycle-aware otomatis
   selama dialog masih terlihat. Tap ganda tidak membuat handshake paralel;
   koneksi yang sedang dibuka/ditutup diberi status yang jelas;
-- **Pilih class** — baru aktif setelah `PlayerInit` mengumumkan class. Tap meminta
+- **Class awal** — segera setelah `PlayerInit` valid dengan class tersedia, native
+  meminta class `#0` pada SyncRPC channel 2 agar server legacy tidak menutup peer
+  sebelum UI sempat bereaksi. Setelah respons, tombol **Class** aktif: tap meminta
   class berikutnya dan tahan meminta sebelumnya dari `SetSpawnInfoCount`; native
   menolak ID di luar count, menjaga satu request pending, lalu mengizinkan retry
   setelah timeout bounded agar respons lama tidak dipakai sebagai izin spawn;

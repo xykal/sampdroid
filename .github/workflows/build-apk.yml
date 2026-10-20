@@ -30,7 +30,7 @@ jobs:
       - name: Native protocol regression tests
         run: |
           mkdir -p .ci-native
-          c++ -std=c++17 -O2 -Wall -Wextra -pedantic \
+          c++ -std=c++17 -O2 -Wall -Wextra -pedantic -pthread \
             -Iapp/src/main/cpp \
             app/src/main/cpp/client_rpc.cpp \
             app/src/main/cpp/client_sync.cpp \

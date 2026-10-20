@@ -220,7 +220,7 @@ object NativeBridge {
     /** Receives one datagram, ACKs reliable traffic, and returns reduced state JSON. */
     external fun nativeSessionPoll(timeoutMs: Int): String
 
-    /** Sends PlayerRequestClass on source-compatible reliable ordered channel 0. */
+    /** Sends PlayerRequestClass on source-compatible reliable ordered SyncRPC channel 2. */
     external fun nativeSessionRequestClass(classId: Int): String
 
     /** Starts the explicit RequestSpawn → PlayerSpawn native handshake. */
@@ -228,14 +228,14 @@ object NativeBridge {
 
     /**
      * Sends one validated normal chat line or slash-prefixed command on the
-     * native ordered RPC channel. Native rejects unsafe/control bytes and never
+     * native ordered SyncRPC channel 2. Native rejects unsafe/control bytes and never
      * includes the user text in diagnostic summaries.
      */
     external fun nativeSessionSendChat(message: String): String
 
     /**
      * Responds to the currently active server ShowDialog on reliable ordered
-     * channel 0. The decoded revision must still match so a stale Android UI
+     * SyncRPC channel 2. The decoded revision must still match so a stale Android UI
      * cannot answer a reissued ID. `listItem` is -1 for non-list dialogs; text
      * is DynStr8-bounded natively and is never retained in diagnostics.
      */

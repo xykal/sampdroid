@@ -1,9 +1,10 @@
 # Tabel ID RPC SA-MP / open.mp
 
 ID dan body inbound diekstrak dari header `Shared/NetCode/*.hpp` di
-[openmultiplayer/open.mp](https://github.com/openmultiplayer/open.mp)
-(`NetworkPacketBase<ID, NetworkPacketType::RPC, OrderingChannel_SyncRPC>`).
-Label tipe itu tidak boleh dipakai untuk menebak angka channel wire client.
+[openmultiplayer/open.mp](https://github.com/openmultiplayer/open.mp).
+`SDK/include/network.hpp` menetapkan `OrderingChannel_Internal=0`,
+`OrderingChannel_SyncPacket=1`, dan `OrderingChannel_SyncRPC=2`; RPC terbentuk
+sebagai `NetworkPacketBase<ID, NetworkPacketType::RPC, OrderingChannel_SyncRPC>`.
 
 Format wire RPC legacy:
 
@@ -11,13 +12,13 @@ Format wire RPC legacy:
 [0x14 = ID_RPC][rpc id (u8)][payload bit-packed]
 ```
 
-Untuk **client → server**, SampDroid memakai `RELIABLE_ORDERED` (9) ordering
-channel **0** secara konsisten, termasuk `ClientJoin`, class/spawn, chat,
-dialog, menu, interaksi, textdraw, dan editor. Angka ini mengikuti jalur
-`RakPeer::RPC(... RELIABLE_ORDERED, 0, ...)` client legacy yang diaudit; setiap
-RPC pada sesi memakai counter ordering channel-0 yang sama. Decoder inbound
-tetap membaca metadata channel dari frame RakNet, bukan mengasumsikan channel
-tertentu dari server.
+Untuk **client → server**, SampDroid memakai `RELIABLE_ORDERED` (9) pada
+**SyncRPC ordering channel 2** secara konsisten, termasuk `ClientJoin`,
+class/spawn, chat, dialog, menu, interaksi, textdraw, dan editor. Setiap RPC
+pada sesi memakai counter ordered channel-2 yang sama. Decoder inbound tetap
+membaca metadata channel dari frame RakNet, bukan mengasumsikan channel tertentu
+dari server. Packet sync yang bukan RPC menggunakan SyncPacket channel 1 dan
+counter sequenced terpisah.
 
 ## Client -> Server
 
@@ -282,7 +283,7 @@ menulis `PlayerBeginObjectSelect` (27) dan `PlayerCancelObjectEdit` (28) tanpa
 body. Saat mode 27 aktif, Android menampilkan maksimal 24 object yang memang
 sudah berada di snapshot renderer bounded. Tap mengirim arah sebaliknya dengan
 layout reader `OnPlayerSelectObject`: `u32 SelectType | u16 ObjectID | u32 Model
-| VEC3 Position`, melalui `RELIABLE_ORDERED` channel 0.
+| VEC3 Position`, melalui `RELIABLE_ORDERED` SyncRPC channel 2.
 
 Java hanya menyerahkan ID u16. Tepat sebelum enqueue, native memeriksa lagi mode
 server, lifecycle object, rantai parent yang masih resolve, model, dan origin
@@ -310,7 +311,7 @@ bawah session mutex memeriksa accepted + PlayerInit, kesamaan revision (tap lama
 fail-closed setelah Begin baru), tuple server yang masih aktif, object saat ini dan rantai
 attachment yang masih resolve, respons `Cancel=0`/`Final=1`/`Update=2`, finite
 world/rotasi envelope, cadence Update 90 ms, serta terminal Final/Cancel satu kali
-per revision. Paket kemudian `RELIABLE_ORDERED` channel 0. Baseline editor
+per revision. Paket kemudian `RELIABLE_ORDERED` SyncRPC channel 2. Baseline editor
 disalinkan sebagai snapshot native attachment-resolved khusus, bukan dicari dari
 list renderer 128 object; jadi `PlayerObject=true` dan ID yang berada di luar
 cap/sort frame tetap tidak bisa mewarisi transform object lain atau menjadi
@@ -338,7 +339,7 @@ slot yang sama (tap lama fail-closed), lalu menyalin model/bone dan dua warna. L
 `OnPlayerEditAttachedObject` memakai `Colour::FromARGB`; sender secara eksplisit
 menukar R/B ke ARGB sebelum membangun RPC 116. Offset dibatasi ±10.000, rotasi
 ±360.000°, scale nonzero |0.001..100|, bone 0..18, model 1..65535. Satu respons
-terminal reliable-ordered channel 0 boleh queue per revision. Tidak ada mutasi
+terminal reliable-ordered SyncRPC channel 2 boleh queue per revision. Tidak ada mutasi
 optimistis pada renderer: server tetap menentukan callback dan attachment
 berikutnya.
 
@@ -438,7 +439,7 @@ interior karena field tersebut tidak ada pada wire record ini. Marker radar/GLES
 hanyalah proxy interaksi, bukan model pickup GTA. Tombol **USE** Android
 menghasilkan satu edge ke native; hanya setelah PlayerSpawn sudah di-ACK, posisi
 lokal + controllable valid, interior zero, pickup dalam radius 2,15, dan interval
-450 ms, client mengantrikan `PickedUpPickup` (131) `RELIABLE_ORDERED` channel 0.
+450 ms, client mengantrikan `PickedUpPickup` (131) `RELIABLE_ORDERED` SyncRPC channel 2.
 Ia tidak memberikan item/uang/health lokal dan tidak menghapus pickup sebelum
 server mengirim DestroyPickup.
 
@@ -479,7 +480,7 @@ dan body 1024 byte. ID `-1` menutup dialog aktif.
 Android presenter mendukung message, input, password, list, tablist, dan
 header-tablist dalam UI native. Saat user menekan tombol, sender mencocokkan ID
 **dan revision** dialog aktif lalu mengirim RPC 62 lewat `RELIABLE_ORDERED`
-channel 0. Untuk Tablist, row sumber yang dipilih tetap mempertahankan tab pada
+SyncRPC channel 2. Untuk Tablist, row sumber yang dipilih tetap mempertahankan tab pada
 `inputText` (selain `listItem`) agar kompatibel. Dialog hanya disembunyikan
 lokal setelah packet berhasil masuk antrean reliable.
 
@@ -495,7 +496,7 @@ RPC 77. RPC 78 hides only the matching active menu.
 
 Android renders bounded native row buttons; two columns stay one server row.
 Selecting a row sends exact RPC 132 `u8`, while cancellation sends empty RPC
-140. Both calls are `RELIABLE_ORDERED` channel 0 and must match the active
+140. Both calls are `RELIABLE_ORDERED` SyncRPC channel 2 and must match the active
 menu ID **and revision**; disabled/missing rows, stale UI, unknown menu IDs,
 and failed sends leave server authority intact. Menu position/font/GTA frontend
 styling is intentionally not claimed.
@@ -522,7 +523,7 @@ mengurangi, atau membelanjakan money; tahap ini bukan inventory/economy client.
 ### Scoreboard server (155)
 
 Client mengirim `OnPlayerRequestScoresAndPings` (155) dengan body kosong lewat
-`RELIABLE_ORDERED` channel 0 dan native membatasi request ke satu per detik.
+`RELIABLE_ORDERED` SyncRPC channel 2 dan native membatasi request ke satu per detik.
 Respons memakai ID yang sama, tetapi writer compatible mengirim roster cache
 lengkap sebagai tuple berulang sampai payload habis: `u16 player ID | i32 score |
 u32 ping`, tanpa count. Reducer menolak payload yang bukan kelipatan 10 byte,
@@ -680,13 +681,13 @@ u16 up/down | u16 keys | raw GTA quaternion | VEC3 pos | VEC3 velocity |
 float health | u8 health | u8 armour | u8 weapon/additional | u8 siren |
 u8 gear | u16 trailer | u32 hydra`; 64 byte) mengikuti
 [`PlayerVehicleSync::read`](https://github.com/openmultiplayer/open.mp/blob/master/Shared/NetCode/vehicle.hpp).
-Transportnya `UNRELIABLE_SEQUENCED` channel 0 dengan counter sequenced yang tetap terpisah dari RPC ordered dan rate `PlayerInit.InCarRate`
+Transportnya `UNRELIABLE_SEQUENCED` SyncPacket channel 1 dengan counter sequenced yang tetap terpisah dari SyncRPC ordered channel 2 dan rate `PlayerInit.InCarRate`
 yang dibatasi. Pilot kinematic native hanya memakai gas/mundur, steer, rem,
 COL ground, dan sweep statik; ia berhenti pada geometri/ground yang tidak valid
 dan dapat diganti correction server kapan saja. Untuk seat nonzero dari RPC 70,
 SampDroid juga membangun Packet 211 **client→server** fixed 25-byte tanpa
 PlayerID (`211 | vehicle | packed seat/flags/weapon | health | armour | input |
-VEC3 vehicle anchor`) lalu mengirim USeq channel 0 pada `InCarRate` (counter sequenced tetap terpisah dari RPC ordered). Ia hanya
+VEC3 vehicle anchor`) lalu mengirim USeq SyncPacket channel 1 pada `InCarRate` (counter sequenced tetap terpisah dari SyncRPC ordered channel 2). Ia hanya
 aktif jika vehicle masih streamed, spawn/ACK siap, dan server tidak freeze;
 seat/posisi tidak diprediksi. Bit cuffed hanya mengikuti `SetPlayerSpecialAction`
 server (Cuffed=24). Berdasarkan reader `PlayerPassengerSync` dan vehicle update
@@ -710,10 +711,13 @@ u32 Weapon[3] | u32 Ammo[3]
 ```
 
 RPC 129 dari server berisi `u32 Allow`; `0` berarti spawn ditolak.
-Keduanya sudah memiliki decoder/state + regression test. `PlayerRequestClass`
-dan `PlayerRequestSpawn` dikirim explicit lewat retained native session; respons
-allow memicu RPC 52 kosong lalu gate ACK sebelum gameplay sync dapat berjalan.
-Jika `SetPlayerHealth(0)` authoritative diterima, HUD Android mematikan input
+Keduanya sudah memiliki decoder/state + regression test. Begitu `PlayerInit`
+valid mengumumkan sedikitnya satu class, retained native session mengirim
+`PlayerRequestClass(0)` sekali pada SyncRPC channel 2 agar server legacy tidak
+menutup peer sebelum UI sempat menampilkan class screen. Sesudah respons itu,
+pemain dapat memilih class lain; `PlayerRequestSpawn` tetap tindakan eksplisit.
+Respons allow memicu RPC 52 kosong lalu gate ACK sebelum gameplay sync dapat
+berjalan. Jika `SetPlayerHealth(0)` authoritative diterima, HUD Android mematikan input
 lokal dan menawarkan request respawn yang sama—satu request pending saja,
 dengan retry explicit minimum 8 detik bila respons server hilang. Tombol itu
 bukan bukti/claim spawn, death, damage, atau hasil server.
