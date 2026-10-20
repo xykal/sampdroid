@@ -585,6 +585,9 @@ internal class GtaArchiveInstaller(private val context: Context) {
         const val IMG_MINIMUM_BYTES = 8L
         const val CONNECT_TIMEOUT_MS = 20_000
         const val READ_TIMEOUT_MS = 30_000
+        // Count redirect hops rather than trusting HttpURLConnection's global
+        // policy. Every resulting target is revalidated as HTTPS.
+        const val MAX_REDIRECTS = 5
         val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
     }
 }

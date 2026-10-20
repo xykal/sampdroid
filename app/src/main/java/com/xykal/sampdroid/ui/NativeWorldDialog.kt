@@ -102,7 +102,9 @@ object NativeWorldDialog {
             isHorizontalScrollBarEnabled = false
             isFillViewport = false
             contentDescription = "Toolbar dunia native. Geser mendatar untuk aksi tambahan."
-            addView(controls, HorizontalScrollView.LayoutParams(
+            // HorizontalScrollView inherits FrameLayout; it does not expose a
+            // Kotlin-visible LayoutParams nested type of its own.
+            addView(controls, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ))
