@@ -88,10 +88,13 @@ legacy (ClientJoin SyncRPC-2, NewIncoming, post-accept internal ping/static-data
 jalur ACK/retry bounded, dan peer loopback yang membuktikan `PlayerInit` memicu
 RequestClass `#0` pada channel yang benar. Peer itu juga mengirim 256 RPC ordered
 valid sebelum `PlayerInit` lalu `PlayerInit` duplikat untuk mengunci hand-off retained
-dan memastikan bootstrap class tetap tepat satu kali. Itu **bukan** bukti kompatibilitas
-gameplay/live server:
-validasi Kotlin/GLES, NDK packaging, kedua ABI, serta target UIF tetap menunggu
-satu build GitHub Actions final setelah batch sumber benar-benar selesai.
+dan memastikan bootstrap class tetap tepat satu kali. Build GitHub Actions
+`39470595264` lulus untuk Kotlin/GLES, NDK packaging, dan kedua ABI; artifact
+debug internalnya lolos cek ZIP/ELF `armeabi-v7a` + `arm64-v8a`. Itu **bukan**
+bukti kompatibilitas gameplay/live server: pada 2026-10-20, satu sesi native
+UIF yang dibatasi dan tanpa action gameplay berhenti pada `unexpected reply`
+sebelum accepted/`PlayerInit`, lalu sesi lokal dibersihkan. Tidak ada klaim
+class/spawn atau gameplay UIF; validasi APK/device terukur tetap pending.
 Workspace ini tidak memiliki Gradle/Kotlin/Android SDK lokal; build APK tetap
 hanya boleh lewat GitHub Actions sesuai gate rilis.
 
