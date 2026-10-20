@@ -1545,7 +1545,14 @@ WorldSnapshot worldSnapshotFrom(const LiveSession* session) {
   }
 
   snapshot.active = session->net && session->net->fd >= 0;
+  snapshot.playerInit = session->world.initialized();
+  snapshot.classSelectionKnown = session->world.classSelection().valid;
+  snapshot.classRequestPending = session->classRequestPending;
+  snapshot.spawnResponseKnown = session->world.spawnResponseKnown();
+  snapshot.spawnAllowed = session->world.spawnAllowed();
   snapshot.spawnRequestPending = session->spawnRequestPending;
+  snapshot.spawnConfirmationSent = session->spawnConfirmationSent;
+  snapshot.spawnConfirmationAcked = session->spawnConfirmationAcked;
   snapshot.streamedPlayers = static_cast<int>(session->world.streamedPlayerCount());
   snapshot.remoteOnFootPlayers = static_cast<int>(session->world.remoteOnFootCount());
   snapshot.streamedVehicles = static_cast<int>(session->world.streamedVehicleCount());

@@ -726,6 +726,10 @@ object NativeWorldSceneDialog {
         // Renderer-owned snapshot gate: a PlayerClose/disconnect must halt the
         // separate gameplay ticker as soon as presentation observes it.
         var sessionGameplayActive = false
+        // A retained socket may be active during class/spawn setup. Keep the
+        // scene visible then, but do not tick collision/input until native has
+        // seen PlayerInit and the reliable PlayerSpawn ACK.
+        var gameplayTickEnabled = false
         val activityForeground = {
             activity.lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)
         }
@@ -810,7 +814,7 @@ object NativeWorldSceneDialog {
                         continue
                     }
                     backgroundControlsCleared = false
-                    if (!sessionGameplayActive) {
+                    if (!gameplayTickEnabled) {
                         previousTickNanos = System.nanoTime()
                         delay(100)
                         continue
@@ -920,22 +924,13 @@ object NativeWorldSceneDialog {
                     hardwareDrivingMode = presentationFrame.active && !presentationFrame.spectate.active &&
                         presentationFrame.localVehicleKnown && presentationFrame.localInVehicle &&
                         presentationFrame.localVehicleSeat == 0
-                    val serverMarkedDead = presentationFrame.localHealthKnown &&
-                        presentationFrame.localHealth.isFinite() && presentationFrame.localHealth <= 0f &&
-                        !presentationFrame.spectate.active
-                    val gameplayEnabled = presentationFrame.active &&
-                        (!presentationFrame.localControllableKnown || presentationFrame.localControllable) &&
-                        !presentationFrame.spectate.active && !serverMarkedDead
+                    val inputBlockReason = presentationFrame.gameplayInputBlockReason()
+                    val gameplayEnabled = inputBlockReason == null
+                    val wasGameplayTickEnabled = gameplayTickEnabled
+                    gameplayTickEnabled = gameplayEnabled
+                    if (wasGameplayTickEnabled && !gameplayTickEnabled) inputMixer.clear()
                     touchControls.setDrivingMode(hardwareDrivingMode)
-                    touchControls.setGameplayEnabled(
-                        gameplayEnabled,
-                        when {
-                            !presentationFrame.active -> "SESI BERAKHIR · INPUT OFF"
-                            presentationFrame.spectate.active -> "SPECTATOR · INPUT OFF"
-                            serverMarkedDead -> "RESPAWN SERVER · INPUT OFF"
-                            else -> "SERVER FREEZE · INPUT OFF"
-                        }
-                    )
+                    touchControls.setGameplayEnabled(gameplayEnabled, inputBlockReason ?: "")
                     hardwareControls.setEnabled(gameplayEnabled)
                     gameplayInputEnabled = gameplayEnabled
                     gyroLook.setGameplayEnabled(gameplayEnabled && touchControlsVisible)
@@ -984,6 +979,15 @@ private fun WorldFrame.sceneStatusLine(): String = when {
     // them before the generic idle prompt so PlayerClose is not masked.
     error.isNotBlank() -> "Sesi: $error"
     !active -> "Sesi belum aktif · buka Sesi native dari detail server."
+    !playerInit -> "Transport aktif · menunggu PlayerInit dari server sebelum dunia/kontrol gameplay dibuka."
+    !spawnConfirmationAcked && !spectate.active -> when {
+        spawnConfirmationSent -> "PlayerSpawn terkirim · menunggu ACK transport server sebelum kontrol gameplay aktif."
+        spawnRequestPending -> "Meminta izin spawn ke server · kontrol gameplay masih terkunci."
+        spawnResponseKnown && !spawnAllowed -> "Server menolak spawn saat ini · pilih class lain atau ikuti instruksi server."
+        classRequestPending -> "Meminta class ke server · menunggu respons sebelum Spawn."
+        classSelectionKnown -> "Class diterima · tekan SPAWN untuk meminta izin server."
+        else -> "Sesi terinisialisasi · menunggu class/spawn server sebelum kontrol gameplay aktif."
+    }
     localHealthKnown && localHealth.isFinite() && localHealth <= 0f && !spectate.active ->
         if (spawnRequestPending) {
             "HP server 0 · request respawn terkirim, menunggu respons authoritative."

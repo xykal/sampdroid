@@ -353,7 +353,14 @@ void append_animation_json(std::ostringstream& output,
 std::string world_json(const samp::WorldSnapshot& world) {
   std::ostringstream o;
   o << "{\"active\":" << (world.active ? "true" : "false")
+    << ",\"playerInit\":" << (world.playerInit ? "true" : "false")
+    << ",\"classSelectionKnown\":" << (world.classSelectionKnown ? "true" : "false")
+    << ",\"classRequestPending\":" << (world.classRequestPending ? "true" : "false")
+    << ",\"spawnResponseKnown\":" << (world.spawnResponseKnown ? "true" : "false")
+    << ",\"spawnAllowed\":" << (world.spawnAllowed ? "true" : "false")
     << ",\"spawnRequestPending\":" << (world.spawnRequestPending ? "true" : "false")
+    << ",\"spawnConfirmationSent\":" << (world.spawnConfirmationSent ? "true" : "false")
+    << ",\"spawnConfirmationAcked\":" << (world.spawnConfirmationAcked ? "true" : "false")
     << ",\"local\":{\"known\":" << (world.localPositionKnown ? "true" : "false")
     << ",\"spawnInfoKnown\":" << (world.localSpawnInfoKnown ? "true" : "false")
     << ",\"facingKnown\":" << (world.localFacingKnown ? "true" : "false")

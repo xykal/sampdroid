@@ -246,6 +246,10 @@ object NativeWorldDialog {
         // stops immediately after a server-side close rather than repeatedly
         // asking native to advance a dead socket.
         var sessionGameplayActive = false
+        // Separate a live socket from the stricter PlayerInit + PlayerSpawn ACK
+        // gameplay gate. The world may render authoritative setup state while
+        // collision ticking and input stay off.
+        var gameplayTickEnabled = false
         dialog.setOnShowListener {
             // The radar fallback is a real low-end gameplay surface, not a
             // diagnostic card. Let controls and the world use the full dialog
@@ -301,7 +305,7 @@ object NativeWorldDialog {
                         continue
                     }
                     backgroundControlsCleared = false
-                    if (!sessionGameplayActive) {
+                    if (!gameplayTickEnabled) {
                         previousTickNanos = System.nanoTime()
                         delay(100)
                         continue
@@ -350,23 +354,17 @@ object NativeWorldDialog {
                     hardwareDrivingMode = presentationFrame.active && !presentationFrame.spectate.active &&
                         presentationFrame.localVehicleKnown && presentationFrame.localInVehicle &&
                         presentationFrame.localVehicleSeat == 0
-                    val serverMarkedDead = presentationFrame.localHealthKnown &&
-                        presentationFrame.localHealth.isFinite() && presentationFrame.localHealth <= 0f &&
-                        !presentationFrame.spectate.active
-                    val gameplayEnabled = presentationFrame.active &&
-                        (!presentationFrame.localControllableKnown || presentationFrame.localControllable) &&
-                        !presentationFrame.spectate.active && !serverMarkedDead
+                    val inputBlockReason = presentationFrame.gameplayInputBlockReason()
+                    val gameplayEnabled = inputBlockReason == null
+                    val wasGameplayTickEnabled = gameplayTickEnabled
+                    gameplayTickEnabled = gameplayEnabled
+                    if (wasGameplayTickEnabled && !gameplayTickEnabled) inputMixer.clear()
                     hardwareControls.setEnabled(gameplayEnabled)
                     gyroLook.setGameplayEnabled(gameplayEnabled)
                     touchControls.setDrivingMode(hardwareDrivingMode)
                     touchControls.setGameplayEnabled(
                         gameplayEnabled,
-                        when {
-                            !presentationFrame.active -> "SESI BERAKHIR · INPUT OFF"
-                            presentationFrame.spectate.active -> "SPECTATOR · INPUT OFF"
-                            serverMarkedDead -> "RESPAWN SERVER · INPUT OFF"
-                            else -> "SERVER FREEZE · INPUT OFF"
-                        }
+                        inputBlockReason ?: ""
                     )
                     surface.submit(presentationFrame)
                     audioStreamController.submit(presentationFrame)
@@ -892,9 +890,19 @@ internal data class WorldAudioStream(
 
 internal data class WorldFrame(
     val active: Boolean = false,
+    // Native-owned lifecycle copies. These only gate presentation/input; Kotlin
+    // never gets authority to select a class, approve spawn, or acknowledge a
+    // reliable packet from them.
+    val playerInit: Boolean = false,
+    val classSelectionKnown: Boolean = false,
+    val classRequestPending: Boolean = false,
+    val spawnResponseKnown: Boolean = false,
+    val spawnAllowed: Boolean = false,
     // Session-owned retry gate for the explicit respawn action. It is not a
     // claim that the server accepted or completed a spawn.
     val spawnRequestPending: Boolean = false,
+    val spawnConfirmationSent: Boolean = false,
+    val spawnConfirmationAcked: Boolean = false,
     val localKnown: Boolean = false,
     // Distinguishes valid model ID 0 (CJ) from a frame that never received
     // SetSpawnInfo and must not guess a local ped DFF.
@@ -1738,7 +1746,14 @@ internal data class WorldFrame(
                 abs(attachedScaleZ) in 0.001f..100f
             return WorldFrame(
                 active = o.optBoolean("active"),
+                playerInit = o.optBoolean("playerInit"),
+                classSelectionKnown = o.optBoolean("classSelectionKnown"),
+                classRequestPending = o.optBoolean("classRequestPending"),
+                spawnResponseKnown = o.optBoolean("spawnResponseKnown"),
+                spawnAllowed = o.optBoolean("spawnAllowed"),
                 spawnRequestPending = o.optBoolean("spawnRequestPending"),
+                spawnConfirmationSent = o.optBoolean("spawnConfirmationSent"),
+                spawnConfirmationAcked = o.optBoolean("spawnConfirmationAcked"),
                 localKnown = local.optBoolean("known"),
                 localSpawnInfoKnown = local.optBoolean("spawnInfoKnown"),
                 localFacingKnown = local.optBoolean("facingKnown"),
@@ -1975,6 +1990,15 @@ internal data class WorldFrame(
         // simply never opened after a server explicitly ended the session.
         error.isNotBlank() -> "Sesi: $error"
         !active -> "Sesi belum aktif · buka Sesi native dari detail server."
+        !playerInit -> "Transport aktif · menunggu PlayerInit dari server sebelum dunia/kontrol gameplay dibuka."
+        !spawnConfirmationAcked && !spectate.active -> when {
+            spawnConfirmationSent -> "PlayerSpawn terkirim · menunggu ACK transport server sebelum kontrol gameplay aktif."
+            spawnRequestPending -> "Meminta izin spawn ke server · kontrol gameplay masih terkunci."
+            spawnResponseKnown && !spawnAllowed -> "Server menolak spawn saat ini · pilih class lain atau ikuti instruksi server."
+            classRequestPending -> "Meminta class ke server · menunggu respons sebelum Spawn."
+            classSelectionKnown -> "Class diterima · tekan SPAWN untuk meminta izin server."
+            else -> "Sesi terinisialisasi · menunggu class/spawn server sebelum kontrol gameplay aktif."
+        }
         spectate.active -> when {
             spectate.targetKnown && sceneAnchor().followingSpectateTarget && spectate.targetVehicle ->
                 "SPECTATOR · mengikuti kendaraan #${spectate.targetId} dari stream server."
@@ -2017,6 +2041,29 @@ internal data class WorldFrame(
                 })
         }
     }
+}
+
+/**
+ * Presentation-only gameplay gate shared by the GLES scene and Canvas fallback.
+ * It mirrors native lifecycle facts so a touch/controller never looks enabled
+ * before PlayerInit, PlayerSpawn, and the reliable PlayerSpawn ACK. The native
+ * bridge still repeats every gate before advancing collision or transmitting.
+ */
+internal fun WorldFrame.gameplayInputBlockReason(): String? = when {
+    !active -> "SESI BERAKHIR · INPUT OFF"
+    !playerInit -> "MENUNGGU PLAYERINIT · INPUT OFF"
+    !spawnConfirmationAcked && !spectate.active -> when {
+        spawnConfirmationSent -> "MENUNGGU ACK PLAYERSPAWN · INPUT OFF"
+        spawnRequestPending -> "MEMINTA IZIN SPAWN · INPUT OFF"
+        spawnResponseKnown && !spawnAllowed -> "SPAWN DITOLAK SERVER · INPUT OFF"
+        classRequestPending -> "MEMUAT CLASS SERVER · INPUT OFF"
+        classSelectionKnown -> "CLASS SIAP · TEKAN SPAWN · INPUT OFF"
+        else -> "MENUNGGU CLASS / SPAWN SERVER · INPUT OFF"
+    }
+    spectate.active -> "SPECTATOR · INPUT OFF"
+    localHealthKnown && localHealth.isFinite() && localHealth <= 0f -> "RESPAWN SERVER · INPUT OFF"
+    localControllableKnown && !localControllable -> "SERVER FREEZE · INPUT OFF"
+    else -> null
 }
 
 /** One copied world-space origin used by radar/GLES while spectator is active. */

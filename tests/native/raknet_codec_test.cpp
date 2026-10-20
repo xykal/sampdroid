@@ -5953,12 +5953,20 @@ void testRetainedSessionInitialClassBootstrap() {
 
   const samp::SessionSnapshot session =
       samp::raknet_session_connect("127.0.0.1", peer.port, 40, "LoopbackNative");
+  // The renderer receives only this reduced world copy. Keep the pre-spawn
+  // lifecycle boundary explicit so Android cannot show input as playable
+  // before native has observed PlayerSpawn's reliable ACK.
+  const samp::WorldSnapshot world = samp::raknet_session_world_snapshot();
   peer.join();
   const samp::SessionSnapshot closed = samp::raknet_session_disconnect();
 
   expect(session.active && session.accepted && session.playerInit && session.joined &&
              session.classRequestPending && session.requestedClassId == 0u,
          "PlayerInit must retain an active session and queue its first class");
+  expect(world.active && world.playerInit && world.classRequestPending &&
+             !world.spawnResponseKnown && !world.spawnAllowed && !world.spawnRequestPending &&
+             !world.spawnConfirmationSent && !world.spawnConfirmationAcked,
+         "world snapshot must mirror the native pre-spawn input gate");
   expect(peer.sawClientJoin && peer.sawInitialClass && peer.error.empty(),
          "retained session must send source-ordered ClientJoin then initial RequestClass");
   expect(!closed.active, "loopback retained session must close cleanly");

@@ -25,6 +25,18 @@ user pilih server
 Tombol **Spawn** sekarang menjalankan handshake native eksplisit, bukan spawn
 otomatis saat connect. Ia tetap bukan kontrol gameplay atau renderer.
 
+### Gate presentasi dunia dan input
+
+Tombol **Buka Dunia** tetap terkunci sampai reducer native benar-benar menerima
+`PlayerInit`; socket yang baru accepted tidak lagi membuka scene kosong yang
+terlihat seperti gameplay. Sesudah `PlayerInit`, scene/radar boleh menampilkan
+class/spawn server, tetapi touch, keyboard, gamepad, gyro, serta gameplay tick
+collision tetap **OFF** sampai native telah mengirim `PlayerSpawn` dan melihat
+ACK reliable-nya. State copy `playerInit`, class, respons spawn, dan ACK hanya
+untuk presentasi; Kotlin tidak memperoleh jalur untuk memilih class, menyetujui
+spawn, atau memalsukan ACK. Freeze, spectator, dan HP server nol tetap menutup
+input sesudah gate ini.
+
 ### Batas waktu connect dan error pre-cookie
 
 Satu aksi connect dibatasi secara menyeluruh: receive socket diklem ke

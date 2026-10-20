@@ -399,10 +399,20 @@ struct WorldGameTextSnapshot {
 // session state, not a simulation, collision system, or transmit command.
 struct WorldSnapshot {
   bool active = false;
+  // Copy only native-owned lifecycle facts into the renderer so Android can
+  // present an honest pre-game state. They are not UI authority: RequestClass,
+  // RequestSpawn, PlayerSpawn, and its transport ACK remain native-gated.
+  bool playerInit = false;
+  bool classSelectionKnown = false;
+  bool classRequestPending = false;
+  bool spawnResponseKnown = false;
+  bool spawnAllowed = false;
   // Native-session presentation gate for an explicit PlayerRequestSpawn. It
   // lets Android disable duplicate respawn taps; it does not assert a server
   // spawn outcome or mutate any WorldState fact.
   bool spawnRequestPending = false;
+  bool spawnConfirmationSent = false;
+  bool spawnConfirmationAcked = false;
   // Set only after an authoritative SetSpawnInfo template gives a model ID.
   // Position alone must not make Android guess CJ/model zero for every player.
   bool localSpawnInfoKnown = false;

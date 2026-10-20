@@ -83,6 +83,7 @@ object ServerDetailDialog {
         // a developer-style error. Live snapshots below unlock each step only
         // after the server has supplied the required authority.
         btnOpenWorld.isEnabled = false
+        btnWorld.isEnabled = false
         btnClassZero.isEnabled = false
         btnSpawn.isEnabled = false
 
@@ -279,7 +280,14 @@ object ServerDetailDialog {
                     !snapshot.optBoolean("spawnConfirmationAcked"))
             val transportError = snapshot.optString("error").trim()
             btnQuickConnect.text = if (active) "Sesi native aktif" else "Hubungkan native"
-            btnOpenWorld.isEnabled = active
+            // Opening a renderer while the transport is merely accepted made an
+            // empty scene look like playable world state. Wait for the native
+            // PlayerInit boundary; class/spawn setup can then remain visible
+            // inside the world while its own input gate stays locked to ACK.
+            val worldAvailable = active && playerInit
+            btnOpenWorld.isEnabled = worldAvailable
+            btnWorld.isEnabled = worldAvailable
+            btnOpenWorld.text = if (active && !playerInit) "Menunggu PlayerInit…" else "Buka Dunia"
             btnClassZero.isEnabled = active && playerInit && classCount > 0L && !classPending && !spawnPending
             btnClassZero.text = when {
                 classPending -> "Memuat class…"
@@ -612,6 +620,8 @@ object ServerDetailDialog {
                     }
                     if (!snapshot.optBoolean("active")) {
                         log.text = "Buka Sesi native dulu sebelum membuka Dunia native."
+                    } else if (!snapshot.optBoolean("playerInit")) {
+                        log.text = "Transport aktif, tetapi server belum mengirim PlayerInit. Tunggu dulu sebelum membuka Dunia."
                     } else {
                         startSessionPolling()
                         // A player-facing world entry prefers the actual GLES
