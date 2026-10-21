@@ -3978,9 +3978,10 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       return true;
     }
 
-    // Global pickup lifecycle. RPC CreatePickup is a fixed six 32-bit-field
-    // payload; virtual-world/interior selection is server-side and deliberately
-    // not guessed by this client boundary.
+    // Recipient pickup lifecycle. RPC CreatePickup is a fixed six 32-bit-field
+    // payload; the current open.mp server maps global/per-player pool entries
+    // into this client-local ID before sending it. Virtual-world/interior facts
+    // are server-side and deliberately not guessed by this client boundary.
     case kCreatePickup: {
       if (rpcPayload.size() - 2u != 24u) break;
       const uint32_t rawId = reader.readBits(32);

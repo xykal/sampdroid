@@ -7782,8 +7782,9 @@ void testWorldStateReducer() {
   const auto pickups = world.renderablePickups(8);
   const auto nearestPickup = world.nearestPickup(10.5f, 11.0f, 4.0f, 2.0f);
   expect(pickups.size() == 1 && pickups[0].id == 75 && pickups[0].model == 1240 &&
-         pickups[0].spawnType == 2 && nearestPickup && nearestPickup->id == 75,
-         "pickup renderer/nearby view changed");
+         pickups[0].spawnType == 2 && nearestPickup && nearestPickup->id == 75 &&
+         world.localPlayer().interiorKnown && world.localPlayer().interior == 7,
+         "recipient pickup must remain renderable/nearby at a nonzero local interior");
   expect(!world.applyRpc(makeCreatePickup(76, 0, 2, 10.0f, 11.0f, 4.0f), event) &&
          event.kind == samp::state::RpcEventKind::Malformed && world.pickupCount() == 1,
          "invalid CreatePickup must fail closed");

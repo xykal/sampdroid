@@ -212,20 +212,23 @@ bounded (maksimal 8 level, yaw parent yang tersedia, `SyncRotation`, tanpa
 mengarang child bila parent hilang/stream-out/siklik). `AttachObjectToPlayer`
 (75) juga hanya mengikat object global existing ke parent player local/remote
 streamed yang punya transform; fidelity pitch/roll vehicle/ped penuh dan material
-override tidak ditebak. `CreatePickup` (95) / `DestroyPickup` (63) menyimpan record global
-24/4-byte bounded; tap **USE** yang eksplisit saja boleh memilih pickup dalam
-radius 2,15 unit lalu mengantrikan `PickedUpPickup` (131) reliable. Gate spawn
-ACK, controllable, exterior/interior, jarak, serta interval 450 ms semuanya
-diperiksa native; tidak ada reward/inventory yang dipalsukan lokal. Canvas
+override tidak ditebak. `CreatePickup` (95) / `DestroyPickup` (63) menyimpan record
+recipient 24/4-byte bounded: current open.mp memakai ID client yang sama untuk
+stream global/per-player lalu memetakan RPC 131 kembali server-side. Tap **USE**
+yang eksplisit saja boleh memilih pickup retained dalam radius 2,15 unit pada
+interior lokal apa pun lalu mengantrikan `PickedUpPickup` (131) reliable. Gate
+spawn ACK, controllable, posisi/jarak, serta interval 450 ms semuanya diperiksa
+native; tidak ada reward/inventory yang dipalsukan lokal. Canvas
 Android menggambar radar/peta top-down; GLES 2.0 menggambar grid perspektif,
 proxy kubus actor dan prisma vehicle, marker checkpoint/pickup, sky generated
 dari waktu/cuaca, HUD, kamera orbit/zoom, batch DFF prelit placement exterior,
 dan bila ID objek server, vehicle streamed, skin player remote/local
 (cetak spawn `SetSpawnInfo` terlebih dahulu untuk local; `SetPlayerSkin` kemudian
-boleh mengganti modelnya), atau NPC `ShowActor` cocok dengan IDE/IMG user, batch
-DFF prelit static/dynamic dapat ditampilkan; sampai empat material TXD portable
-untuk subset dinamis itu juga dapat overlay pada transform yang sama. Batch
-object/vehicle/player/NPC dinamis refresh terpisah dan dibatasi, sementara proxy
+boleh mengganti modelnya), NPC `ShowActor`, atau maksimal 16 pickup recipient
+terdekat cocok dengan IDE/IMG user, batch DFF prelit static/dynamic dapat
+ditampilkan; sampai empat material TXD portable untuk subset dinamis itu juga
+dapat overlay pada transform yang sama. Batch object/vehicle/player/NPC/pickup
+dinamis refresh terpisah dan dibatasi, sementara proxy
 authority tetap fallback bila asset atau material tidak tersedia. Renderer tidak membaca socket atau descriptor/asset game
 pada GL thread; semua snapshot dan vertex batch tiba sebagai copy bounded.
 Proxy, GLES tanpa

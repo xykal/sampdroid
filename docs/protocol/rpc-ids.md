@@ -39,7 +39,7 @@ counter sequenced terpisah.
 | 140 | OnPlayerExitedMenu | body kosong; only current server-menu revision may queue it |
 | 128 | PlayerRequestClass | `u16 ClassID` — builder + wire test ada |
 | 129 | PlayerRequestSpawn | payload kosong — builder + wire test ada |
-| 131 | PickedUpPickup | `i32 PickupID`; hanya dari tap USE setelah native checks/rate limit |
+| 131 | PickedUpPickup | `i32 client PickupID`; hanya dari tap USE record recipient yang masih nearby setelah native checks/rate limit |
 | 154 | OnPlayerExitVehicle | `u16 VehicleID`; attempt keluar, bukan state lokal langsung |
 | 155 | OnPlayerRequestScoresAndPings | body kosong; request roster score/ping cache server, reliable rate-limited |
 | 103 | ClientCheck | jawaban anti-cheat |
@@ -90,7 +90,7 @@ u32   (opsional) IsUsingOfficialClient / OmpVersion
 | 58 | PlayerHideTextLabel | `u16 raw wire ID`; idempoten menghapus label 3D retained |
 | 59 | SetPlayerChatBubble | `u16 PlayerID, u32 RGBA, float draw distance, u32 expiry ms, DynStr8`; expiry-filtered snapshot bubble bounded |
 | 61 | ShowDialog | i16 ID, u8 style, 3 DynStr8, default RakNet `StringCompressor` body; bounded native decoder + Android dialog presenter |
-| 63 | DestroyPickup | `i32 PickupID`; menghapus record global bounded/idempoten |
+| 63 | DestroyPickup | `i32 client PickupID`; menghapus record recipient bounded/idempoten |
 | 65 | LinkVehicleToInterior | `u16 VehicleID, u8 interior`; memperbarui proxy streamed |
 | 67 | SetPlayerArmedWeapon | `u32 Weapon`; satu-satunya authority weapon aktif lokal |
 | 70 | PutPlayerInVehicle | `u16 VehicleID, u8 seat`; seat authoritative; seat 0 dapat membuka pilot driver Packet-200 collision-grounded terbatas |
@@ -112,7 +112,7 @@ u32   (opsional) IsUsingOfficialClient / OmpVersion
 | 91 | SetVehicleVelocity | exact `u8 Type,VEC3`; `Type=0` linear dan `Type=1` angular. Payload **tidak memiliki VehicleID**: reducer transaksional hanya menerima bila receiver sedang seat-0 pada proxy kendaraan yang sudah `StreamIn`, bukan train, lalu menyimpan channel linear/angular terpisah + revision. Linear revision bounded dikonsumsi sekali oleh pilot COL (CVector GTA 50-Hz ↔ Packet-200), sedangkan angular tetap retained sampai orientasi GTA 3-sumbu tersedia. Passenger, unoccupied/missing proxy, train, selector/vector/body invalid ditolak tanpa menebak target atau mengubah state. |
 | 93 | SendClientMessage | u32 color, u32 len, char[] — reducer caps 144 bytes / 100 lines |
 | 94 | SetWorldTime | u8 hour `0..23`; drives generated scene ambience |
-| 95 | CreatePickup | `i32 PickupID, i32 model, i32 spawn type, VEC3`; visual/interaction record bounded |
+| 95 | CreatePickup | `i32 client PickupID, i32 model, i32 spawn type, VEC3`; visual/interaction record recipient bounded |
 | 99 | MoveObject | u16 ObjectID, VEC3 pos, VEC3 target, float speed, VEC3 rot |
 | 101 | PlayerChatMessage | u16 sender, DynStr8; bounded HUD history |
 | 105 | PlayerTextDrawSetString | `u16 wire ID, DynStr16`; update only draw retained sebelumnya |
@@ -435,21 +435,25 @@ bounded color-only material overlay untuk flattened material slot 0/1 bila mesh
 mendukungnya. Jadi kompatibilitas wire/state sudah source-shaped, sementara
 fidelity visual aktual masih harus melewati deferred native/Android validation.
 
-### Pickup global (63, 95, 131)
+### Pickup recipient (63, 95, 131)
 
-`CreatePickup` dibaca sebagai body tepat 24 byte: `i32 ID | i32 model | i32
-spawn type | float X/Y/Z`; `DestroyPickup` tepat satu `i32 ID`. Struktur dan
-arah RPC 131 diaudit terhadap [open.mp
+`CreatePickup` dibaca sebagai body tepat 24 byte: `i32 client ID | i32 model |
+i32 spawn type | float X/Y/Z`; `DestroyPickup` tepat satu `i32 client ID`.
+Struktur dan arah RPC 131 diaudit terhadap [open.mp
 `Shared/NetCode/pickup.hpp`](https://github.com/openmultiplayer/open.mp/blob/master/Shared/NetCode/pickup.hpp).
-Keduanya dibatasi 4096 record retained / 128 snapshot marker, menolak
-ID/model/type/posisi yang invalid, dan tidak mengarang virtual-world atau
-interior karena field tersebut tidak ada pada wire record ini. Marker radar/GLES
-hanyalah proxy interaksi, bukan model pickup GTA. Tombol **USE** Android
-menghasilkan satu edge ke native; hanya setelah PlayerSpawn sudah di-ACK, posisi
-lokal + controllable valid, interior zero, pickup dalam radius 2,15, dan interval
-450 ms, client mengantrikan `PickedUpPickup` (131) `RELIABLE_ORDERED` SyncRPC channel 2.
-Ia tidak memberikan item/uang/health lokal dan tidak menghapus pickup sebelum
-server mengirim DestroyPickup.
+Current open.mp `PickupsComponent` mengalokasikan ID client per player lalu
+mengirim RPC 95/63 yang sama untuk pickup global maupun player-specific; RPC 131
+memetakan ID client itu kembali server-side. Client karena itu tidak mengarang
+label global/player yang tidak ada di wire. Record dibatasi 4096 retained / 128
+snapshot marker, menolak ID/model/type/posisi invalid, dan tidak mengarang
+virtual-world atau interior karena field itu tidak ada pada record ini. Marker
+radar/GLES hanyalah fallback interaksi; DFF user-owned untuk maksimal 16 pickup
+terdekat dapat dirender bila IDE/IMG resolve. Tombol **USE** Android menghasilkan
+satu edge ke native; hanya setelah PlayerSpawn sudah di-ACK, posisi lokal +
+controllable valid, pickup recipient masih dalam radius 2,15, dan interval 450
+ms, client mengantrikan `PickedUpPickup` (131) `RELIABLE_ORDERED` SyncRPC channel
+2 pada interior lokal apa pun. Ia tidak memberikan item/uang/health lokal dan
+tidak menghapus pickup sebelum server mengirim DestroyPickup.
 
 ### TextDraw portable (83, 105, 134, 135)
 

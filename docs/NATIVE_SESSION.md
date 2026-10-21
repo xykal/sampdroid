@@ -782,9 +782,11 @@ transport sebagai cara bermain:
   bila tersedia atau fallback generic aman. Saat AIM ditahan dan kandidat
   Packet-203 lolos gate native, scene memakai view aim orang-pertama dari
   yaw/pitch yang sama; HUD menunjukkan reticle/pitch dan status kandidat (tanpa
-  target/hit marker). Tap **USE** tetap memilih pickup dulu lalu meminta
-  driver/exit; tahan USE mengirim intent passenger untuk vehicle dekat. Keduanya
-  hanya request RPC 26/154—seat lokal tidak berubah sampai RPC 70/71 server.
+  target/hit marker). Tap **USE** memilih pickup recipient server yang masih
+  nearby pada interior lokal apa pun lebih dulu lalu meminta driver/exit; tahan
+  USE mengirim intent passenger untuk vehicle dekat. Pickup hanya mengantre RPC
+  131 (tanpa reward lokal), sedangkan vehicle hanya request RPC 26/154—seat lokal
+  tidak berubah sampai RPC 70/71 server.
   Setelah server men-seat player dan vehicle masih streamed, snapshot dunia boleh
   menjadikan transform vehicle server sebagai **anchor kamera/proxy** passenger
   tanpa mengarang offset kursi GTA. Saat RPC 70 server memberi seat nonzero dan

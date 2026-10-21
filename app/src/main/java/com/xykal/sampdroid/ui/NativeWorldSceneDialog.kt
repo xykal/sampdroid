@@ -55,6 +55,10 @@ private const val MAP_RENDER_MAX_DYNAMIC_MODEL_VERTICES = 60000
 private const val MAP_RENDER_MAX_VERTICES = 120000
 private const val MAP_RENDER_MAX_TEXTURE_BATCHES = 4
 private const val MAP_RENDER_MAX_TEXTURE_TOTAL_PIXELS = 1024 * 1024
+// Pickups can be plentiful on freeroam servers. Keep their optional DFF path
+// small so they do not crowd out nearby vehicle/player/object render inputs.
+private const val MAX_DYNAMIC_PICKUP_MODELS = 16
+private const val PICKUP_DFF_DRAW_DISTANCE = 96f
 // The GLES scene normally renders only on immutable snapshot/camera changes.
 // A short 30fps settle sequence makes remote server positions visually smooth
 // without permanently burning an ARMv7 GPU at continuous-render cadence.
@@ -228,14 +232,15 @@ private fun loadDynamicModelPayload(
     // merely changes the visual/asset anchor; it never bypasses that gate.
     val anchor = frame.sceneAnchor()
     if (!anchor.known || (frame.localInteriorKnown && frame.localInterior != 0)) return null
-    // Static RPC objects, streamed SA-MP vehicles, player-attached objects,
-    // remote player skins, and ShowActor NPC skins can resolve through the
-    // user-owned IDE/IMG catalog.
-    // `cars`/`peds` map dynamic model IDs to DFF names; this payload is
-    // visual-only and never feeds collision/gameplay.
+    // Static RPC objects, bounded pickup models, streamed SA-MP vehicles,
+    // player-attached objects, remote player skins, and ShowActor NPC skins can
+    // resolve through the user-owned IDE/IMG catalog. `cars`/`peds` map dynamic
+    // model IDs to DFF names; this payload is visual-only and never feeds
+    // collision/gameplay.
     val dynamicInputs = ArrayList<DynamicModelInput>(
         frame.objects.size + frame.playerAttachedObjects.size + frame.vehicles.size +
-            frame.actors.size + frame.serverActors.size + 1
+            frame.actors.size + frame.serverActors.size +
+            minOf(frame.pickups.size, MAX_DYNAMIC_PICKUP_MODELS) + 1
     )
     frame.objects.forEach { objectValue ->
         // `WorldState` already samples MoveObject monotonically and resolves a
@@ -255,6 +260,30 @@ private fun loadDynamicModelPayload(
             )
         }
     }
+    // CreatePickup has a source-owned GTA model ID and position. The DFF is
+    // optional user-owned presentation only: USE still goes through native
+    // radius/lifecycle checks and RPC 131, while the proxy below remains when
+    // an IDE/DFF/TXD cannot be resolved. Select nearest entries first and cap
+    // them before the shared dynamic-model budget to resist pickup floods.
+    val pickupDrawDistance = minOf(budget.mapRadius, PICKUP_DFF_DRAW_DISTANCE)
+    frame.pickups.asSequence()
+        .filter { pickup ->
+            pickup.model in 1..65535 && pickup.x.isFinite() && pickup.y.isFinite() &&
+                pickup.z.isFinite()
+        }
+        .sortedBy { pickup ->
+            val dx = pickup.x - anchor.x
+            val dy = pickup.y - anchor.y
+            val dz = pickup.z - anchor.z
+            dx * dx + dy * dy + dz * dz
+        }
+        .take(MAX_DYNAMIC_PICKUP_MODELS)
+        .forEach { pickup ->
+            dynamicInputs += DynamicModelInput(
+                pickup.model.toLong(), pickup.x, pickup.y, pickup.z,
+                0f, 0f, 0f, pickupDrawDistance
+            )
+        }
     frame.playerAttachedObjects.forEach { attachment ->
         // Native samples an existing streamed/local parent and explicitly uses
         // only a portable approximate bone anchor. Reuse the bounded source
@@ -2138,8 +2167,10 @@ private class NativeWorldSceneRenderer(
     }
 
     private fun drawPickupProxy(x: Float, y: Float, z: Float, pickup: WorldPickup) {
-        // This is an intentional interaction marker, not a substituted GTA
-        // pickup model. Server authority remains with RPC 131 after USE.
+        // A user-owned pickup DFF may already have rendered in the bounded
+        // dynamic batch. Keep this intentional marker as a visible fallback
+        // and interaction affordance; server authority remains with RPC 131
+        // after USE.
         Matrix.setIdentityM(model, 0)
         Matrix.translateM(model, 0, x, y + 0.8f, z)
         Matrix.rotateM(model, 0, 45f, 0f, 1f, 0f)

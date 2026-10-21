@@ -611,7 +611,7 @@ private fun isPortableObjectMaterialText(value: String): Boolean {
 
 private fun isObjectMaterialTextSize(value: Int): Boolean = value in 10..140 && value % 10 == 0
 
-/** Bounded global pickup copied from server Create/DestroyPickup RPCs. */
+/** Bounded recipient pickup copied from server Create/DestroyPickup RPCs. */
 internal data class WorldPickup(
     val id: Int,
     val model: Int,

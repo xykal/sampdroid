@@ -58,10 +58,10 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 - [x] Decode player StreamIn/StreamOut, exact non-DL `SetPlayerSkin` (153), dan
   broadcast remote `PlayerFootSync` (207) ke state entity bounded; model snapshot
   menuju renderer DFF/proxy bounded ada, tetapi animasi/capture nyata belum.
-- [~] Decode vehicle/global-object/global-pickup state: remote vehicle proxy,
-  global object lifecycle + source-audited Move/Stop motion, dan `Create/DestroyPickup` +
-  bounded render state ada; player-object/player-pickup variants dan captures
-  authoritative belum.
+- [~] Decode vehicle/global-object/recipient-pickup state: remote vehicle proxy,
+  global object lifecycle + source-audited Move/Stop motion, dan `Create/DestroyPickup`
+  recipient-mapped + bounded render/DFF state ada; player-object variants dan
+  captures authoritative belum.
 - [ ] Sanitized capture replay test dari server nyata.
 
 ## Milestone 0.7 — persistent native session
@@ -133,8 +133,9 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   jump/run/fire/aim/use → bounded semantic state + OnFoot preview/AimSync pitch.
 - [~] Scene GPU **dan radar fallback** memakai overlay joystick/look/buttons
   yang sama untuk tick gerak collision-grounded + sync rate-gated. **USE** kini juga edge eksplisit:
-  pickup server terdekat (gate spawn/posisi/interior/radius/rate native lalu
-  RPC 131 reliable, tanpa reward lokal), lalu request enter/exit vehicle yang
+  pickup recipient server terdekat (gate spawn/posisi/radius/rate native pada
+  interior lokal apa pun lalu RPC 131 reliable, tanpa reward lokal), lalu request
+  enter/exit vehicle yang
   baru mengubah seat setelah RPC server 70/71. Seat driver 0 kini menjalankan
   steer/gas/mundur/rem kinematic collision + Packet-200 `InCarRate`; passenger
   Packet-211 anchor/input dasar kini juga boleh memasang drive-by untuk SMG
@@ -234,7 +235,10 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   dalam IMG terpasang, dan sibling mesh tanpa UV yang tidak memakai material itu
   tidak menutup overlay aman. Preview manual juga mendukung satu TXD unik.
   Transform static `FrameList`/`Atomic` portable sudah diterapkan sebelum mesh
-  masuk batch. Primary GTA3 + maksimal empat auxiliary IMG asset dapat memberi
+  masuk batch. `CreatePickup` terdekat (maksimal 16 dalam radius 96 m) kini juga
+  boleh masuk batch DFF dinamis lewat IDE user-owned; marker pickup tetap ada
+  sebagai fallback/interaksi dan tidak mengubah authority RPC 131. Primary GTA3 +
+  maksimal empat auxiliary IMG asset dapat memberi
   lookup DFF/TXD lintas archive (termasuk `txdcut.ide` cutscene→gta3). Full-COL
   sync bounded kini mencakup primary + companion IMG dalam satu cap dan primary
   menang pada nama model duplikat; parent-stream IPL tetap primary-only, jadi
@@ -281,8 +285,8 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   editor offset/rotasi/scale attachment-local terminal dengan slot/model/bone/warna
   tetap native-owned (ABGR inbound→ARGB outbound). Keduanya bukan gizmo PC atau
   mutasi optimistis. Belum raycast mesh/GTA click point penuh. Fidelity pitch/roll vehicle, override
-  material object, binding semua material/texture vehicle, player-pickup variant,
-  drive-by, **outbound/local** trailer sync dan coupling/physics trailer,
+  material object, binding semua material/texture vehicle, drive-by,
+  **outbound/local** trailer sync dan coupling/physics trailer,
   vehicle handling/fisika penuh, HUD GTA penuh, dan gameplay loop masih
   berikutnya. Packet-210 trailer **remote inbound** kini source-verified dan
   mengganti transform/attitude visual trailer streamed tanpa mengarang health,

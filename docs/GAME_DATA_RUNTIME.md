@@ -272,10 +272,12 @@ untuk validasi final batch ini; tidak ada data GTA yang masuk ke repository.
    seluruh San Andreas di RAM; batch saat ini hanya memilih placement pada
    interior server yang sama dekat anchor dan lazy-load DFF terbatas.
 4. **Renderer asset native** — batch DFF prelit placement serta object/vehicle
-   streamed (`cars`), skin player remote/local, dan NPC `ShowActor` (`peds`) sudah
-   masuk GLES dengan copy/refresh bounded; NPC tersebut tetap bukan collision,
-   target, atau interaction entity. TXD/material multi-batch, cache GPU, LOD, occlusion,
-   animasi actor/vehicle, dan fallback perangkat rendah masih perlu.
+   streamed (`cars`), skin player remote/local, NPC `ShowActor` (`peds`), dan
+   sampai 16 `CreatePickup` terdekat (IDE user-owned, radius 96 m) sudah masuk
+   GLES dengan copy/refresh bounded. Pickup marker tetap fallback/interaksi;
+   semua entitas tersebut tetap bukan collision, target, atau authority gameplay.
+   TXD/material multi-batch, cache GPU, LOD, occlusion, animasi actor/vehicle,
+   dan fallback perangkat rendah masih perlu.
 5. **Local simulation** — floor grounding + side sweep COL dasar sudah ada;
    seat driver 0 yang diotorisasi juga punya pilot kinematic Packet-200 terbatas
    di atas collision yang sama. Bila tree user memuat `handling.cfg` valid dan
@@ -285,9 +287,10 @@ untuk validasi final batch ini; tidak ada data GTA yang masuk ke repository.
    drivetrain/damage kendaraan GTA, dan collision nyata penuh masih perlu.
    Input tidak akan menjadi sync posisi bebas.
 6. **SA-MP bridge penuh** — static `Create/Set/DestroyObject` sudah punya jalur
-   bounded sampai batch DFF bila mapping asset tersedia; global pickup sudah
-   memiliki marker + `USE` → RPC 131 user-confirmed tanpa reward lokal.
-   Player-pickup, model/font TextDraw GTA penuh (font-4 sprite strict sudah
+   bounded sampai batch DFF bila mapping asset tersedia; global `CreatePickup`
+   juga dapat memakai DFF user-owned terdekat dengan marker fallback + `USE` →
+   RPC 131 user-confirmed tanpa reward lokal. Model/font TextDraw GTA penuh
+   (font-4 sprite strict sudah
    bisa resolve satu TXD RGBA user-owned bounded dan font-5 punya preview mesh
    prelit bounded, tetapi bukan frontend GTA lengkap), attachment/material/MoveObject DFF dinamis, vehicle/passenger/trailer, serta
    continuous sync yang hanya aktif setelah

@@ -3268,16 +3268,18 @@ SessionSnapshot raknet_session_use_nearby(bool passengerIntent) {
       y = gLiveSession->localGameplay.motion.position.y;
       z = gLiveSession->localGameplay.motion.position.z;
     }
-    // Pickup RPCs lack world/interior facts, so never infer that one is valid
-    // in a nonzero interior. Vehicle stream records do have interior, and their
-    // selection is explicitly filtered against the local authoritative value.
-    if (!local.interiorKnown || local.interior == 0) {
-      constexpr float kPickupUseRadius = 2.15f;
-      if (const state::Pickup* pickup =
-              gLiveSession->world.nearestPickup(x, y, z, kPickupUseRadius)) {
-        kind = InteractionKind::Pickup;
-        pickupId = pickup->id;
-      }
+    // CreatePickup has no interior field, but it is already a recipient-local
+    // server stream record. Current open.mp maps its per-client pickup ID and
+    // accepts RPC 131 through that mapper; it streams by virtual world/range,
+    // not by an invented client interior discriminator. Therefore use only a
+    // currently retained, nearby record at any authoritative local interior.
+    // Vehicle stream records do carry interior, so their separate selection
+    // remains explicitly filtered against the local authoritative value.
+    constexpr float kPickupUseRadius = 2.15f;
+    if (const state::Pickup* pickup =
+            gLiveSession->world.nearestPickup(x, y, z, kPickupUseRadius)) {
+      kind = InteractionKind::Pickup;
+      pickupId = pickup->id;
     }
     if (pickupId < 0) {
       constexpr float kVehicleUseRadius = 3.25f;
