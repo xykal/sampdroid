@@ -15,6 +15,14 @@
 
 namespace samp::state {
 
+// The received ClientJoin identity selects the server-to-client layouts that
+// are legal for this reducer. This is not a feature toggle inferred from an
+// arbitrary RPC: only the connection handshake may construct a DL R1 state.
+enum class ClientWireProfile : uint8_t {
+  Legacy037,
+  DlR1,
+};
+
 enum class RpcEventKind : uint8_t {
   Ignored,
   PlayerInitialized,
@@ -39,6 +47,9 @@ enum class RpcEventKind : uint8_t {
   ServerActorCreated,
   ServerActorChanged,
   ServerActorDestroyed,
+  // DL R1 ModelInfo catalog entry retained only to resolve a safe stock/base
+  // visual fallback for a custom object ID. It is never download permission.
+  DlModelCatalogChanged,
   PickupCreated,
   PickupDestroyed,
   TextDrawChanged,
@@ -232,7 +243,11 @@ struct Player {
   uint16_t remoteVehicleId = 0;
   uint8_t remoteVehicleSeat = 0;
   uint8_t team = 0;
+  // `model` remains the server-provided stock/base GTA model. DL R1 supplies
+  // its optional custom-model reference separately, so a renderer can use a
+  // lawful stock fallback without losing the source identity.
   uint32_t model = 0;
+  uint32_t customModel = 0;
   uint8_t fightingStyle = 0;
   float x = 0.0f;
   float y = 0.0f;
@@ -262,7 +277,10 @@ struct Player {
 constexpr size_t kMaxPlayerAttachedObjectSlots = 10;
 struct PlayerAttachedObject {
   bool active = false;
+  // `model` is a renderable GTA stock/base fallback. `sourceModel` preserves
+  // a signed DL custom object reference when the wire model is negative.
   uint32_t model = 0;
+  int32_t sourceModel = 0;
   uint8_t bone = 0;
   float offsetX = 0.0f;
   float offsetY = 0.0f;
@@ -282,6 +300,7 @@ struct PlayerAttachedObjectView {
   uint16_t playerId = 0;
   uint8_t slot = 0;
   uint32_t model = 0;
+  int32_t sourceModel = 0;
   uint8_t bone = 0;
   float x = 0.0f;
   float y = 0.0f;
@@ -302,6 +321,7 @@ struct RemotePlayerView {
   uint16_t id = 0;
   uint32_t rgba = 0;
   uint32_t model = 0;
+  uint32_t customModel = 0;
   bool onFootKnown = false;
   // Bounded, short-lived remote Packet-203 presentation data. No recipient
   // code may reinterpret this as a hit target or projectile endpoint.
@@ -475,6 +495,7 @@ struct RemoteVehicleView {
 struct ServerActor {
   uint16_t id = 0;
   uint32_t model = 0;
+  uint32_t customModel = 0;
   float x = 0.0f;
   float y = 0.0f;
   float z = 0.0f;
@@ -487,6 +508,7 @@ struct ServerActor {
 struct ServerActorView {
   uint16_t id = 0;
   uint32_t model = 0;
+  uint32_t customModel = 0;
   float x = 0.0f;
   float y = 0.0f;
   float z = 0.0f;
@@ -541,7 +563,10 @@ struct ServerObjectMaterialOverride {
 // Default texture or Text material overrides per source slot.
 struct ServerObject {
   uint16_t id = 0;
+  // For DL custom objects, sourceModel is the signed wire ID and model is the
+  // resolved stock/base fallback (zero means catalog info is not known yet).
   uint32_t model = 0;
+  int32_t sourceModel = 0;
   bool attached = false;
   ObjectAttachmentKind attachmentKind = ObjectAttachmentKind::None;
   uint16_t attachmentParentId = 0;
@@ -597,6 +622,7 @@ struct AttachedObjectEditState {
 struct ServerObjectView {
   uint16_t id = 0;
   uint32_t model = 0;
+  int32_t sourceModel = 0;
   bool moving = false;
   float x = 0.0f;
   float y = 0.0f;
@@ -931,6 +957,7 @@ struct ClassSelection {
   bool selectable = false;
   uint8_t team = 0;
   uint32_t model = 0;
+  uint32_t customModel = 0;
   float x = 0.0f;
   float y = 0.0f;
   float z = 0.0f;
@@ -986,6 +1013,7 @@ struct LocalPlayer {
   uint16_t vehicleId = 0;
   uint8_t vehicleSeat = 0;
   uint32_t model = 0;
+  uint32_t customModel = 0;
   uint8_t spawnUnknown = 0;
   std::array<uint32_t, 3> spawnWeapons{};
   std::array<uint32_t, 3> spawnAmmo{};
@@ -1017,6 +1045,19 @@ struct LocalPlayer {
 // between untrusted network bytes and a future HUD/world renderer.
 class WorldState {
 public:
+  explicit WorldState(ClientWireProfile wireProfile = ClientWireProfile::Legacy037)
+      : wireProfile_(wireProfile) {}
+
+  // A terminal server lifecycle clears mutable world facts while retaining the
+  // profile selected at ClientJoin; an active DL peer must never silently fall
+  // back to legacy decoding after a disconnect/reject signal.
+  void resetForSession() {
+    const ClientWireProfile retainedProfile = wireProfile_;
+    *this = WorldState(retainedProfile);
+  }
+  ClientWireProfile wireProfile() const { return wireProfile_; }
+  bool usesDlR1WireLayout() const { return wireProfile_ == ClientWireProfile::DlR1; }
+
   bool applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& event);
   bool applyRemoteOnFoot(const syncdecode::RemoteOnFootSync& sync, RpcEvent& event);
   bool applyRemoteAim(const syncdecode::RemoteAimSync& sync, RpcEvent& event);
@@ -1044,6 +1085,9 @@ public:
   size_t streamedVehicleCount() const;
   size_t serverActorCount() const { return serverActors_.size(); }
   size_t serverObjectCount() const { return objects_.size(); }
+  // A bounded passive catalog of DL custom-object → stock/base mappings.
+  // This has no URL, file, byte, or download-completion state.
+  size_t dlObjectFallbackCount() const { return dlObjectBaseModels_.size(); }
   size_t pickupCount() const { return pickups_.size(); }
   size_t textDrawCount() const { return textDraws_.size(); }
   size_t textLabelCount() const { return textLabels_.size(); }
@@ -1168,6 +1212,7 @@ private:
   void clearRemoteVehicleOccupancy(uint16_t playerId, bool hideActor);
   Pickup* getOrCreatePickup(int32_t id);
 
+  ClientWireProfile wireProfile_ = ClientWireProfile::Legacy037;
   bool initialized_ = false;
   rpc::PlayerInitData playerInit_;
   WorldEnvironment environment_;
@@ -1197,6 +1242,9 @@ private:
   std::map<uint16_t, ScorePing> scorePingOverrides_;
   std::map<uint16_t, Vehicle> vehicles_;
   std::map<uint16_t, ServerActor> serverActors_;
+  // Signed DL custom object IDs map to source-supplied GTA base IDs only. The
+  // map deliberately carries no DFF/TXD URL/checksum/file payload.
+  std::map<int32_t, uint32_t> dlObjectBaseModels_;
   std::map<uint16_t, ServerObject> objects_;
   // One array only for the local player or an already-known player ID; reducer
   // never creates a player identity from a SetPlayerAttachedObject RPC.

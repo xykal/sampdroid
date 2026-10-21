@@ -17,6 +17,7 @@ struct ProbeResult {
   int splitFragments = 0;
   int reassembledPackets = 0;
   int trackedPlayers = 0;        // PlayerJoin/Quit/Name/Color reducer
+  std::string clientProtocol;    // exact selected ClientJoin wire identity
   std::string serverName;        // dari PlayerInit, bila server mengirimnya
   std::string rpcSummary;        // ringkasan RPC yang terlihat selama probe
   std::string stateSummary;      // event state terakhir yang berhasil direduce
@@ -25,6 +26,9 @@ struct ProbeResult {
   std::string error;
 };
 
-ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs = 1500);
+// Probe uses the same fixed ClientJoin profile selection as a retained session;
+// blank/unknown advertisement remains baseline.
+ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs = 1500,
+                         const std::string& advertisedServerVersion = "");
 
 }  // namespace samp

@@ -895,6 +895,7 @@ std::string session_json(const samp::SessionSnapshot& s) {
     << ",\"trackedVehicles\":" << s.trackedVehicles
     << ",\"streamedVehicles\":" << s.streamedVehicles
     << ",\"trackedServerActors\":" << s.trackedServerActors
+    << ",\"dlObjectFallbacks\":" << s.dlObjectFallbacks
     << ",\"remoteOnFootPackets\":" << s.remoteOnFootPackets
     << ",\"remoteAimPackets\":" << s.remoteAimPackets
     << ",\"remoteBulletPackets\":" << s.remoteBulletPackets
@@ -923,6 +924,7 @@ std::string session_json(const samp::SessionSnapshot& s) {
     << ",\"localOnFootStateKnown\":" << (s.localOnFootStateKnown ? "true" : "false")
     << ",\"localAimStateKnown\":" << (s.localAimStateKnown ? "true" : "false")
     << ",\"localPassengerStateKnown\":" << (s.localPassengerStateKnown ? "true" : "false")
+    << ",\"clientProtocol\":\"" << samp::json_escape(s.clientProtocol) << "\""
     << ",\"serverName\":\"" << samp::json_escape(s.serverName) << "\""
     << ",\"rpcSummary\":\"" << samp::json_escape(s.rpcSummary) << "\""
     << ",\"syncSummary\":\"" << samp::json_escape(s.syncSummary) << "\""
@@ -1754,8 +1756,10 @@ Java_com_xykal_sampdroid_NativeBridge_nativeQueryPing(JNIEnv* env, jclass, jstri
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeRaknetProbe(JNIEnv* env, jclass, jstring ip,
-                                                        jint port, jint timeoutMs) {
-  auto r = samp::raknet_probe(to_std(env, ip), static_cast<uint16_t>(port), timeoutMs);
+                                                        jint port, jint timeoutMs,
+                                                        jstring advertisedServerVersion) {
+  auto r = samp::raknet_probe(to_std(env, ip), static_cast<uint16_t>(port), timeoutMs,
+                              to_std(env, advertisedServerVersion));
   std::ostringstream o;
   o << "{\"openConnection\":" << (r.openConnection ? "true" : "false")
     << ",\"cookieOk\":" << (r.cookieOk ? "true" : "false")
@@ -1769,6 +1773,7 @@ Java_com_xykal_sampdroid_NativeBridge_nativeRaknetProbe(JNIEnv* env, jclass, jst
     << ",\"splitFragments\":" << r.splitFragments
     << ",\"reassembledPackets\":" << r.reassembledPackets
     << ",\"trackedPlayers\":" << r.trackedPlayers
+    << ",\"clientProtocol\":\"" << samp::json_escape(r.clientProtocol) << "\""
     << ",\"serverName\":\"" << samp::json_escape(r.serverName) << "\""
     << ",\"rpcSummary\":\"" << samp::json_escape(r.rpcSummary) << "\""
     << ",\"stateSummary\":\"" << samp::json_escape(r.stateSummary) << "\""
@@ -1781,10 +1786,11 @@ Java_com_xykal_sampdroid_NativeBridge_nativeRaknetProbe(JNIEnv* env, jclass, jst
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeSessionConnect(JNIEnv* env, jclass, jstring ip,
                                                            jint port, jint timeoutMs,
-                                                           jstring nickname) {
+                                                           jstring nickname,
+                                                           jstring advertisedServerVersion) {
   return to_java(env, session_json(samp::raknet_session_connect(
                           to_std(env, ip), static_cast<uint16_t>(port), timeoutMs,
-                          to_std(env, nickname))));
+                          to_std(env, nickname), to_std(env, advertisedServerVersion))));
 }
 
 JNIEXPORT jstring JNICALL

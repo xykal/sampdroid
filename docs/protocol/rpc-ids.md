@@ -234,17 +234,25 @@ state without widening the protocol boundary.
 
 ### Lifecycle remote player
 
-`PlayerStreamIn` (32) adalah batas identitas/render entity: untuk client non-DL
-layoutnya `u16 id | u8 team | u32 skin | VEC3 pos | float angle | u32 RGBA |
-u8 fightingStyle | u16 skill[11]`. SampDroid menyimpan actor ini secara bounded.
+`PlayerStreamIn` (32) adalah batas identitas/render entity. Profile legacy
+menggunakan `u16 id | u8 team | u32 skin | VEC3 pos | float angle | u32 RGBA |
+u8 fightingStyle | u16 skill[11]`; profile DL R1 menyisipkan `u32 CustomSkin`
+tepat sesudah `skin`. SampDroid memilih satu layout hanya dari profile ClientJoin
+terkunci lalu menyimpan base skin dan custom reference secara bounded.
 `PlayerStreamOut` (163) menonaktifkan actor tersebut dan menolak Packet 207
-berikutnya sampai `StreamIn` baru datang. Sementara actor masih retained,
-`SetPlayerSkin` (153) non-DL mengubah modelnya lewat layout source-verified
-`u32 PlayerID | u32 Skin`; snapshot renderer berikutnya memakai model baru tanpa
-mengubah transform atau lifecycle stream. Bila ID adalah pemain lokal, reducer
-hanya mengganti model retained setelah/ketika template `SetSpawnInfo` ada—tidak
-menciptakan actor lokal di origin. Field `CustomSkin` yang hanya ada pada client
-0.3.DL sengaja tidak diparse/diminta oleh jalur client saat ini.
+berikutnya sampai `StreamIn` baru datang.
+
+Sementara actor masih retained, `SetPlayerSkin` (153) legacy adalah `u32
+PlayerID | u32 Skin`, sedangkan DL R1 adalah `u16 PlayerID | u32 Skin | u32
+CustomSkin`. Bila ID adalah pemain lokal, reducer hanya mengganti model retained
+setelah/ketika template `SetSpawnInfo` ada—tidak menciptakan actor lokal di
+origin. Layout DL yang sama menambahkan `CustomModelID` setelah model dasar pada
+`SetSpawnInfo` (68), response `PlayerRequestClass` (128), dan `ShowActor` (171).
+Renderer saat ini tetap memakai base model GTA sebagai fallback. Untuk object
+DL negative, `ModelInfo`/`ModelRequest` (179) fixed 39-byte diparse pasif untuk
+mapping signed custom ID ke `baseId` stock (maks. 4.096); checksum/size tidak
+disimpan sebagai asset atau URL. `ModelFile`, downloader/validator DFF/TXD, dan
+renderer artwork custom tetap belum dijalankan atau diakui.
 
 ### Nametag dan chat bubble (59 / 80 / PlayerInit)
 

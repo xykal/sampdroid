@@ -11,6 +11,32 @@
 namespace samp::handshake {
 
 constexpr uint32_t kLegacyNetGameVersion = 4057u;
+// SA-MP 0.3.DL-R1 keeps the legacy ClientJoin layout but identifies its
+// netgame protocol with 4062 and reports a distinct bounded version string.
+constexpr uint32_t kDlR1NetGameVersion = 4062u;
+
+// ClientJoin has two intentionally small, source-backed identity profiles.
+// This is not a general version-spoofing surface: callers can select only the
+// stock 0.3.7-R2 baseline or 0.3.DL-R1 after an exact server-query match.
+struct ClientJoinProfile {
+  uint32_t netGameVersion;
+  const char* clientVersion;
+  const char* displayName;
+};
+
+inline constexpr ClientJoinProfile kLegacyClientJoinProfile{
+    kLegacyNetGameVersion, "0.3.7-R2", "0.3.7-R2 (4057)"};
+inline constexpr ClientJoinProfile kDlR1ClientJoinProfile{
+    kDlR1NetGameVersion, "0.3.DL-R1", "0.3.DL-R1 (4062)"};
+
+// Treat only a whitespace-padded, case-insensitive exact 0.3.DL-R1 query
+// value as DL. Unknown, blank, open.mp, or mixed-version advertisements remain
+// on the well-covered legacy profile rather than speculatively changing wire
+// identity.
+bool isExactDlR1AdvertisedVersion(const std::string& advertisedVersion);
+ClientJoinProfile clientJoinProfileForAdvertisedVersion(
+    const std::string& advertisedVersion);
+
 constexpr size_t kMinNicknameBytes = 3u;
 constexpr size_t kMaxNicknameBytes = 24u;
 // Legacy AUTH_KEY challenge strings are one-byte length-prefixed, include a
@@ -30,17 +56,22 @@ std::optional<std::string> parseAuthChallenge(const std::vector<uint8_t>& payloa
 // every transport phase from turning an explicit refusal into a timeout.
 bool isTerminalSessionControlId(uint8_t id);
 
-// After a client sends NEW_INCOMING, legacy RakPeer transitions the peer into
-// CONNECTED and emits an internal ping plus static-data record. ClientJoin must
-// wait until either record is observed; sending it in the same burst can make a
-// server inspect PlayerConnect before it has processed NEW_INCOMING.
-bool isPostAcceptReadyControlId(uint8_t id);
+// Legacy RakPeer emits these transport controls after processing NEW_INCOMING.
+// They are post-accept metadata handled by the receive path, not a prerequisite
+// between the source peer's own NEW_INCOMING/ping/static sequence and ClientJoin.
+bool isPostAcceptControlId(uint8_t id);
 
 // Produces the raw legacy RPC ClientJoin payload [ID_RPC, RPC=25, fields].
 // The outer RakNet reliable-ordered frame is intentionally owned by the
 // session transport, where its message/order counters live.
+// Computes the ClientJoin challenge response using the profile's exact
+// netgame version. Keeping this beside the profile prevents the version field
+// and challenge XOR from drifting apart.
+uint32_t clientJoinChallengeResponse(uint32_t acceptedToken, const ClientJoinProfile& profile);
+
 std::vector<uint8_t> buildClientJoin(uint32_t challengeResponse, const std::string& nickname,
-                                     const std::string& serial);
+                                     const std::string& serial,
+                                     const ClientJoinProfile& profile = kLegacyClientJoinProfile);
 
 // SA-MP's RakNet 2.52 connection-complete payload, exactly
 // [ID_NEW_INCOMING_CONNECTION, IPv4 bytes, port little-endian].

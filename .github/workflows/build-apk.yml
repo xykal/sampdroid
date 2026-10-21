@@ -61,6 +61,46 @@ jobs:
             -o .ci-native/raknet-codec-test
           .ci-native/raknet-codec-test
 
+      # Keep memory/undefined-behaviour coverage on the exact host source set
+      # that feeds the Android library. This is not an Android ABI substitute;
+      # the dual-ABI Gradle task below remains mandatory before artifact upload.
+      - name: Native ASan + UBSan regression tests
+        run: |
+          mkdir -p .ci-native
+          c++ -std=c++17 -O1 -g -Wall -Wextra -pedantic -pthread \
+            -fno-omit-frame-pointer -fsanitize=address,undefined \
+            -Iapp/src/main/cpp \
+            app/src/main/cpp/client_rpc.cpp \
+            app/src/main/cpp/client_sync.cpp \
+            app/src/main/cpp/gta_img_archive.cpp \
+            app/src/main/cpp/gta_collision.cpp \
+            app/src/main/cpp/gta_collision_catalog.cpp \
+            app/src/main/cpp/gta_collision_world.cpp \
+            app/src/main/cpp/gta_data_runtime.cpp \
+            app/src/main/cpp/gta_dff_mesh.cpp \
+            app/src/main/cpp/gta_file_source.cpp \
+            app/src/main/cpp/gta_map_manifest.cpp \
+            app/src/main/cpp/gta_txd_texture.cpp \
+            app/src/main/cpp/gta_vehicle_handling.cpp \
+            app/src/main/cpp/input_state.cpp \
+            app/src/main/cpp/local_gameplay_bridge.cpp \
+            app/src/main/cpp/local_movement.cpp \
+            app/src/main/cpp/local_vehicle_movement.cpp \
+            app/src/main/cpp/local_player_sync.cpp \
+            app/src/main/cpp/sync_decoder.cpp \
+            app/src/main/cpp/raknet_codec.cpp \
+            app/src/main/cpp/raknet_handshake.cpp \
+            app/src/main/cpp/raknet_string_compressor.cpp \
+            app/src/main/cpp/samp_query.cpp \
+            app/src/main/cpp/rpc_decoder.cpp \
+            app/src/main/cpp/rpc_state.cpp \
+            app/src/main/cpp/raknet_probe.cpp \
+            tests/native/raknet_codec_test.cpp \
+            -o .ci-native/raknet-codec-sanitize
+          ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+            UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+            .ci-native/raknet-codec-sanitize
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:

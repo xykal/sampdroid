@@ -141,6 +141,14 @@ constexpr uint8_t kClearActorAnimation = 174;
 constexpr uint8_t kSetActorFacingAngle = 175;
 constexpr uint8_t kSetActorPosition = 176;
 constexpr uint8_t kSetActorHealth = 178;
+// 0.3.DL ModelRequest/ModelInfo. It is accepted only in the DL R1 selected
+// wire profile and is used solely for an in-memory stock-model fallback map.
+constexpr uint8_t kDlModelInfo = 179;
+constexpr size_t kMaxDlObjectFallbacks = 4096u;
+constexpr int32_t kMinDlCustomSkinId = 20001;
+constexpr int32_t kMaxDlCustomSkinId = 30000;
+constexpr int32_t kMinDlCustomObjectId = -30000;
+constexpr int32_t kMaxDlCustomObjectId = -1000;
 constexpr size_t kMaxPlayerNameBytes = 24;
 constexpr size_t kMaxChatBubbleBytes = 128;
 // ApplyPlayerAnimation/ApplyActorAnimation use DynStr8 fields. Current
@@ -433,6 +441,22 @@ float readFloat(raknet::BitReader& reader, bool& finite) {
   std::memcpy(&value, &raw, sizeof(value));
   finite = finite && std::isfinite(value);
   return value;
+}
+
+int32_t readInt32(raknet::BitReader& reader) {
+  const uint32_t raw = reader.readBits(32);
+  int32_t value = 0;
+  static_assert(sizeof(value) == sizeof(raw), "SA-MP uses 32-bit signed model fields");
+  std::memcpy(&value, &raw, sizeof(value));
+  return value;
+}
+
+bool validDlCustomSkinId(int32_t modelId) {
+  return modelId >= kMinDlCustomSkinId && modelId <= kMaxDlCustomSkinId;
+}
+
+bool validDlCustomObjectId(int32_t modelId) {
+  return modelId >= kMinDlCustomObjectId && modelId <= kMaxDlCustomObjectId;
 }
 
 bool validWorldPosition(float x, float y, float z) {
@@ -775,6 +799,7 @@ ServerObjectView sampledObjectView(const ServerObject& object, uint64_t nowMs) {
   ServerObjectView view;
   view.id = object.id;
   view.model = object.model;
+  view.sourceModel = object.sourceModel;
   view.x = object.x;
   view.y = object.y;
   view.z = object.z;
@@ -1236,6 +1261,7 @@ std::vector<PlayerAttachedObjectView> WorldState::renderablePlayerAttachedObject
       view.playerId = playerId;
       view.slot = static_cast<uint8_t>(slot);
       view.model = attachment.model;
+      view.sourceModel = attachment.sourceModel;
       view.bone = attachment.bone;
       view.x = parent.x + offsetX;
       view.y = parent.y + offsetY;
@@ -1443,6 +1469,7 @@ std::vector<RemotePlayerView> WorldState::renderablePlayers(size_t maxPlayers) c
     view.id = id;
     view.rgba = player.rgba;
     view.model = player.model;
+    view.customModel = player.customModel;
     view.onFootKnown = player.remoteOnFootKnown;
     const bool remoteAimFresh = player.remoteAimKnown && nowMs >= player.remoteAimUpdatedMs &&
         nowMs - player.remoteAimUpdatedMs <= kRemoteAimPresentationLifetimeMs;
@@ -1504,8 +1531,18 @@ std::vector<ServerActorView> WorldState::renderableServerActors(size_t maxActors
   // the arrival order of ShowActor/SetActor mutators.
   for (const auto& [id, actor] : serverActors_) {
     if (out.size() >= limit) break;
-    out.push_back({id, actor.model, actor.x, actor.y, actor.z, actor.angle,
-                   actor.health, actor.invulnerable, actor.forcedAnimation});
+    ServerActorView view;
+    view.id = id;
+    view.model = actor.model;
+    view.customModel = actor.customModel;
+    view.x = actor.x;
+    view.y = actor.y;
+    view.z = actor.z;
+    view.angle = actor.angle;
+    view.health = actor.health;
+    view.invulnerable = actor.invulnerable;
+    view.forcedAnimation = actor.forcedAnimation;
+    out.push_back(std::move(view));
   }
   return out;
 }
@@ -2163,12 +2200,15 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       return true;
     }
 
-    // Server-to-recipient StreamIn includes the initial actor transform. This
-    // Android client advertises non-DL, so CustomSkin is intentionally absent.
+    // PlayerStreamIn carries a DL-only CustomSkin:u32 directly after the
+    // stock/base Skin:u32. Its presence is fixed by the profile selected at
+    // ClientJoin, never guessed from a payload length that an untrusted peer
+    // could manipulate.
     case kPlayerStreamIn: {
       const uint16_t id = static_cast<uint16_t>(reader.readBits(16));
       const uint8_t team = static_cast<uint8_t>(reader.readBits(8));
       const uint32_t model = reader.readBits(32);
+      const uint32_t customModel = usesDlR1WireLayout() ? reader.readBits(32) : 0u;
       bool finite = true;
       const float x = readFloat(reader, finite);
       const float y = readFloat(reader, finite);
@@ -2205,6 +2245,7 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       player->remoteVehicleSeat = 0;
       player->team = team;
       player->model = model;
+      player->customModel = customModel;
       player->x = x;
       player->y = y;
       player->z = z;
@@ -2526,14 +2567,80 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       return true;
     }
 
-    // Source-verified non-DL ShowActorForPlayer layout:
-    // ActorID:u16 | SkinID:u32 | VEC3 | Angle:float | Health:float |
-    // Invulnerable:u8. Actors are visual NPC facts only; no target, collision,
-    // interaction, or local animation authority is inferred from their model.
+    // open.mp's DL ModelRequest (179) is a fixed 39-byte catalog entry. It
+    // publishes a base model for a signed custom object ID before normal
+    // streaming. Retain only that bounded mapping: checksums/sizes are consumed
+    // to verify layout but never become a URL, filesystem path, download, or
+    // completion signal. A model catalog does not grant asset-download consent.
+    case kDlModelInfo: {
+      constexpr size_t kDlModelInfoBodyBytes = 39u;
+      constexpr uint8_t kDlModelTypeSkin = 1u;
+      constexpr uint8_t kDlModelTypeObject = 2u;
+      if (!usesDlR1WireLayout()) {
+        event.kind = RpcEventKind::Ignored;
+        event.summary = "DL ModelInfo ignored by legacy profile";
+        return false;
+      }
+      if (rpcPayload.size() - 2u != kDlModelInfoBodyBytes) break;
+      const uint32_t poolId = reader.readBits(32);
+      const int32_t count = readInt32(reader);
+      const uint8_t type = static_cast<uint8_t>(reader.readBits(8));
+      (void)readInt32(reader);  // virtualWorld: server routing state, not local IPL authority.
+      const int32_t baseId = readInt32(reader);
+      const int32_t newId = readInt32(reader);
+      reader.readBits(32);  // DFF checksum: not retained before a future downloader exists.
+      reader.readBits(32);  // TXD checksum: same.
+      reader.readBits(32);  // DFF size: same.
+      reader.readBits(32);  // TXD size: same.
+      reader.readBits(8);   // timeOn: no custom time-based artwork renderer yet.
+      reader.readBits(8);   // timeOff.
+      if (!reader.ok() || count <= 0 || count > static_cast<int32_t>(kMaxDlObjectFallbacks) ||
+          poolId >= static_cast<uint32_t>(count) ||
+          (type != kDlModelTypeSkin && type != kDlModelTypeObject) ||
+          baseId <= 0 || baseId > 65535 ||
+          (type == kDlModelTypeSkin && !validDlCustomSkinId(newId)) ||
+          (type == kDlModelTypeObject && !validDlCustomObjectId(newId))) {
+        break;
+      }
+      if (type == kDlModelTypeObject) {
+        const auto existing = dlObjectBaseModels_.find(newId);
+        if (existing == dlObjectBaseModels_.end() &&
+            dlObjectBaseModels_.size() >= kMaxDlObjectFallbacks) {
+          break;
+        }
+        const uint32_t baseModel = static_cast<uint32_t>(baseId);
+        dlObjectBaseModels_[newId] = baseModel;
+        // ModelInfo normally precedes CreateObject on its reliable ordered
+        // stream, but repair already-retained unresolved custom proxies too.
+        for (auto& [objectId, object] : objects_) {
+          (void)objectId;
+          if (object.sourceModel == newId) object.model = baseModel;
+        }
+        for (auto& [playerId, slots] : playerAttachedObjects_) {
+          (void)playerId;
+          for (PlayerAttachedObject& attachment : slots) {
+            if (attachment.active && attachment.sourceModel == newId) {
+              attachment.model = baseModel;
+            }
+          }
+        }
+      }
+      event.kind = RpcEventKind::DlModelCatalogChanged;
+      event.summary = type == kDlModelTypeObject
+          ? "DL ModelInfo object base fallback"
+          : "DL ModelInfo skin reference";
+      return true;
+    }
+
+    // DL R1 extends ShowActorForPlayer with CustomSkin:u32 immediately after
+    // SkinID. Retain the base model for lawful fallback presentation and the
+    // source custom ID separately; no custom DFF/TXD is requested here.
     case kShowActor: {
-      if (rpcPayload.size() - 2u != 27u) break;
+      const size_t expectedBodyBytes = usesDlR1WireLayout() ? 31u : 27u;
+      if (rpcPayload.size() - 2u != expectedBodyBytes) break;
       const uint16_t id = static_cast<uint16_t>(reader.readBits(16));
       const uint32_t model = reader.readBits(32);
+      const uint32_t customModel = usesDlR1WireLayout() ? reader.readBits(32) : 0u;
       bool finite = true;
       const float x = readFloat(reader, finite);
       const float y = readFloat(reader, finite);
@@ -2549,6 +2656,7 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       ServerActor* actor = getOrCreateServerActor(id);
       if (!actor) break;
       actor->model = model;
+      actor->customModel = customModel;
       actor->x = x;
       actor->y = y;
       actor->z = z;
@@ -3204,7 +3312,13 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       uint32_t rawBone = 0;
       bool finite = true;
       if (create) {
-        next.model = reader.readBits(32);
+        const uint32_t rawModel = reader.readBits(32);
+        std::memcpy(&next.sourceModel, &rawModel, sizeof(next.sourceModel));
+        next.model = rawModel;
+        if (usesDlR1WireLayout() && next.sourceModel < 0) {
+          const auto fallback = dlObjectBaseModels_.find(next.sourceModel);
+          next.model = fallback != dlObjectBaseModels_.end() ? fallback->second : 0u;
+        }
         rawBone = reader.readBits(32);
         next.bone = static_cast<uint8_t>(rawBone);
         next.offsetX = readFloat(reader, finite);
@@ -3223,7 +3337,12 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       const size_t bodyBits = (rpcPayload.size() - 2u) * 8u;
       if (!reader.ok() || rawSlot >= kMaxPlayerAttachedObjectSlots ||
           reader.bitPosition() > bodyBits || bodyBits - reader.bitPosition() > 7u ||
-          (create && (!finite || next.model == 0u || next.model > 65535u || rawBone > 18u ||
+          (create && (!finite ||
+                      ((!usesDlR1WireLayout() || !validDlCustomObjectId(next.sourceModel)) &&
+                       (next.model == 0u || next.model > 65535u)) ||
+                      (usesDlR1WireLayout() && next.sourceModel < 0 &&
+                       !validDlCustomObjectId(next.sourceModel)) ||
+                      (next.model != 0u && next.model > 65535u) || rawBone > 18u ||
                       !validObjectAttachmentOffset(next.offsetX, next.offsetY, next.offsetZ) ||
                       !validObjectRotation(next.rotationX, next.rotationY, next.rotationZ) ||
                       !validPlayerAttachedObjectScale(next.scaleX, next.scaleY, next.scaleZ)))) {
@@ -3326,13 +3445,15 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       return true;
     }
 
-    // Non-DL SetSpawnInfo is the authoritative local respawn template. This
-    // client does not advertise/download custom models, so the optional DL
-    // CustomModelID field is intentionally absent from this reader.
+    // SetSpawnInfo is the authoritative local respawn template. DL R1 adds
+    // CustomModelID:u32 after ModelID:u32. It is retained as an identity only;
+    // the stock/base model remains the visual fallback until custom artwork is
+    // independently available from a lawful user-approved source.
     case kSetSpawnInfo: {
       LocalPlayer next = localPlayer_;
       next.team = static_cast<uint8_t>(reader.readBits(8));
       next.model = reader.readBits(32);
+      next.customModel = usesDlR1WireLayout() ? reader.readBits(32) : 0u;
       next.spawnUnknown = static_cast<uint8_t>(reader.readBits(8));
       bool finite = true;
       const float x = readFloat(reader, finite);
@@ -3804,14 +3925,16 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       return true;
     }
 
-    // The non-DL legacy layout is PlayerID:u32 | Skin:u32. It is sent to a
-    // recipient when any streamed actor's skin changes, including that
-    // recipient's own actor. This client does not advertise DL/custom-skin
-    // support, so there is deliberately no third CustomSkin:u32 field here.
+    // Legacy SetPlayerSkin is PlayerID:u32 | Skin:u32. DL R1 changes that
+    // first field to PlayerID:u16 and appends CustomSkin:u32. The selected
+    // ClientJoin profile is the only allowed discriminator; treating either
+    // form as a loose prefix would misalign every following state field.
     case kSetPlayerSkin: {
-      if (rpcPayload.size() - 2u != 8u) break;
-      const uint32_t rawId = reader.readBits(32);
+      const size_t expectedBodyBytes = usesDlR1WireLayout() ? 10u : 8u;
+      if (rpcPayload.size() - 2u != expectedBodyBytes) break;
+      const uint32_t rawId = usesDlR1WireLayout() ? reader.readBits(16) : reader.readBits(32);
       const uint32_t model = reader.readBits(32);
+      const uint32_t customModel = usesDlR1WireLayout() ? reader.readBits(32) : 0u;
       if (!reader.ok() || rawId > std::numeric_limits<uint16_t>::max() || model > 65535u) {
         break;
       }
@@ -3821,12 +3944,14 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
         // spawn template may update retained state but cannot invent a local
         // actor at the default origin for the renderer.
         localPlayer_.model = model;
+        localPlayer_.customModel = customModel;
         setEvent(event, RpcEventKind::LocalPlayerChanged, id, "SetPlayerSkin");
         return true;
       }
       Player* player = getOrCreate(id);
       if (!player) break;
       player->model = model;
+      player->customModel = customModel;
       setEvent(event, RpcEventKind::PlayerSkinChanged, id, "SetPlayerSkin");
       return true;
     }
@@ -3949,7 +4074,13 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
       if (bodyBytes < kLegacyCreateObjectBytes || bodyBytes > kMaxCreateObjectBytes) break;
       ServerObject next;
       next.id = static_cast<uint16_t>(reader.readBits(16));
-      next.model = reader.readBits(32);
+      const uint32_t rawModel = reader.readBits(32);
+      std::memcpy(&next.sourceModel, &rawModel, sizeof(next.sourceModel));
+      next.model = rawModel;
+      if (usesDlR1WireLayout() && next.sourceModel < 0) {
+        const auto fallback = dlObjectBaseModels_.find(next.sourceModel);
+        next.model = fallback != dlObjectBaseModels_.end() ? fallback->second : 0u;
+      }
       bool finite = true;
       next.x = readFloat(reader, finite);
       next.y = readFloat(reader, finite);
@@ -4017,7 +4148,12 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
           createObjectTotalBits - reader.bitPosition() > 7u) {
         break;
       }
-      if (!reader.ok() || !finite || next.model == 0 || next.model > 65535u ||
+      const bool unresolvedDlCustomObject =
+          usesDlR1WireLayout() && validDlCustomObjectId(next.sourceModel) && next.model == 0u;
+      if (!reader.ok() || !finite ||
+          (!unresolvedDlCustomObject && (next.model == 0u || next.model > 65535u)) ||
+          (usesDlR1WireLayout() && next.sourceModel < 0 &&
+           !validDlCustomObjectId(next.sourceModel)) ||
           !validWorldPosition(next.x, next.y, next.z) ||
           !validObjectRotation(next.rotationX, next.rotationY, next.rotationZ) ||
           !validObjectDrawDistance(next.drawDistance)) {
@@ -4414,13 +4550,14 @@ bool WorldState::applyRpc(const std::vector<uint8_t>& rpcPayload, RpcEvent& even
                initialized_ ? playerInit_.playerId : 0, "ForcePlayerClassSelection");
       return true;
 
-    // Server reply to PlayerRequestClass. This client advertises non-DL, so
-    // CustomModelID is intentionally absent from the wire layout here.
+    // Server reply to PlayerRequestClass. DL R1 inserts CustomModelID:u32
+    // directly after ModelID; the remainder is byte-for-byte compatible.
     case kPlayerRequestClass: {
       ClassSelection selection;
       selection.selectable = reader.readBits(8) != 0;
       selection.team = static_cast<uint8_t>(reader.readBits(8));
       selection.model = reader.readBits(32);
+      selection.customModel = usesDlR1WireLayout() ? reader.readBits(32) : 0u;
       reader.readBits(8);  // Unknown1
       bool finite = true;
       selection.x = readFloat(reader, finite);

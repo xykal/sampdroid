@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstring>
 #include <random>
 
 namespace samp::handshake {
@@ -36,7 +37,42 @@ int hexValue(unsigned char value) {
   return -1;
 }
 
+bool isAsciiWhitespace(unsigned char value) {
+  return value == ' ' || value == '\t' || value == '\r' || value == '\n';
+}
+
+unsigned char asciiLower(unsigned char value) {
+  return value >= 'A' && value <= 'Z' ? static_cast<unsigned char>(value + ('a' - 'A')) : value;
+}
+
 }  // namespace
+
+bool isExactDlR1AdvertisedVersion(const std::string& advertisedVersion) {
+  constexpr char kExpected[] = "0.3.DL-R1";
+  size_t begin = 0u;
+  size_t end = advertisedVersion.size();
+  while (begin < end && isAsciiWhitespace(static_cast<unsigned char>(advertisedVersion[begin]))) {
+    ++begin;
+  }
+  while (end > begin && isAsciiWhitespace(static_cast<unsigned char>(advertisedVersion[end - 1u]))) {
+    --end;
+  }
+  constexpr size_t kExpectedLength = sizeof(kExpected) - 1u;
+  if (end - begin != kExpectedLength) return false;
+  for (size_t i = 0u; i < kExpectedLength; ++i) {
+    if (asciiLower(static_cast<unsigned char>(advertisedVersion[begin + i])) !=
+        asciiLower(static_cast<unsigned char>(kExpected[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+ClientJoinProfile clientJoinProfileForAdvertisedVersion(
+    const std::string& advertisedVersion) {
+  return isExactDlR1AdvertisedVersion(advertisedVersion) ? kDlR1ClientJoinProfile
+                                                          : kLegacyClientJoinProfile;
+}
 
 bool isValidNickname(const std::string& nickname) {
   if (nickname.size() < kMinNicknameBytes || nickname.size() > kMaxNicknameBytes) return false;
@@ -108,28 +144,36 @@ bool isTerminalSessionControlId(uint8_t id) {
          id == kIdInvalidPassword;
 }
 
-bool isPostAcceptReadyControlId(uint8_t id) {
+bool isPostAcceptControlId(uint8_t id) {
   return id == kIdInternalPing || id == kIdReceivedStaticData;
 }
 
+uint32_t clientJoinChallengeResponse(uint32_t acceptedToken, const ClientJoinProfile& profile) {
+  return acceptedToken ^ profile.netGameVersion;
+}
+
 std::vector<uint8_t> buildClientJoin(uint32_t challengeResponse, const std::string& nickname,
-                                     const std::string& serial) {
-  static constexpr char kVersion[] = "0.3.7-R2";
-  if (!isValidNickname(nickname) || !isValidLegacySerial(serial)) return {};
+                                     const std::string& serial, const ClientJoinProfile& profile) {
+  if (!isValidNickname(nickname) || !isValidLegacySerial(serial) || profile.clientVersion == nullptr) {
+    return {};
+  }
+  const size_t versionLength = std::strlen(profile.clientVersion);
+  // GetPlayerVersion accepts at most 24 bytes, and ClientJoin carries its
+  // length in one byte. Both stock profile literals are well inside this bound.
+  if (versionLength == 0u || versionLength > 24u) return {};
 
   raknet::BitWriter writer;
   writer.writeBits(kIdRpc, 8);
   writer.writeBits(kRpcClientJoin, 8);
-  writer.writeBits(kLegacyNetGameVersion, 32);
+  writer.writeBits(profile.netGameVersion, 32);
   writer.writeBits(1u, 8);  // legacy modded-client capability byte
   writer.writeBits(static_cast<uint32_t>(nickname.size()), 8);
   writer.writeBytes(reinterpret_cast<const uint8_t*>(nickname.data()), nickname.size());
   writer.writeBits(challengeResponse, 32);
   writer.writeBits(static_cast<uint32_t>(serial.size()), 8);
   writer.writeBytes(reinterpret_cast<const uint8_t*>(serial.data()), serial.size());
-  constexpr size_t kVersionLength = sizeof(kVersion) - 1u;
-  writer.writeBits(static_cast<uint32_t>(kVersionLength), 8);
-  writer.writeBytes(reinterpret_cast<const uint8_t*>(kVersion), kVersionLength);
+  writer.writeBits(static_cast<uint32_t>(versionLength), 8);
+  writer.writeBytes(reinterpret_cast<const uint8_t*>(profile.clientVersion), versionLength);
   return writer.buffer;
 }
 

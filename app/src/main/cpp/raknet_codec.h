@@ -63,6 +63,17 @@ private:
   bool ok_ = true;
 };
 
+// One unsplit outbound legacy-RakNet internal packet. It deliberately owns only
+// whole-byte payloads: large/split application records use the bounded sender
+// path elsewhere, while this type is for source-equivalent control bursts.
+struct OutgoingPacket {
+  uint16_t messageNumber = 0;
+  uint8_t reliability = kReliabilityUnreliable;
+  uint8_t orderingChannel = 0;
+  uint16_t orderingIndex = 0;
+  std::vector<uint8_t> payload;
+};
+
 struct IncomingPacket {
   uint16_t messageNumber = 0;
   uint8_t reliability = 0;
@@ -147,6 +158,12 @@ private:
   size_t pendingBytes_ = 0;
   bool overflowed_ = false;
 };
+
+// Builds one legacy UDP datagram with its leading `hasAcks=false` bit followed
+// by several unsplit internal packets. RakPeer coalesces its accepted-path
+// NEW_INCOMING/ping/static-data/ClientJoin burst this way. Each packet still
+// has its own message number and may be retried separately by the caller.
+std::vector<uint8_t> buildCoalescedDatagram(const std::vector<OutgoingPacket>& packets);
 
 std::vector<uint8_t> buildUnreliable(uint16_t messageNumber, const std::vector<uint8_t>& payload);
 

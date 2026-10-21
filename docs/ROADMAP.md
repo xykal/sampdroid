@@ -6,18 +6,36 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 ## Milestone 0.6 — protocol/state observability
 
 - [x] Open connection, cookie, auth, accepted, ClientJoin.
+- [x] Profil ClientJoin source-backed terbatas: baseline `0.3.7-R2`/4057;
+  query server yang **persis** `0.3.DL-R1` memilih `0.3.DL-R1`/4062 dan XOR
+  challenge 4062. Payload/session retained dikunci loopback. Profile itu juga
+  memilih parser core DL untuk `CustomSkin/CustomModelID` pada StreamIn,
+  SetSpawnInfo, class response, SetPlayerSkin (ID DL `u16`), dan ShowActor;
+  `ModelInfo` 179 passively memetakan custom-object signed ke base stock
+  bounded untuk CreateObject/attachment fallback. Downloader/renderer artwork/
+  model custom DL penuh tetap belum ada.
 - [x] ACK reliable, multi-packet datagram, gate receipt reliable bounded, split reassembly, dan gate inbound `RELIABLE_ORDERED` per channel.
 - [x] `PlayerInit`, PlayerJoin/Quit/Name/Color state reducer.
 - [x] Host regression tests untuk wire vector dan lifecycle player state.
 - [x] Client `PlayerRequestClass` / `PlayerRequestSpawn` / `PlayerSpawn` builder,
   response decoder dual legacy/open.mp, dan transport-ACK gate.
 - [x] Retain socket setelah ClientJoin dan kirim class/spawn flow lewat session native.
-- [~] UIF read-only evidence: ClientJoin SampDroid menerima ACK transport dan
-  RakNet reference dengan ClientJoin R2/SyncRPC channel 2 menerima PlayerInit.
-  Pada 2026-10-20, satu sesi SampDroid native awal berhenti `unexpected reply`
-  sebelum accepted/PlayerInit; sesi bounded berikutnya mencapai accepted + retained
-  pasca-ClientJoin (8 packet/7 RPC), namun belum PlayerInit dalam empat poll
-  pendek dan ditutup tanpa action gameplay. PlayerInit/class/spawn SampDroid
+- [~] UIF read-only evidence (bukan admission): query `INFO` UDP langsung ke
+  `play.uifserver.net:7776` pada 2026-10-20 menjawab public `UIF - United Islands
+  Freeroam` / `UIF build 157` / `117/1000` tanpa password; itu hanya membuktikan
+  endpoint query hidup, bukan RakNet admission. Burst post-accept source RakPeer
+  2/3/4/5 sekarang satu datagram no-ACK 70-byte yang byte-identical dengan
+  BitStream FakeBots dan diverifikasi loopback (termasuk retry terpisah msg 2/4/5 saat burst hilang), tetapi belum diuji ulang ke UIF.
+  Pada 2026-10-20, sebelum koreksi urutan source, sesi sembilan detik
+  accepted/aktif menerima 36 packet/34 RPC broadcast tanpa PlayerInit/class/spawn.
+  Satu konfirmasi bounded sesudah koreksi urutan—sebelum coalescing saat ini—
+  menerima 38 packet/33 RPC dan satu pong tanpa retransmit/error, tetapi juga
+  tanpa PlayerInit/class/spawn. Probe SampDroid terbaru sesudah coalescing pada
+  2026-10-21 mencapai open/cookie/auth/accepted + ClientJoin legacy dan menerima
+  7 packet/2 RPC (`SetPlayerColor`, `PlayerDeath`), namun tetap tanpa PlayerInit,
+  class, atau spawn; tidak ada class/sync/chat/command/input yang dikirim lalu
+  socket langsung ditutup. Reference RakNet read-only yang mendapat PlayerInit
+  hanya comparator, bukan bukti path SampDroid. PlayerInit/class/spawn SampDroid
   pada APK/device dan server lain masih pending.
 - [x] Decode player StreamIn/StreamOut, exact non-DL `SetPlayerSkin` (153), dan
   broadcast remote `PlayerFootSync` (207) ke state entity bounded; model snapshot
@@ -123,8 +141,9 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   Dynamic file import sengaja belum dibuka.
 - [~] Accessibility source-only: LAYOUT sekarang mengizinkan tombol sampai 172%,
   menyimpan toggle kontras tinggi, serta memberi preset satu tangan kiri/kanan
-  yang masih bebas digeser untuk overlay in-scene/radar. TalkBack/device/sensor
-  validation dan APK validation masih berikutnya.
+  yang masih bebas digeser untuk overlay in-scene/radar. Host strict + ASan/UBSan
+  terbaru dan GitHub Actions `39570681426` dual-ABI lulus; TalkBack/device/sensor
+  serta validasi perangkat nyata masih berikutnya.
 
 ## Milestone 0.9 — world/game bridge
 
