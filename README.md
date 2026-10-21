@@ -63,7 +63,7 @@ live-server penuh setara PC.
 |---|---:|---|
 | Browser + query server | ✅ | info, rules, player list, ping native |
 | RakNet 2.x open/cookie/auth | ✅ | diverifikasi terhadap server live |
-| `CONNECTION_REQUEST_ACCEPTED` + ClientJoin | 🧪 | frame ClientJoin msg=5/SyncRPC channel 2 **dan** burst post-accept 2/3/4/5 70-byte dalam satu datagram no-ACK byte-identical dengan BitStream legacy FakeBots; reliable tetap punya ACK/retry masing-masing. Snapshot/probe menunjukkan ACK transport terpisah untuk msg 2/4/5 agar ACK ClientJoin tidak disalahartikan sebagai admission; peer loopback memastikan empat frame itu keluar bersama-sama dan, saat burst pertama sengaja dibuang, msg 2/4/5 diretry terpisah dengan identitas asli. Profil default tetap `0.3.7-R2`/4057; hanya hasil query yang persis `0.3.DL-R1` (abaikan huruf besar/kecil dan whitespace tepi) memilih ClientJoin `0.3.DL-R1`/4062 serta XOR challenge 4062, dengan regresi payload + retained-session loopback. Profile itu juga memilih layout core DL `CustomSkin/CustomModelID` untuk StreamIn/SetSpawnInfo/class/SetPlayerSkin/ShowActor serta ModelInfo 179 pasif bounded untuk fallback custom-object→base stock; downloader/model-artwork custom DL penuh belum diklaim. Probe UIF 2026-10-21 menjalankan coalescing baseline hingga accepted + ClientJoin dan menerima 7 packet/2 RPC, tetapi belum memberi `PlayerInit`/class/spawn; ini bukan receipt semantik/live admission |
+| `CONNECTION_REQUEST_ACCEPTED` + ClientJoin | 🧪 | frame ClientJoin msg=5/SyncRPC channel 2 **dan** burst post-accept 2/3/4/5 70-byte dalam satu datagram no-ACK byte-identical dengan BitStream legacy FakeBots; reliable tetap punya ACK/retry masing-masing. Snapshot/probe menunjukkan ACK transport terpisah untuk msg 2/4/5 agar ACK ClientJoin tidak disalahartikan sebagai admission; peer loopback memastikan empat frame itu keluar bersama-sama dan, saat burst pertama sengaja dibuang, msg 2/4/5 diretry terpisah dengan identitas asli. Profil default tetap `0.3.7-R2`/4057; hanya hasil query yang persis `0.3.DL-R1` (abaikan huruf besar/kecil dan whitespace tepi) memilih ClientJoin `0.3.DL-R1`/4062 serta XOR challenge 4062, dengan regresi payload + retained-session loopback. Profile itu juga memilih layout core DL `CustomSkin/CustomModelID` untuk StreamIn/SetSpawnInfo/class/SetPlayerSkin/ShowActor serta ModelInfo 179 pasif bounded untuk fallback custom-object→base stock; downloader/model-artwork custom DL penuh belum diklaim. Probe UIF source-current 2026-10-21 (1.000 ms, tanpa traffic gameplay) mencapai accepted + ClientJoin, menerima ACK RakNet msg 2/4/5 dan 9 packet/4 RPC (`SetPlayerColor` ×2, `SendClientMessage` ×2), tetapi belum memberi `PlayerInit`/class/spawn/joined; ini bukan receipt semantik/live admission |
 | ACK reliable + multi-packet datagram | ✅ | retransmisi tetap di-ACK lalu gate receipt `u16` bounded membuang duplikat sebelum split/reducer |
 | Split reassembly | ✅ | fragment disusun sebelum RPC didecode |
 | State pemain dasar | ✅ | `PlayerInit`, Join/Quit/Name/Color, StreamIn/Out, roster score/ping RPC 155, policy nametag `ShowNameTags`/jarak + RPC 80 per-player, dan local spawn/posisi/vitals → model native bounded |
@@ -106,21 +106,36 @@ pada 2026-10-20 ke `play.uifserver.net:7776` memang mendapat respons publik
 `UIF - United Islands Freeroam`, `UIF build 157`, `117/1000`, tanpa password;
 ini menjadikan UIF target validasi yang benar-benar bisa ditemukan, **bukan**
 bukti RakNet admission. Dua observasi native yang berbeda pada tanggal sama
-dicatat agar tidak tercampur: (1) sebelum koreksi urutan
-source 2/3/4/5, sesi sembilan detik accepted/aktif menerima 36 packet/34 RPC
-broadcast tanpa `PlayerInit`, class, atau spawn; (2) satu konfirmasi bounded
-sesudah koreksi urutan itu—**sebelum** implementasi coalescing saat ini—menerima
-38 packet/33 RPC, satu pong, serta tidak melihat retransmit/error, namun tetap
-tanpa `PlayerInit`, class, atau spawn; dan (3) probe SampDroid 2026-10-21 sesudah
-coalescing mencapai open/cookie/auth/accepted + ClientJoin baseline dan menerima
-7 packet/2 RPC (`SetPlayerColor`, `PlayerDeath`), tetapi lagi-lagi tanpa
-`PlayerInit`, class, atau spawn. Probe ketiga langsung menutup socket tanpa
-class/spawn/sync/chat/command/input gameplay. Tidak satu pun observasi membuktikan
-ACK/receipt semantik ClientJoin, class/spawn, atau gameplay UIF. Coalescing kini
-punya exercise endpoint nyata selain fidelity source + regresi host, tetapi belum
-terbukti memperbaiki admission UIF. Validasi APK/device terukur masih pending.
-Workspace ini tidak memiliki Gradle/Kotlin/Android SDK lokal; build APK tetap
-hanya boleh lewat GitHub Actions sesuai gate rilis.
+dicatat agar tidak tercampur: (1) sebelum koreksi urutan source 2/3/4/5, sesi
+sembilan detik accepted/aktif menerima 36 packet/34 RPC broadcast tanpa
+`PlayerInit`, class, atau spawn; (2) satu konfirmasi bounded sesudah koreksi
+urutan itu—**sebelum** implementasi coalescing saat ini—menerima 38 packet/33
+RPC, satu pong, serta tidak melihat retransmit/error, namun tetap tanpa
+`PlayerInit`, class, atau spawn.
+
+Observasi source-current yang paling baru pada 2026-10-21 memakai jendela probe
+**1.000 ms** dan sengaja tidak mengirim class/spawn/sync/chat/command/input.
+Ia mencapai `open/cookie/auth/accepted`, lalu menerima ACK RakNet untuk ketiga
+record reliable bootstrap: `NEW_INCOMING` msg 2, static-data msg 4, dan
+`ClientJoin` msg 5. Dalam jendela itu UIF mengirim 9 packet / 4 RPC
+(`SetPlayerColor` ×2, `SendClientMessage` ×2) dan satu player remote ter-retain,
+tetapi tetap tidak ada `PlayerInit` (139), class, spawn, atau state `joined`.
+ACK itu hanya membuktikan peer RakNet menerima record reliable tertentu—**bukan**
+bahwa layer game mem-parse/menerima `ClientJoin` atau mengizinkan gameplay.
+
+Audit read-only comparator open.mp pada commit
+`3d20f3dc0e26917264cdc8585c65913e080a143c` mengonfirmasi baseline ClientJoin
+SampDroid memakai enam field yang dibaca `PlayerConnect` (4057, capability,
+nama, token XOR, serial heksadesimal kelipatan 1001, dan versi `0.3.7-R2`);
+trailer marker open.mp sengaja tidak diklaim. Pada implementasi itu, `PlayerInit`
+baru dikirim setelah validasi/request-player dan dispatcher masuk selesai, serta
+hasil penolakan request-player selain `Ignore` mengirim `ConnectionRejected`
+(130). Ini hanya
+memberi titik diagnosis comparator: UIF belum diidentifikasi sebagai open.mp,
+dan tidak ada RPC 130 atau 139 pada probe. Tidak ada perubahan wire spekulatif
+atau klaim admission dari audit tersebut. Validasi APK/device terukur masih
+pending. Workspace ini tidak memiliki Gradle/Kotlin/Android SDK lokal; build APK
+tetap hanya boleh lewat GitHub Actions sesuai gate rilis.
 
 Tombol **Probe RakNet** di detail server memberi observability alur transport,
 bukan bukti gameplay:

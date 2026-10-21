@@ -4,7 +4,7 @@ Dokumen ini membedakan bukti **live**, source-compatible, dan regression host.
 Hanya baris yang secara eksplisit berstatus ✅ live yang sudah dibuktikan langsung
 terhadap server SA-MP/open.mp publik; jalur SampDroid yang belum diuji live tetap
 ditandai 🧪/pending dan tidak boleh dipromosikan sebagai koneksi berhasil.
-Diperbarui: 2026-10-20.
+Diperbarui: 2026-10-21.
 
 ---
 
@@ -201,6 +201,38 @@ mengonsumsi SyncRPC channel 2/index 0, RequestClass berikutnya channel 2/index
 mengunci header ClientJoin channel 2 serta fixture USeq channel 1 dan
 independensi kedua counter.
 
+### Comparator admission-path open.mp (bukan identifikasi UIF)
+
+Audit read-only pada `openmultiplayer/open.mp` commit
+[`3d20f3dc0e26917264cdc8585c65913e080a143c`](https://github.com/openmultiplayer/open.mp/tree/3d20f3dc0e26917264cdc8585c65913e080a143c)
+memperlihatkan `PlayerConnect`/RPC 25 membaca body berikut:
+
+```text
+u32 VersionNumber | u8 Modded | dynstr8 Name | u32 ChallengeResponse |
+dynstr8 Key | dynstr8 VersionString | [opsional u32 open.mp marker/version]
+```
+
+SampDroid baseline membangun enam field pertama dengan `4057`, `Modded=1`, nama
+ASCII bounded, token accepted XOR `4057`, serial hexadecimal valid kelipatan
+`1001`, dan `0.3.7-R2`; profile DL R1 mengganti tiga identity field terkait
+menjadi `4062`, token XOR `4062`, dan `0.3.DL-R1`. Stock writer open.mp sendiri
+tidak menulis trailer `u32`, jadi SampDroid juga tidak mengaku sebagai client
+open.mp atau official via marker tersebut. Regression host memakai reader kecil
+yang independen dari builder untuk memeriksa kedua profile terhadap bentuk source
+ini, serial `<50`, batas versi `<=24`, dan penolakan body mandatory yang
+terpotong.
+
+Pada jalur server open.mp yang sama, `OnPlayerConnect` terlebih dulu memeriksa
+auth mode player, hasil parse, serial/version, dan `requestPlayer`. Hasil
+penolakan request-player selain `Ignore` mengirim `ConnectionRejected`/RPC 130
+lalu kick. Sesudah input handler tidak memveto koneksi, dispatcher network
+memanggil jalur player/core;
+`Core::onPlayerConnect` memanggil `playerInit`, yang mengirim RPC 139. Artinya
+receipt RakNet untuk ClientJoin masih berada **sebelum** bukti admission ini.
+Implementasi UIF tidak diketahui; mekanisme tersebut hanya comparator dan tidak
+membenarkan spoof marker, mengubah serial/channel, atau menyimpulkan alasan UIF
+tidak mengirim InitGame.
+
 ---
 
 ## 5. Status implementasi
@@ -213,7 +245,7 @@ independensi kedua counter.
 | Reliability datagram | ✅ **byte-identical** dengan BitStream RakNet; inbound `RELIABLE_ORDERED` kini juga dirilis per-channel hanya setelah run index kontigu (buffer bounded/overflow → close session) |
 | Connection request accepted | ✅ **diterima dari server live** |
 | AUTH_KEY challenge/response | ✅ 256 entri tabel, lookup runtime |
-| ClientJoin / PlayerConnect RPC 25 | 🧪 frame msg=5/SyncRPC channel 2 dan burst post-accept 2/3/4/5 lengkap 70-byte byte-identical dengan BitStream legacy FakeBots; reliable ACK/retry tetap per-frame, snapshot/probe memisahkan ACK transport msg 2/4/5, dan loopback memverifikasi burst keluar sebagai satu datagram. ACK ClientJoin hanya receipt RakNet—bukan admission. Probe UIF SampDroid 2026-10-21 juga menjalankan coalescing ke endpoint nyata dan mencapai accepted + ClientJoin, tetapi hanya menerima 7 packet/2 RPC broadcast tanpa PlayerInit/class/spawn; bukan receipt semantik ClientJoin atau admission |
+| ClientJoin / PlayerConnect RPC 25 | 🧪 frame msg=5/SyncRPC channel 2 dan burst post-accept 2/3/4/5 lengkap 70-byte byte-identical dengan BitStream legacy FakeBots; reliable ACK/retry tetap per-frame, snapshot/probe memisahkan ACK transport msg 2/4/5, dan loopback memverifikasi burst keluar sebagai satu datagram. Reader comparator open.mp current juga mengunci enam field baseline/DL dan absent marker. Probe UIF SampDroid source-current 2026-10-21 (1.000 ms, tanpa traffic gameplay) mencapai accepted + ClientJoin dan menerima ACK RakNet untuk msg 2/4/5, lalu 9 packet/4 RPC (`SetPlayerColor` ×2, `SendClientMessage` ×2) tanpa PlayerInit/class/spawn. ACK hanya receipt RakNet—bukan receipt semantik ClientJoin, admission, atau gameplay |
 | ACK reliable | ✅ setiap fragment reliable di-ACK; outbound sort/dedupe serta range contiguous non-wrap bounded |
 | Multi-paket datagram + split reassembly | ✅ sebelum RPC diserahkan ke decoder |
 | PlayerInit RPC 139 | ✅ decoder wire format + test vector; observability di UI |
@@ -327,12 +359,23 @@ Dua observasi native UIF pada 2026-10-20 perlu dipisahkan: sebelum koreksi uruta
 tanpa `PlayerInit`/class/spawn. Satu konfirmasi bounded sesudah koreksi urutan
 itu—**sebelum** coalescing yang sekarang—menerima 38 packet/33 RPC, satu pong,
 dan tidak melihat retransmit/error, namun tetap tanpa `PlayerInit`/class/spawn.
-Pada 2026-10-21, probe SampDroid sesudah coalescing mencapai open/cookie/auth/
-accepted lalu ClientJoin baseline dan menerima 7 packet/2 RPC (`SetPlayerColor`,
-`PlayerDeath`), namun tetap tidak menerima `PlayerInit`, class, atau spawn. Ia
-segera menutup socket tanpa class/spawn/sync/chat/command/input gameplay. Jadi
-fixture/coalescing sekarang punya exercise endpoint UIF nyata, tetapi tetap hanya
-bukti transport/broadcast—bukan receipt ClientJoin atau admission.
+
+Probe SampDroid source-current paling baru pada 2026-10-21 memakai jendela
+**1.000 ms** dan tidak mengirim class/spawn/sync/chat/command/input gameplay. Ia
+mencapai open/cookie/auth/accepted lalu ClientJoin baseline, menerima ACK RakNet
+untuk record reliable msg 2/4/5, serta menerima 9 packet/4 RPC
+(`SetPlayerColor` ×2, `SendClientMessage` ×2) dengan satu player remote
+retained. Ia tidak menerima `PlayerInit`, class, spawn, `joined`, ataupun
+`ConnectionRejected`/RPC 130. Jadi fixture/coalescing kini memiliki exercise
+endpoint UIF nyata dan receipt transport lengkap untuk bootstrap, tetapi itu
+masih hanya bukti transport/broadcast—bukan parse ClientJoin, admission, atau
+gameplay.
+
+Comparator read-only open.mp commit `3d20f3dc` menunjukkan baseline enam field
+SampDroid memenuhi bentuk `PlayerConnect`, sementara RPC 139 hanya keluar sesudah
+jalur server request-player dan dispatcher koneksi. UIF tidak diidentifikasi
+sebagai implementasi itu; hasil comparator tidak mengizinkan perubahan wire
+spekulatif atau menyimpulkan penyebab diamnya UIF.
 
 Setiap paket reliable yang diterima segera di-ACK, termasuk **setiap fragment**
 dari split packet. Sesudah ACK, gate receipt transport yang dibatasi 4.096 nomor

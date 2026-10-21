@@ -100,6 +100,75 @@ void writeAsciiAt(std::vector<uint8_t>& bytes, size_t offset, const std::string&
   std::memcpy(bytes.data() + offset, value.data(), value.size());
 }
 
+// Independent, deliberately small reader for the public open.mp PlayerConnect
+// reader at audited commit 3d20f3dc. It models its RPC body fields rather than
+// reusing SampDroid's builder/decoder, so the ClientJoin fixture below cannot
+// pass merely because writer and reader share the same mistaken assumption.
+//
+// open.mp's PlayerConnect::read consumes the six legacy fields and then tries
+// one optional uint32. The latter is an open.mp marker/version only when all
+// four bytes are present; the stock writer omits it. The public server later
+// applies serial (<50 hexadecimal digits, value divisible by 1001) and version
+// (<=24 bytes) policy separately, which the test asserts explicitly.
+struct OpenMpPlayerConnectComparator {
+  uint32_t versionNumber = 0;
+  uint8_t modded = 0;
+  std::string name;
+  uint32_t challengeResponse = 0;
+  std::string key;
+  std::string versionString;
+  bool hasOptionalOpenMpMarker = false;
+  uint32_t optionalOpenMpVersion = 0;
+};
+
+bool readComparatorLe32(const std::vector<uint8_t>& wire, size_t& offset, uint32_t& out) {
+  if (offset + 4u > wire.size()) return false;
+  out = static_cast<uint32_t>(wire[offset]) |
+        (static_cast<uint32_t>(wire[offset + 1u]) << 8u) |
+        (static_cast<uint32_t>(wire[offset + 2u]) << 16u) |
+        (static_cast<uint32_t>(wire[offset + 3u]) << 24u);
+  offset += 4u;
+  return true;
+}
+
+bool readComparatorDynStr8(const std::vector<uint8_t>& wire, size_t& offset, std::string& out) {
+  if (offset >= wire.size()) return false;
+  const size_t length = wire[offset++];
+  if (length > wire.size() - offset) return false;
+  if (length == 0u) {
+    out.clear();
+    return true;
+  }
+  out.assign(reinterpret_cast<const char*>(wire.data() + offset), length);
+  offset += length;
+  return true;
+}
+
+bool parseOpenMpPlayerConnectComparator(const std::vector<uint8_t>& wire,
+                                        OpenMpPlayerConnectComparator& out) {
+  out = {};
+  // SampDroid's buildClientJoin returns the outer legacy ID_RPC/RPC-ID pair;
+  // open.mp passes the following body to PlayerConnect::read.
+  if (wire.size() < 2u || wire[0] != 20u || wire[1] != 25u) return false;
+  size_t offset = 2u;
+  if (!readComparatorLe32(wire, offset, out.versionNumber) || offset >= wire.size()) return false;
+  out.modded = wire[offset++];
+  if (!readComparatorDynStr8(wire, offset, out.name) ||
+      !readComparatorLe32(wire, offset, out.challengeResponse) ||
+      !readComparatorDynStr8(wire, offset, out.key) ||
+      !readComparatorDynStr8(wire, offset, out.versionString)) {
+    return false;
+  }
+
+  // NetworkBitStream::readUINT32 is the final operation in open.mp's reader.
+  // Its bool result is retained as IsUsingOfficialClient, while any absent or
+  // partial trailer does not invalidate the already-read six legacy fields.
+  if (offset + 4u <= wire.size()) {
+    out.hasOptionalOpenMpMarker = readComparatorLe32(wire, offset, out.optionalOpenMpVersion);
+  }
+  return true;
+}
+
 std::vector<uint8_t> makeImgV2Fixture() {
   // Header + two 32-byte entries, followed by sector-aligned payloads.
   std::vector<uint8_t> bytes(3 * 2048, 0);
@@ -2252,6 +2321,40 @@ void testLegacyHandshakeBuilders() {
       '0', '.', '3', '.', '7', '-', 'R', '2',
   };
   expect(join == expectedJoin, "ClientJoin field layout/version identity changed");
+
+  // Cross-check the emitted baseline body with the independently modelled
+  // open.mp PlayerConnect reader and its documented post-read admission
+  // predicates. This does not prove a particular public server admitted us;
+  // it locks that our source-backed baseline remains parsable by this current
+  // open.mp comparator without pretending to be an open.mp client marker.
+  OpenMpPlayerConnectComparator openMpJoin;
+  expect(parseOpenMpPlayerConnectComparator(join, openMpJoin) &&
+             openMpJoin.versionNumber == 4057u && openMpJoin.modded == 1u &&
+             openMpJoin.name == "Native_01" && openMpJoin.challengeResponse == 0x12345678u &&
+             openMpJoin.key == "3E9" && openMpJoin.versionString == "0.3.7-R2" &&
+             !openMpJoin.hasOptionalOpenMpMarker &&
+             isValidLegacySerial(openMpJoin.key) && openMpJoin.key.size() < 50u &&
+             openMpJoin.versionString.size() <= 24u,
+         "baseline ClientJoin must satisfy current open.mp PlayerConnect field semantics");
+  std::vector<uint8_t> openMpMarkedJoin = join;
+  openMpMarkedJoin.insert(openMpMarkedJoin.end(), {0x78u, 0x56u, 0x34u, 0x12u});
+  OpenMpPlayerConnectComparator markedOpenMpJoin;
+  expect(parseOpenMpPlayerConnectComparator(openMpMarkedJoin, markedOpenMpJoin) &&
+             markedOpenMpJoin.hasOptionalOpenMpMarker &&
+             markedOpenMpJoin.optionalOpenMpVersion == 0x12345678u,
+         "open.mp optional PlayerConnect marker must remain outside stock ClientJoin framing");
+  std::vector<uint8_t> partiallyMarkedOpenMpJoin = join;
+  partiallyMarkedOpenMpJoin.push_back(0x7Fu);
+  OpenMpPlayerConnectComparator partialOpenMpJoin;
+  expect(parseOpenMpPlayerConnectComparator(partiallyMarkedOpenMpJoin, partialOpenMpJoin) &&
+             !partialOpenMpJoin.hasOptionalOpenMpMarker,
+         "partial open.mp marker must not redefine an otherwise valid legacy ClientJoin");
+  std::vector<uint8_t> truncatedOpenMpJoin = join;
+  truncatedOpenMpJoin.pop_back();
+  OpenMpPlayerConnectComparator malformedOpenMpJoin;
+  expect(!parseOpenMpPlayerConnectComparator(truncatedOpenMpJoin, malformedOpenMpJoin),
+         "open.mp comparator must reject a truncated mandatory ClientJoin version field");
+
   const auto dlJoin = buildClientJoin(clientJoinChallengeResponse(0x12345678u, dlProfile),
                                       "Native_01", "3E9", dlProfile);
   const std::vector<uint8_t> expectedDlJoin = {
@@ -2262,6 +2365,14 @@ void testLegacyHandshakeBuilders() {
   };
   expect(dlJoin == expectedDlJoin,
          "DL-R1 ClientJoin must bind 4062, XOR token, and reported version together");
+  OpenMpPlayerConnectComparator openMpDlJoin;
+  expect(parseOpenMpPlayerConnectComparator(dlJoin, openMpDlJoin) &&
+             openMpDlJoin.versionNumber == 4062u && openMpDlJoin.modded == 1u &&
+             openMpDlJoin.name == "Native_01" && openMpDlJoin.challengeResponse == 0x123459A6u &&
+             openMpDlJoin.key == "3E9" && openMpDlJoin.versionString == "0.3.DL-R1" &&
+             !openMpDlJoin.hasOptionalOpenMpMarker && isValidLegacySerial(openMpDlJoin.key) &&
+             openMpDlJoin.versionString.size() <= 24u,
+         "DL-R1 ClientJoin must satisfy current open.mp PlayerConnect field semantics");
   expect(buildClientJoin(0u, "bad nick", "3E9").empty() &&
              buildClientJoin(0u, "Native_01", "123").empty(),
          "ClientJoin must reject unsafe nickname or invalid serial before framing");

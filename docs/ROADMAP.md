@@ -24,17 +24,22 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   `play.uifserver.net:7776` pada 2026-10-20 menjawab public `UIF - United Islands
   Freeroam` / `UIF build 157` / `117/1000` tanpa password; itu hanya membuktikan
   endpoint query hidup, bukan RakNet admission. Burst post-accept source RakPeer
-  2/3/4/5 sekarang satu datagram no-ACK 70-byte yang byte-identical dengan
-  BitStream FakeBots dan diverifikasi loopback (termasuk retry terpisah msg 2/4/5 saat burst hilang), tetapi belum diuji ulang ke UIF.
-  Pada 2026-10-20, sebelum koreksi urutan source, sesi sembilan detik
-  accepted/aktif menerima 36 packet/34 RPC broadcast tanpa PlayerInit/class/spawn.
-  Satu konfirmasi bounded sesudah koreksi urutan—sebelum coalescing saat ini—
-  menerima 38 packet/33 RPC dan satu pong tanpa retransmit/error, tetapi juga
-  tanpa PlayerInit/class/spawn. Probe SampDroid terbaru sesudah coalescing pada
-  2026-10-21 mencapai open/cookie/auth/accepted + ClientJoin legacy dan menerima
-  7 packet/2 RPC (`SetPlayerColor`, `PlayerDeath`), namun tetap tanpa PlayerInit,
-  class, atau spawn; tidak ada class/sync/chat/command/input yang dikirim lalu
-  socket langsung ditutup. Reference RakNet read-only yang mendapat PlayerInit
+  2/3/4/5 satu datagram no-ACK 70-byte tetap byte-identical dengan BitStream
+  FakeBots dan diverifikasi loopback (termasuk retry terpisah msg 2/4/5 saat
+  burst hilang). Pada 2026-10-20 sebelum koreksi urutan source, sesi sembilan
+  detik accepted/aktif menerima 36 packet/34 RPC broadcast tanpa PlayerInit/
+  class/spawn; konfirmasi bounded sesudah koreksi itu—sebelum coalescing saat
+  ini—menerima 38 packet/33 RPC dan satu pong tanpa retransmit/error, namun
+  tetap tanpa PlayerInit/class/spawn. Probe source-current terbaru pada
+  2026-10-21 (jendela 1.000 ms tanpa class/spawn/sync/chat/command/input) mencapai
+  open/cookie/auth/accepted + ClientJoin legacy, menerima ACK RakNet untuk msg
+  2/4/5, serta 9 packet/4 RPC (`SetPlayerColor` ×2, `SendClientMessage` ×2)
+  dengan satu remote retained, tetapi tanpa PlayerInit/class/spawn/joined.
+  Receipt ini transport-only, bukan admission. Comparator open.mp read-only
+  commit `3d20f3dc` menerima bentuk baseline enam field dan menunjukkan RPC 139
+  hanya dikirim sesudah jalur request-player/dispatcher; UIF tidak diidentifikasi
+  sebagai open.mp dan tidak mengirim RPC 130 atau 139 pada probe. Jadi tidak ada
+  perubahan wire spekulatif. Reference RakNet read-only yang mendapat PlayerInit
   hanya comparator, bukan bukti path SampDroid. PlayerInit/class/spawn SampDroid
   pada APK/device dan server lain masih pending.
 - [x] Decode player StreamIn/StreamOut, exact non-DL `SetPlayerSkin` (153), dan

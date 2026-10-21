@@ -170,15 +170,28 @@ digabungkan atau dipromosikan menjadi admission/gameplay:
    satu pong tanpa retransmit/error, tetapi lagi-lagi tanpa `PlayerInit`, class,
    atau spawn.
 
-Pada 2026-10-21, setelah coalescing saat ini lolos strict host, ASan/UBSan,
-dan CI Android dual-ABI, satu probe SampDroid bounded terbaru juga mencapai open,
-cookie, auth, accepted, lalu mengirim ClientJoin baseline `0.3.7-R2`/4057.
-Server mengirim 7 packet / 2 RPC (`SetPlayerColor`, `PlayerDeath`) dan satu
-remote retained, tetapi tetap **tidak** mengirim `PlayerInit`, class, atau spawn.
-Probe segera menutup socket dan tidak mengirim class, sync, chat, command, atau
-input gameplay. Jadi hasil baru ini menguji coalescing pada endpoint UIF nyata,
-tetapi tetap bukan receipt semantik ClientJoin/admission atau bukti gameplay.
-Probe RakNet referensi read-only yang memang melihat `InitGame` hanya comparator
+Pada 2026-10-21, sesudah telemetry receipt bootstrap dipasang dan lolos strict
+host, ASan/UBSan, serta CI Android dual-ABI, satu probe SampDroid source-current
+berjendela **1.000 ms** mencapai open, cookie, auth, accepted, lalu mengirim
+ClientJoin baseline `0.3.7-R2`/4057. Peer meng-ACK ketiga record reliable
+bootstrap secara terpisah: `NEW_INCOMING` msg 2, static-data msg 4, dan
+ClientJoin msg 5. UIF mengirim 9 packet / 4 RPC (`SetPlayerColor` ×2,
+`SendClientMessage` ×2) dan satu remote retained, tetapi tetap **tidak** mengirim
+`PlayerInit`, class, spawn, atau state `joined`. Probe langsung menutup socket
+dan tidak mengirim class, sync, chat, command, atau input gameplay.
+
+Receipt itu membuktikan delivery RakNet untuk record reliable yang tepat saja;
+ia tidak membuktikan server mem-parse ClientJoin, menerima identity client, atau
+membuka gameplay. Audit read-only comparator open.mp commit
+`3d20f3dc0e26917264cdc8585c65913e080a143c` kini mengonfirmasi bentuk enam field
+baseline SampDroid dapat dibaca `PlayerConnect`, serial/batas versi memenuhi
+policy source, dan absent trailer berarti bukan marker open.mp. Dalam jalur
+open.mp itu sendiri, `PlayerInit`/RPC 139 baru dikirim setelah request-player dan
+dispatcher koneksi lolos; hasil penolakan request-player selain `Ignore` mengirim
+RPC 130 sebelum kick. UIF tidak diatribusikan ke implementasi itu, dan probe tidak menerima 130
+maupun 139. Karena itu audit hanya mempersempit titik diagnosis dan tidak
+membenarkan perubahan channel, serial, profile, marker, atau payload spekulatif.
+Probe RakNet referensi read-only yang memang melihat `InitGame` tetap comparator
 compatibility, bukan bukti path SampDroid.
 
 ## Static GTA world filter dari server (RPC 43)
