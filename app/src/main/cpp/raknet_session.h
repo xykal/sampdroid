@@ -723,11 +723,14 @@ struct SessionSnapshot {
 // quiet post-ClientJoin socket hands off to normal polling. The optional query
 // version chooses DL only for an exact 0.3.DL-R1 value; its exact source-style
 // `omp <major>.<minor>.<patch>.<build>` form chooses the OMP cookie first with
-// a bounded SA-MP fallback. This changes transport negotiation only, never ClientJoin identity
-// or PlayerInit/game admission. Always call off the UI thread.
+// a bounded SA-MP fallback. A parseable fresh `allowed_clients=0.3.DL` rule may
+// select the existing fixed DL-R1 profile; mixed/unknown rules remain baseline.
+// This changes no arbitrary wire identity and never means PlayerInit/admission.
+// Always call off the UI thread.
 SessionSnapshot raknet_session_connect(const std::string& ip, uint16_t port,
                                       int timeoutMs, const std::string& nickname,
-                                      const std::string& advertisedServerVersion = "");
+                                      const std::string& advertisedServerVersion = "",
+                                      const std::string& advertisedAllowedClients = "");
 
 // Receives one timeout-bounded datagram, then only if it did not time out
 // drains at most 15 immediately-ready datagrams, ACKs reliable packets, and

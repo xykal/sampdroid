@@ -34,6 +34,20 @@ inline constexpr ClientJoinProfile kDlR1ClientJoinProfile{
 // on the well-covered legacy profile rather than speculatively changing wire
 // identity.
 bool isExactDlR1AdvertisedVersion(const std::string& advertisedVersion);
+
+// Current open.mp LegacyNetwork publishes `allowed_clients` as either
+// `0.3.DL` or `0.3.7, 0.3.DL`. A fresh, parseable rule containing only the
+// known DL token is enough to choose the existing 4062/DL-R1 wire profile;
+// any legacy token, unknown token, or malformed list deliberately stays false.
+bool isDlOnlyAllowedClientsRule(const std::string& advertisedAllowedClients);
+
+// Combines the exact version identity above with that source-owned fresh rule.
+// The rule never creates a new identity: it can only choose the existing fixed
+// DL-R1 profile when legacy 0.3.7 is explicitly unavailable.
+ClientJoinProfile clientJoinProfileForAdvertisedRules(
+    const std::string& advertisedVersion, const std::string& advertisedAllowedClients);
+
+// Compatibility wrapper for callers that have no fresh allowed_clients rule.
 ClientJoinProfile clientJoinProfileForAdvertisedVersion(
     const std::string& advertisedVersion);
 

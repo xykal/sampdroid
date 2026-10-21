@@ -7,8 +7,10 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 
 - [x] Open connection, cookie, auth, accepted, ClientJoin.
 - [x] Profil ClientJoin source-backed terbatas: baseline `0.3.7-R2`/4057;
-  query server yang **persis** `0.3.DL-R1` memilih `0.3.DL-R1`/4062 dan XOR
-  challenge 4062. Payload/session retained dikunci loopback. Profile itu juga
+  query server exact `0.3.DL-R1` atau rule fresh `allowed_clients` DL-only
+  (tanpa `0.3.7`/token asing) memilih `0.3.DL-R1`/4062 dan XOR challenge 4062.
+  Payload/session retained dikunci loopback, termasuk DL-only + cookie OMP.
+  Profile itu juga
   memilih parser core DL untuk `CustomSkin/CustomModelID` pada StreamIn,
   SetSpawnInfo, class response, SetPlayerSkin (ID DL `u16`), dan ShowActor;
   `ModelInfo` 179 passively memetakan custom-object signed ke base stock

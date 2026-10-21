@@ -37,8 +37,11 @@ struct ProbeResult {
 };
 
 // Probe uses the same fixed ClientJoin profile and query-gated cookie transport
-// selection as a retained session; blank/unknown advertisement remains baseline.
+// selection as a retained session. A fresh, parseable `allowed_clients` rule
+// can choose only the existing DL-R1 profile when 0.3.7 is absent; blank/unknown
+// values remain baseline.
 ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs = 1500,
-                         const std::string& advertisedServerVersion = "");
+                         const std::string& advertisedServerVersion = "",
+                         const std::string& advertisedAllowedClients = "");
 
 }  // namespace samp

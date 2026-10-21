@@ -363,13 +363,17 @@ tepat dua literal profile ClientJoin berikut:
 | baseline | 4057 | `acceptedToken ^ 4057` | `0.3.7-R2` |
 | DL R1 | 4062 | `acceptedToken ^ 4062` | `0.3.DL-R1` |
 
-Pemilih profile hanya menerima hasil query yang dipotong whitespace ASCII dan
-cocok case-insensitive **persis** `0.3.DL-R1`; semua input lain memakai baseline.
-Ini mencegah `open.mp`, nilai parsial `0.3.DL`, atau banner versi campuran
-mengganti identity wire secara spekulatif. Konstanta 4062 telah diaudit pada
-source [FakeSAMP 0.3.DL](https://github.com/cizaquita/FakeSAMP)
-(`NETGAME_VERSION`), sedangkan string normal player `0.3.DL-R1` didokumentasikan
-oleh [open.mp GetPlayerVersion](https://open.mp/docs/scripting/functions/GetPlayerVersion).
+Pemilih profile menerima hasil query yang dipotong whitespace ASCII dan cocok
+case-insensitive **persis** `0.3.DL-R1`. Selain itu, ia menerima hanya rule fresh
+`allowed_clients` source-owned yang seluruh tokennya dikenal DL (`0.3.DL` atau
+`0.3.DL-R1`) dan tidak memuat `0.3.7`; source `LegacyNetwork` open.mp menulis
+`0.3.DL` persis pada konfigurasi yang mematikan 0.3.7. Daftar campuran
+`0.3.7, 0.3.DL`, kosong/malformed, `open.mp`, nilai parsial, atau token asing
+selalu kembali baseline. Jadi rule tidak membentuk identity baru—ia hanya memilih
+literal DL R1/4062 yang sudah ada. Konstanta 4062 telah diaudit pada source
+[FakeSAMP 0.3.DL](https://github.com/cizaquita/FakeSAMP) (`NETGAME_VERSION`),
+sedangkan string normal player `0.3.DL-R1` didokumentasikan oleh
+[open.mp GetPlayerVersion](https://open.mp/docs/scripting/functions/GetPlayerVersion).
 
 Regresi host mengunci payload DL (field `DE 0F 00 00`, XOR token, panjang/string
 9 byte) dan loopback retained yang membaca ClientJoin aktual sebelum mengirim
@@ -408,6 +412,13 @@ retained. Ia tidak menerima `PlayerInit`, class, spawn, `joined`, ataupun
 endpoint UIF nyata dan receipt transport lengkap untuk bootstrap, tetapi itu
 masih hanya bukti transport/broadcast—bukan parse ClientJoin, admission, atau
 gameplay.
+
+Sesudah rule fresh `version=omp 1.5.8.3170` dibaca, satu probe OMP terpisah
+(window total 2.000 ms, tanpa class/spawn/sync/chat/command/input) menerima
+cookie `^0x6D70`, AUTH, ACCEPTED, serta ACK msg 2/4/5; hasilnya 5 packet/0 RPC,
+tanpa raw access-envelope, `PlayerInit`, class, spawn, atau `joined`. Ini
+membuktikan penerimaan transport OMP endpoint pada sample itu saja, bukan setting
+encryption global, parser ClientJoin semantik, atau admission.
 
 Comparator read-only open.mp commit `3d20f3dc` menunjukkan baseline enam field
 SampDroid memenuhi bentuk `PlayerConnect`, sementara RPC 139 hanya keluar sesudah

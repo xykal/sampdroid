@@ -2847,21 +2847,25 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
 }
 
 ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs,
-                         const std::string& advertisedServerVersion) {
+                         const std::string& advertisedServerVersion,
+                         const std::string& advertisedAllowedClients) {
   const handshake::ClientJoinProfile clientProfile =
-      handshake::clientJoinProfileForAdvertisedVersion(advertisedServerVersion);
+      handshake::clientJoinProfileForAdvertisedRules(advertisedServerVersion,
+                                                     advertisedAllowedClients);
   return raknet_connect_impl(ip, port, timeoutMs, false, "SampDroid", clientProfile,
                              openmp::isOpenMpAdvertisement(advertisedServerVersion));
 }
 
 SessionSnapshot raknet_session_connect(const std::string& ip, uint16_t port, int timeoutMs,
                                        const std::string& nickname,
-                                       const std::string& advertisedServerVersion) {
+                                       const std::string& advertisedServerVersion,
+                                       const std::string& advertisedAllowedClients) {
   std::lock_guard<std::mutex> lock(gLiveSessionMutex);
   gLiveSession.reset();
 
   const handshake::ClientJoinProfile clientProfile =
-      handshake::clientJoinProfileForAdvertisedVersion(advertisedServerVersion);
+      handshake::clientJoinProfileForAdvertisedRules(advertisedServerVersion,
+                                                     advertisedAllowedClients);
   const ProbeResult result = raknet_connect_impl(
       ip, port, timeoutMs, true, nickname, clientProfile,
       openmp::isOpenMpAdvertisement(advertisedServerVersion));

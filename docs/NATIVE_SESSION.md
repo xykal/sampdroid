@@ -104,17 +104,28 @@ dan bootstrap RequestClass berikutnya.
 Baseline tetap menulis `NetGameVersion=4057`, token accepted XOR `4057`, dan
 string `0.3.7-R2`. Sebelum socket dibuka, UI hanya meneruskan versi dari **query
 server yang baru dilakukan**: INFO lebih dulu membuktikan endpoint hidup, lalu
-JNI mengambil rule `version` segar (`r`) sebagai metadata opsional. Core memilih
-profile DL bila—dan hanya bila—nilai itu sama dengan `0.3.DL-R1` setelah trim
-whitespace ASCII dan perbandingan ASCII case-insensitive. Profile itu secara atomik menulis `NetGameVersion=4062`, token
-accepted XOR `4062`, dan string `0.3.DL-R1` dalam ClientJoin yang sama. Nilai
-lain (kosong, `open.mp`, `0.3.DL`, atau daftar versi campuran) tetap 4057 agar
-server tidak menerima identitas versi spekulatif.
+JNI mengambil rule `version` dan `allowed_clients` segar (`r`) sebagai metadata
+opsional. Core memilih profile DL hanya lewat exact `version=0.3.DL-R1` atau
+aturan DL-only yang dibatasi di bawah; selain itu tetap baseline. Profile itu
+secara atomik menulis `NetGameVersion=4062`, token accepted XOR `4062`, dan
+string `0.3.DL-R1` dalam ClientJoin yang sama. Nilai lain (kosong, `open.mp`,
+`0.3.DL`, atau daftar versi campuran) tetap 4057 agar server tidak menerima
+identitas versi spekulatif.
 
-Dua profile adalah literal tetap, bukan field yang dapat diisi server/UI. Payload
-DL dan session retained loopback mengunci ketiga nilai bersama-sama, serta JSON
-status menampilkan `profil wire` yang dipilih. Netgame 4062 berasal dari audit
-source cabang [FakeSAMP 0.3.DL](https://github.com/cizaquita/FakeSAMP) (`NETGAME_VERSION`);
+Dua profile adalah literal tetap, bukan field yang dapat diisi server/UI. Selain
+versi exact di atas, core boleh memilih profile DL yang sama hanya jika rule
+fresh source-owned `allowed_clients` adalah daftar parseable **DL saja**
+(`0.3.DL` atau `0.3.DL-R1`, whitespace/case ASCII aman) tanpa token `0.3.7` dan
+tanpa token asing. Ini mengikuti writer `LegacyNetwork` open.mp yang mengirim
+`0.3.DL` saat `network.allow_037_clients` mati, sedangkan daftar campuran
+`0.3.7, 0.3.DL`, rule kosong/malformed, atau banner apa pun tetap baseline 4057.
+Rule ini hanya memilih profile 4062 yang telah ada—tidak menambah marker OMP,
+identity arbitrary, atau asset DL.
+
+Payload DL dan session retained loopback mengunci ketiga nilai bersama-sama,
+termasuk kombinasi cookie OMP + rule DL-only, serta JSON status menampilkan
+`profil wire` yang dipilih. Netgame 4062 berasal dari audit source cabang
+[FakeSAMP 0.3.DL](https://github.com/cizaquita/FakeSAMP) (`NETGAME_VERSION`);
 string player `0.3.DL-R1` dicocokkan dengan batas versi player yang
 didokumentasikan [open.mp GetPlayerVersion](https://open.mp/docs/scripting/functions/GetPlayerVersion).
 

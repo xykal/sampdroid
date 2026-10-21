@@ -1712,13 +1712,15 @@ Java_com_xykal_sampdroid_NativeBridge_nativeQueryInfo(JNIEnv* env, jclass, jstri
   // next native ClientJoin/OMP decision never relies on a directory label.
   // A missing/slow rules reply is optional metadata, not an INFO failure.
   std::string advertisedVersion;
+  std::string advertisedAllowedClients;
   if (info.ok) {
     const int ruleTimeoutMs = timeoutMs < 100 ? 100 : (timeoutMs > 1500 ? 1500 : timeoutMs);
     const auto rules = samp::query_rules(host, static_cast<uint16_t>(port), ruleTimeoutMs);
     for (const samp::Rule& rule : rules) {
       if (rule.name == "version") {
         advertisedVersion = rule.value;
-        break;
+      } else if (rule.name == "allowed_clients") {
+        advertisedAllowedClients = rule.value;
       }
     }
   }
@@ -1732,7 +1734,8 @@ Java_com_xykal_sampdroid_NativeBridge_nativeQueryInfo(JNIEnv* env, jclass, jstri
   o << "\"hostname\":\"" << samp::json_escape(info.hostname) << "\",";
   o << "\"gamemode\":\"" << samp::json_escape(info.gamemode) << "\",";
   o << "\"language\":\"" << samp::json_escape(info.language) << "\",";
-  o << "\"version\":\"" << samp::json_escape(advertisedVersion) << "\"";
+  o << "\"version\":\"" << samp::json_escape(advertisedVersion) << "\",";
+  o << "\"allowedClients\":\"" << samp::json_escape(advertisedAllowedClients) << "\"";
   o << "}";
   return to_java(env, o.str());
 }
@@ -1778,9 +1781,11 @@ Java_com_xykal_sampdroid_NativeBridge_nativeQueryPing(JNIEnv* env, jclass, jstri
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeRaknetProbe(JNIEnv* env, jclass, jstring ip,
                                                         jint port, jint timeoutMs,
-                                                        jstring advertisedServerVersion) {
+                                                        jstring advertisedServerVersion,
+                                                        jstring advertisedAllowedClients) {
   auto r = samp::raknet_probe(to_std(env, ip), static_cast<uint16_t>(port), timeoutMs,
-                              to_std(env, advertisedServerVersion));
+                              to_std(env, advertisedServerVersion),
+                              to_std(env, advertisedAllowedClients));
   std::ostringstream o;
   o << "{\"openConnection\":" << (r.openConnection ? "true" : "false")
     << ",\"cookieOk\":" << (r.cookieOk ? "true" : "false")
@@ -1812,10 +1817,12 @@ JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeSessionConnect(JNIEnv* env, jclass, jstring ip,
                                                            jint port, jint timeoutMs,
                                                            jstring nickname,
-                                                           jstring advertisedServerVersion) {
+                                                           jstring advertisedServerVersion,
+                                                           jstring advertisedAllowedClients) {
   return to_java(env, session_json(samp::raknet_session_connect(
                           to_std(env, ip), static_cast<uint16_t>(port), timeoutMs,
-                          to_std(env, nickname), to_std(env, advertisedServerVersion))));
+                          to_std(env, nickname), to_std(env, advertisedServerVersion),
+                          to_std(env, advertisedAllowedClients))));
 }
 
 JNIEXPORT jstring JNICALL

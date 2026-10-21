@@ -189,9 +189,9 @@ object NativeBridge {
     external fun nativeGameDataLoadImgStreamingIpls(): String
 
     /**
-     * @return JSON: {ok,error,password,players,maxPlayers,hostname,gamemode,language,version}.
-     * `version` is optional fresh `r`-rule metadata after a successful INFO
-     * reply; it is never a directory/index compatibility label.
+     * @return JSON: {ok,error,password,players,maxPlayers,hostname,gamemode,language,
+     * version,allowedClients}. The last two are optional fresh `r`-rule metadata
+     * after a successful INFO reply; they are never directory/index labels.
      */
     external fun nativeQueryInfo(ip: String, port: Int, timeoutMs: Int): String
 
@@ -212,22 +212,25 @@ object NativeBridge {
         ip: String,
         port: Int,
         timeoutMs: Int,
-        advertisedServerVersion: String
+        advertisedServerVersion: String,
+        advertisedAllowedClients: String
     ): String
 
     /**
      * Explicit user-initiated persistent native session. Calls must run on
      * Dispatchers.IO; native bounds open/cookie/auth/post-accept before it
-     * retains the UDP socket for normal lifecycle polling. `advertisedServerVersion`
-     * comes only from a fresh server query; native selects its DL R1 join profile
-     * only when it is an exact 0.3.DL-R1 match and otherwise stays legacy.
+     * retains the UDP socket for normal lifecycle polling. Advertisement fields
+     * come only from fresh server rules; native selects its fixed DL R1 profile
+     * for exact 0.3.DL-R1 or a parseable DL-only allowed_clients rule, otherwise
+     * stays legacy.
      */
     external fun nativeSessionConnect(
         ip: String,
         port: Int,
         timeoutMs: Int,
         nickname: String,
-        advertisedServerVersion: String
+        advertisedServerVersion: String,
+        advertisedAllowedClients: String
     ): String
 
     /** Receives one datagram, ACKs reliable traffic, and returns reduced state JSON. */

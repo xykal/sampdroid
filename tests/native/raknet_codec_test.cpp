@@ -2227,6 +2227,7 @@ void testLegacyHandshakeBuilders() {
   using samp::handshake::buildClientJoin;
   using samp::handshake::buildEmptyStaticData;
   using samp::handshake::clientJoinChallengeResponse;
+  using samp::handshake::clientJoinProfileForAdvertisedRules;
   using samp::handshake::clientJoinProfileForAdvertisedVersion;
   using samp::handshake::buildInternalPing;
   using samp::handshake::buildNewIncoming;
@@ -2265,8 +2266,21 @@ void testLegacyHandshakeBuilders() {
              legacyProfile.netGameVersion == 4057u &&
              std::string(legacyProfile.clientVersion) == "0.3.7-R2",
          "ClientJoin profile selector must allow only exact DL-R1 query identity");
+  const auto dlOnlyRuleProfile =
+      clientJoinProfileForAdvertisedRules("omp 1.5.8.3170", " 0.3.DL \t");
+  const auto mixedRuleProfile =
+      clientJoinProfileForAdvertisedRules("omp 1.5.8.3170", "0.3.7, 0.3.DL");
+  const auto unknownRuleProfile =
+      clientJoinProfileForAdvertisedRules("omp 1.5.8.3170", "0.3.DL, custom-client");
+  expect(dlOnlyRuleProfile.netGameVersion == 4062u &&
+             mixedRuleProfile.netGameVersion == 4057u &&
+             unknownRuleProfile.netGameVersion == 4057u &&
+             clientJoinProfileForAdvertisedRules("omp 1.5.8.3170", "0.3.DL,").netGameVersion ==
+                 4057u,
+         "fresh allowed_clients must select DL only when legacy/unknown tokens are absent");
   expect(clientJoinChallengeResponse(0x12345678u, legacyProfile) == 0x123459A1u &&
-             clientJoinChallengeResponse(0x12345678u, dlProfile) == 0x123459A6u,
+             clientJoinChallengeResponse(0x12345678u, dlProfile) == 0x123459A6u &&
+             clientJoinChallengeResponse(0x12345678u, dlOnlyRuleProfile) == 0x123459A6u,
          "ClientJoin profile challenge XOR changed");
 
   const std::string authText = "6C407EC29DE59E2";
@@ -6670,7 +6684,8 @@ void testRetainedSessionOpenMpCookieWithoutEnvelope() {
   expect(!closed.active, "plain OMP retained session must close cleanly");
 }
 
-void testOpenMpQueryFallsBackToSampCookie() {  LoopbackClassBootstrapPeer peer;
+void testOpenMpQueryFallsBackToSampCookie() {
+  LoopbackClassBootstrapPeer peer;
   peer.requireSampCookie = true;
   peer.start();
   for (int attempt = 0; attempt < 200 && !peer.ready; ++attempt) {
@@ -6747,6 +6762,36 @@ void testRetainedSessionDlR1ClientJoinProfile() {
              peer.receivedClientVersion == "0.3.DL-R1" && peer.error.empty(),
          "DL-R1 retained session must wire 4062/version/XOR profile before normal class bootstrap");
   expect(!closed.active, "DL-R1 loopback retained session must close cleanly");
+}
+
+void testRetainedSessionDlR1AllowedClientsProfile() {
+  LoopbackClassBootstrapPeer peer;
+  peer.expectDlR1ClientJoin = true;
+  peer.requireOpenMpCookie = true;
+  // Exercise the ordinary no-access-record OMP branch while selecting from the
+  // source `allowed_clients=0.3.DL` rule independently of its version banner.
+  peer.sendOpenMpAccessEnvelope = false;
+  peer.start();
+  for (int attempt = 0; attempt < 200 && !peer.ready; ++attempt) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  expect(peer.ready && peer.port != 0u && peer.error.empty(),
+         "DL-only allowed_clients loopback peer did not initialize");
+
+  const samp::SessionSnapshot session = samp::raknet_session_connect(
+      "127.0.0.1", peer.port, 40, "LoopbackDlRule", "omp 1.5.8.3170", " 0.3.DL ");
+  peer.join();
+  const samp::SessionSnapshot closed = samp::raknet_session_disconnect();
+
+  expect(session.active && session.accepted && session.playerInit && session.joined &&
+             session.transportVariant == "omp" && !session.openMpServerEnvelope &&
+             session.clientProtocol == "0.3.DL-R1 (4062)",
+         "fresh DL-only rule must select 4062 without adding an OMP marker");
+  expect(peer.sawOpenMpCookie && peer.sawClientJoin && peer.sawInitialClass &&
+             peer.receivedClientNetGameVersion == 4062u &&
+             peer.receivedClientVersion == "0.3.DL-R1" && peer.error.empty(),
+         "DL-only OMP loopback must retain both fixed identity and ordinary transport direction");
+  expect(!closed.active, "DL-only allowed_clients session must close cleanly");
 }
 
 void testRetainedSessionCoalescedBootstrapRetriesIndividually() {
@@ -8914,6 +8959,7 @@ int main() {
   testOpenMpQueryFallsBackToSampCookie();
   testClientJoinTransportAckIsNotAdmission();
   testRetainedSessionDlR1ClientJoinProfile();
+  testRetainedSessionDlR1AllowedClientsProfile();
   testDlR1RpcLayoutReducer();
   testRetainedSessionCoalescedBootstrapRetriesIndividually();
   testRetainedSessionLargeOrderedBootstrap();
