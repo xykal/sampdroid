@@ -981,7 +981,7 @@ extern "C" {
 
 JNIEXPORT jstring JNICALL
 Java_com_xykal_sampdroid_NativeBridge_nativeVersion(JNIEnv* env, jclass) {
-  return to_java(env, "0.18.0 / native-gameplay-asset-bridge");
+  return to_java(env, "0.19.0 / native-gameplay-asset-bridge");
 }
 
 JNIEXPORT jstring JNICALL
