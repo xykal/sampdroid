@@ -68,10 +68,89 @@ bool isExactDlR1AdvertisedVersion(const std::string& advertisedVersion) {
   return true;
 }
 
+bool isDlOnlyAllowedClientsRule(const std::string& advertisedAllowedClients) {
+  bool hasDl = false;
+  bool hasLegacy037 = false;
+  size_t tokenBegin = 0u;
+  while (tokenBegin <= advertisedAllowedClients.size()) {
+    const size_t comma = advertisedAllowedClients.find(',', tokenBegin);
+    size_t begin = tokenBegin;
+    size_t end = comma == std::string::npos ? advertisedAllowedClients.size() : comma;
+    while (begin < end &&
+           isAsciiWhitespace(static_cast<unsigned char>(advertisedAllowedClients[begin]))) {
+      ++begin;
+    }
+    while (end > begin &&
+           isAsciiWhitespace(static_cast<unsigned char>(advertisedAllowedClients[end - 1u]))) {
+      --end;
+    }
+    if (begin == end) return false;
+
+    const auto equalsToken = [&](const char* expected) {
+      size_t expectedLength = 0u;
+      while (expected[expectedLength] != '\0') ++expectedLength;
+      if (end - begin != expectedLength) return false;
+      for (size_t index = 0u; index < expectedLength; ++index) {
+        if (asciiLower(static_cast<unsigned char>(advertisedAllowedClients[begin + index])) !=
+            asciiLower(static_cast<unsigned char>(expected[index]))) {
+          return false;
+        }
+      }
+      return true;
+    };
+    if (equalsToken("0.3.DL") || equalsToken("0.3.DL-R1")) {
+      hasDl = true;
+    } else if (equalsToken("0.3.7")) {
+      hasLegacy037 = true;
+    } else {
+      // Do not treat arbitrary third-party rule text as a profile selector.
+      return false;
+    }
+    if (comma == std::string::npos) break;
+    tokenBegin = comma + 1u;
+  }
+  return hasDl && !hasLegacy037;
+}
+
+ClientJoinProfileSource clientJoinProfileSourceForAdvertisedRules(
+    const std::string& advertisedVersion, const std::string& advertisedAllowedClients) {
+  if (isExactDlR1AdvertisedVersion(advertisedVersion)) {
+    return ClientJoinProfileSource::ExactDlR1Version;
+  }
+  if (isDlOnlyAllowedClientsRule(advertisedAllowedClients)) {
+    return ClientJoinProfileSource::DlOnlyAllowedClients;
+  }
+  return ClientJoinProfileSource::LegacyBaseline;
+}
+
+const char* clientJoinProfileSourceLabel(ClientJoinProfileSource source) {
+  switch (source) {
+    case ClientJoinProfileSource::ExactDlR1Version:
+      return "version";
+    case ClientJoinProfileSource::DlOnlyAllowedClients:
+      return "allowed_clients";
+    case ClientJoinProfileSource::LegacyBaseline:
+      return "baseline";
+  }
+  return "baseline";
+}
+
+ClientJoinProfile clientJoinProfileForAdvertisedRules(
+    const std::string& advertisedVersion, const std::string& advertisedAllowedClients) {
+  const ClientJoinProfileSource source =
+      clientJoinProfileSourceForAdvertisedRules(advertisedVersion, advertisedAllowedClients);
+  return source == ClientJoinProfileSource::LegacyBaseline ? kLegacyClientJoinProfile
+                                                            : kDlR1ClientJoinProfile;
+}
+
+ClientJoinProfileSource clientJoinProfileSourceForAdvertisedVersion(
+    const std::string& advertisedVersion) {
+  return clientJoinProfileSourceForAdvertisedRules(advertisedVersion, "");
+}
+
 ClientJoinProfile clientJoinProfileForAdvertisedVersion(
     const std::string& advertisedVersion) {
-  return isExactDlR1AdvertisedVersion(advertisedVersion) ? kDlR1ClientJoinProfile
-                                                          : kLegacyClientJoinProfile;
+  return clientJoinProfileForAdvertisedRules(advertisedVersion, "");
 }
 
 bool isValidNickname(const std::string& nickname) {

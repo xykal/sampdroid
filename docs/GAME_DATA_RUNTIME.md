@@ -24,6 +24,31 @@ parser native gagal, data tidak dipersist sebagai root aplikasi; arsip input
 tidak pernah diubah dan tidak ada tree GTA akhir yang disalin ke internal
 storage.
 
+### Install Lite hemat storage (opt-in)
+
+Kedua dialog ZIP memiliki pilihan **Mode Lite** yang secara eksplisit membuat
+**tree turunan baru** di destination SAF/SD card. Mode ini tidak menghapus,
+menulis, atau me-mount ulang tree GTA yang sudah dipilih sebelumnya dan tidak
+mengubah ZIP sumber. Saat aktif, installer mengabaikan hanya entry yang memiliki
+segmen path lengkap `audio` (case-insensitive), misalnya `audio/…` atau
+`GTA/audio/…`; `audiofix` dan path lain tidak ikut dihapus. Member audio yang
+dilewati tetap di-drain dan dihitung sehingga batas entry, per-entry, total
+uncompressed bytes, compression-ratio, traversal, serta collision nama ZIP
+berlaku sama seperti mode penuh. UI lalu melaporkan file/byte yang benar-benar
+tidak diekstrak.
+
+SampDroid runtime saat ini tidak membaca asset GTA `audio/` (radio, musik, SFX,
+atau voice), jadi tree Lite tetap dapat melewati validasi wajib
+`data/gta.dat`/`models/gta3.img` dan jalur data dunia saat ini. Ini bukan klaim
+bahwa audio GTA PC sudah diputar native. Audio stream yang diarahkan server
+adalah jalur HTTPS lifecycle Java terpisah dan tidak dipulihkan dari folder
+`audio/` ini. Pemain dapat memasang ulang ZIP dengan Mode Lite dimatikan untuk
+membuat tree penuh; sumber asli tetap tersedia. Mode Lite mengurangi tree akhir,
+tetapi selama instalasi masih perlu ruang pada destination yang sama untuk salinan
+ZIP staging asli plus hasil ekstrak tervalidasi. Setelah mount sukses, preference
+hanya mencatat provenance tree turunan (digest/hash state dan statistik Lite),
+bukan URI atau isi ZIP asal.
+
 Pemilih `ACTION_OPEN_DOCUMENT_TREE` wajib memberi grant SAF yang dapat
 dipersist. Jalur folder membutuhkan read grant; jalur installer membutuhkan
 read+write grant untuk staging di media pilihan. UI menolak grant session-only
@@ -272,10 +297,12 @@ untuk validasi final batch ini; tidak ada data GTA yang masuk ke repository.
    seluruh San Andreas di RAM; batch saat ini hanya memilih placement pada
    interior server yang sama dekat anchor dan lazy-load DFF terbatas.
 4. **Renderer asset native** — batch DFF prelit placement serta object/vehicle
-   streamed (`cars`), skin player remote/local, dan NPC `ShowActor` (`peds`) sudah
-   masuk GLES dengan copy/refresh bounded; NPC tersebut tetap bukan collision,
-   target, atau interaction entity. TXD/material multi-batch, cache GPU, LOD, occlusion,
-   animasi actor/vehicle, dan fallback perangkat rendah masih perlu.
+   streamed (`cars`), skin player remote/local, NPC `ShowActor` (`peds`), dan
+   sampai 16 `CreatePickup` terdekat (IDE user-owned, radius 96 m) sudah masuk
+   GLES dengan copy/refresh bounded. Pickup marker tetap fallback/interaksi;
+   semua entitas tersebut tetap bukan collision, target, atau authority gameplay.
+   TXD/material multi-batch, cache GPU, LOD, occlusion, animasi actor/vehicle,
+   dan fallback perangkat rendah masih perlu.
 5. **Local simulation** — floor grounding + side sweep COL dasar sudah ada;
    seat driver 0 yang diotorisasi juga punya pilot kinematic Packet-200 terbatas
    di atas collision yang sama. Bila tree user memuat `handling.cfg` valid dan
@@ -285,9 +312,10 @@ untuk validasi final batch ini; tidak ada data GTA yang masuk ke repository.
    drivetrain/damage kendaraan GTA, dan collision nyata penuh masih perlu.
    Input tidak akan menjadi sync posisi bebas.
 6. **SA-MP bridge penuh** — static `Create/Set/DestroyObject` sudah punya jalur
-   bounded sampai batch DFF bila mapping asset tersedia; global pickup sudah
-   memiliki marker + `USE` → RPC 131 user-confirmed tanpa reward lokal.
-   Player-pickup, model/font TextDraw GTA penuh (font-4 sprite strict sudah
+   bounded sampai batch DFF bila mapping asset tersedia; global `CreatePickup`
+   juga dapat memakai DFF user-owned terdekat dengan marker fallback + `USE` →
+   RPC 131 user-confirmed tanpa reward lokal. Model/font TextDraw GTA penuh
+   (font-4 sprite strict sudah
    bisa resolve satu TXD RGBA user-owned bounded dan font-5 punya preview mesh
    prelit bounded, tetapi bukan frontend GTA lengkap), attachment/material/MoveObject DFF dinamis, vehicle/passenger/trailer, serta
    continuous sync yang hanya aktif setelah

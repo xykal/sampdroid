@@ -49,6 +49,7 @@ jobs:
             app/src/main/cpp/local_movement.cpp \
             app/src/main/cpp/local_vehicle_movement.cpp \
             app/src/main/cpp/local_player_sync.cpp \
+            app/src/main/cpp/openmp_transport.cpp \
             app/src/main/cpp/sync_decoder.cpp \
             app/src/main/cpp/raknet_codec.cpp \
             app/src/main/cpp/raknet_handshake.cpp \
@@ -87,6 +88,7 @@ jobs:
             app/src/main/cpp/local_movement.cpp \
             app/src/main/cpp/local_vehicle_movement.cpp \
             app/src/main/cpp/local_player_sync.cpp \
+            app/src/main/cpp/openmp_transport.cpp \
             app/src/main/cpp/sync_decoder.cpp \
             app/src/main/cpp/raknet_codec.cpp \
             app/src/main/cpp/raknet_handshake.cpp \
@@ -177,12 +179,15 @@ jobs:
 
       - name: Build APK (armeabi-v7a + arm64-v8a)
         run: |
+          # Includes the pure Kotlin Lite-install path-policy regression before
+          # packaging either ABI variant. Android compilation remains part of
+          # assemble*, so a UI/installer call-site mismatch fails this same job.
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            gradle :app:assembleRelease --no-daemon --stacktrace
+            gradle :app:testDebugUnitTest :app:assembleRelease --no-daemon --stacktrace
             echo "APK_PATH=app/build/outputs/apk/release/app-release.apk" >> "$GITHUB_ENV"
             echo "APK_VARIANT=release" >> "$GITHUB_ENV"
           else
-            gradle :app:assembleDebug --no-daemon --stacktrace
+            gradle :app:testDebugUnitTest :app:assembleDebug --no-daemon --stacktrace
             echo "APK_PATH=app/build/outputs/apk/debug/app-debug.apk" >> "$GITHUB_ENV"
             echo "APK_VARIANT=debug" >> "$GITHUB_ENV"
           fi

@@ -7,13 +7,23 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 
 - [x] Open connection, cookie, auth, accepted, ClientJoin.
 - [x] Profil ClientJoin source-backed terbatas: baseline `0.3.7-R2`/4057;
-  query server yang **persis** `0.3.DL-R1` memilih `0.3.DL-R1`/4062 dan XOR
-  challenge 4062. Payload/session retained dikunci loopback. Profile itu juga
+  query server exact `0.3.DL-R1` atau rule fresh `allowed_clients` DL-only
+  (tanpa `0.3.7`/token asing) memilih `0.3.DL-R1`/4062 dan XOR challenge 4062.
+  Payload/session retained dikunci loopback, termasuk DL-only + cookie OMP.
+  Profile itu juga
   memilih parser core DL untuk `CustomSkin/CustomModelID` pada StreamIn,
   SetSpawnInfo, class response, SetPlayerSkin (ID DL `u16`), dan ShowActor;
   `ModelInfo` 179 passively memetakan custom-object signed ke base stock
   bounded untuk CreateObject/attachment fallback. Downloader/renderer artwork/
   model custom DL penuh tetap belum ada.
+- [x] Transport query-gated OMP: query source-style `omp major.minor.patch.build` mencoba cookie
+  `^0x6D70` dulu, fallback bounded SA-MP tetap ada; raw access 13-byte dan
+  envelope checksum/XOR server→client didekode fail-closed. Full loopback
+  OpenReply→PlayerInit/RequestClass dan fallback legacy lulus, sementara
+  ClientJoin tetap baseline/DL jujur tanpa marker official. Probe UIF OMP
+  2026-10-21 (rule segar `omp 1.5.8.3170`, window 2 s) menerima cookie OMP,
+  auth, accepted, dan ACK bootstrap tanpa access-envelope/PlayerInit/class/spawn;
+  itu transport-only, bukan admission atau setting encryption global.
 - [x] ACK reliable, multi-packet datagram, gate receipt reliable bounded, split reassembly, dan gate inbound `RELIABLE_ORDERED` per channel.
 - [x] `PlayerInit`, PlayerJoin/Quit/Name/Color state reducer.
 - [x] Host regression tests untuk wire vector dan lifecycle player state.
@@ -24,26 +34,34 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   `play.uifserver.net:7776` pada 2026-10-20 menjawab public `UIF - United Islands
   Freeroam` / `UIF build 157` / `117/1000` tanpa password; itu hanya membuktikan
   endpoint query hidup, bukan RakNet admission. Burst post-accept source RakPeer
-  2/3/4/5 sekarang satu datagram no-ACK 70-byte yang byte-identical dengan
-  BitStream FakeBots dan diverifikasi loopback (termasuk retry terpisah msg 2/4/5 saat burst hilang), tetapi belum diuji ulang ke UIF.
-  Pada 2026-10-20, sebelum koreksi urutan source, sesi sembilan detik
-  accepted/aktif menerima 36 packet/34 RPC broadcast tanpa PlayerInit/class/spawn.
-  Satu konfirmasi bounded sesudah koreksi urutan—sebelum coalescing saat ini—
-  menerima 38 packet/33 RPC dan satu pong tanpa retransmit/error, tetapi juga
-  tanpa PlayerInit/class/spawn. Probe SampDroid terbaru sesudah coalescing pada
-  2026-10-21 mencapai open/cookie/auth/accepted + ClientJoin legacy dan menerima
-  7 packet/2 RPC (`SetPlayerColor`, `PlayerDeath`), namun tetap tanpa PlayerInit,
-  class, atau spawn; tidak ada class/sync/chat/command/input yang dikirim lalu
-  socket langsung ditutup. Reference RakNet read-only yang mendapat PlayerInit
+  2/3/4/5 satu datagram no-ACK 70-byte tetap byte-identical dengan BitStream
+  FakeBots dan diverifikasi loopback (termasuk retry terpisah msg 2/4/5 saat
+  burst hilang). Pada 2026-10-20 sebelum koreksi urutan source, sesi sembilan
+  detik accepted/aktif menerima 36 packet/34 RPC broadcast tanpa PlayerInit/
+  class/spawn; konfirmasi bounded sesudah koreksi itu—sebelum coalescing saat
+  ini—menerima 38 packet/33 RPC dan satu pong tanpa retransmit/error, namun
+  tetap tanpa PlayerInit/class/spawn. Probe source-current terbaru pada
+  2026-10-21 (jendela 1.000 ms tanpa class/spawn/sync/chat/command/input) mencapai
+  open/cookie/auth/accepted + ClientJoin legacy, menerima ACK RakNet untuk msg
+  2/4/5, serta 9 packet/4 RPC (`SetPlayerColor` ×2, `SendClientMessage` ×2)
+  dengan satu remote retained, tetapi tanpa PlayerInit/class/spawn/joined.
+  Sesudah rule fresh `omp 1.5.8.3170` diketahui, satu probe OMP native 2.000 ms
+  juga mencapai cookie OMP/auth/accepted + ACK msg 2/4/5 dengan 5 packet/0 RPC,
+  tanpa raw access-envelope, PlayerInit/class/spawn/joined. Receipt ini
+  transport-only, bukan admission. Comparator open.mp read-only
+  commit `3d20f3dc` menerima bentuk baseline enam field dan menunjukkan RPC 139
+  hanya dikirim sesudah jalur request-player/dispatcher; UIF belum diatribusikan
+  sebagai open.mp pada wire (listing pihak ketiga hanya lead) dan tidak mengirim
+  RPC 130 atau 139 pada probe. Jadi tidak ada perubahan wire spekulatif. Reference RakNet read-only yang mendapat PlayerInit
   hanya comparator, bukan bukti path SampDroid. PlayerInit/class/spawn SampDroid
   pada APK/device dan server lain masih pending.
 - [x] Decode player StreamIn/StreamOut, exact non-DL `SetPlayerSkin` (153), dan
   broadcast remote `PlayerFootSync` (207) ke state entity bounded; model snapshot
   menuju renderer DFF/proxy bounded ada, tetapi animasi/capture nyata belum.
-- [~] Decode vehicle/global-object/global-pickup state: remote vehicle proxy,
-  global object lifecycle + source-audited Move/Stop motion, dan `Create/DestroyPickup` +
-  bounded render state ada; player-object/player-pickup variants dan captures
-  authoritative belum.
+- [~] Decode vehicle/global-object/recipient-pickup state: remote vehicle proxy,
+  global object lifecycle + source-audited Move/Stop motion, dan `Create/DestroyPickup`
+  recipient-mapped + bounded render/DFF state ada; player-object variants dan
+  captures authoritative belum.
 - [ ] Sanitized capture replay test dari server nyata.
 
 ## Milestone 0.7 — persistent native session
@@ -115,8 +133,9 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   jump/run/fire/aim/use → bounded semantic state + OnFoot preview/AimSync pitch.
 - [~] Scene GPU **dan radar fallback** memakai overlay joystick/look/buttons
   yang sama untuk tick gerak collision-grounded + sync rate-gated. **USE** kini juga edge eksplisit:
-  pickup server terdekat (gate spawn/posisi/interior/radius/rate native lalu
-  RPC 131 reliable, tanpa reward lokal), lalu request enter/exit vehicle yang
+  pickup recipient server terdekat (gate spawn/posisi/radius/rate native pada
+  interior lokal apa pun lalu RPC 131 reliable, tanpa reward lokal), lalu request
+  enter/exit vehicle yang
   baru mengubah seat setelah RPC server 70/71. Seat driver 0 kini menjalankan
   steer/gas/mundur/rem kinematic collision + Packet-200 `InCarRate`; passenger
   Packet-211 anchor/input dasar kini juga boleh memasang drive-by untuk SMG
@@ -216,7 +235,10 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   dalam IMG terpasang, dan sibling mesh tanpa UV yang tidak memakai material itu
   tidak menutup overlay aman. Preview manual juga mendukung satu TXD unik.
   Transform static `FrameList`/`Atomic` portable sudah diterapkan sebelum mesh
-  masuk batch. Primary GTA3 + maksimal empat auxiliary IMG asset dapat memberi
+  masuk batch. `CreatePickup` terdekat (maksimal 16 dalam radius 96 m) kini juga
+  boleh masuk batch DFF dinamis lewat IDE user-owned; marker pickup tetap ada
+  sebagai fallback/interaksi dan tidak mengubah authority RPC 131. Primary GTA3 +
+  maksimal empat auxiliary IMG asset dapat memberi
   lookup DFF/TXD lintas archive (termasuk `txdcut.ide` cutscene→gta3). Full-COL
   sync bounded kini mencakup primary + companion IMG dalam satu cap dan primary
   menang pada nama model duplikat; parent-stream IPL tetap primary-only, jadi
@@ -263,8 +285,8 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   editor offset/rotasi/scale attachment-local terminal dengan slot/model/bone/warna
   tetap native-owned (ABGR inbound→ARGB outbound). Keduanya bukan gizmo PC atau
   mutasi optimistis. Belum raycast mesh/GTA click point penuh. Fidelity pitch/roll vehicle, override
-  material object, binding semua material/texture vehicle, player-pickup variant,
-  drive-by, **outbound/local** trailer sync dan coupling/physics trailer,
+  material object, binding semua material/texture vehicle, drive-by,
+  **outbound/local** trailer sync dan coupling/physics trailer,
   vehicle handling/fisika penuh, HUD GTA penuh, dan gameplay loop masih
   berikutnya. Packet-210 trailer **remote inbound** kini source-verified dan
   mengganti transform/attitude visual trailer streamed tanpa mengarang health,

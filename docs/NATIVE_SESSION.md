@@ -103,17 +103,31 @@ dan bootstrap RequestClass berikutnya.
 
 Baseline tetap menulis `NetGameVersion=4057`, token accepted XOR `4057`, dan
 string `0.3.7-R2`. Sebelum socket dibuka, UI hanya meneruskan versi dari **query
-server yang baru dilakukan**; core memilih profile DL bila—dan hanya bila—nilai
-itu sama dengan `0.3.DL-R1` setelah trim whitespace ASCII dan perbandingan ASCII
-case-insensitive. Profile itu secara atomik menulis `NetGameVersion=4062`, token
-accepted XOR `4062`, dan string `0.3.DL-R1` dalam ClientJoin yang sama. Nilai
-lain (kosong, `open.mp`, `0.3.DL`, atau daftar versi campuran) tetap 4057 agar
-server tidak menerima identitas versi spekulatif.
+server yang baru dilakukan**: INFO lebih dulu membuktikan endpoint hidup, lalu
+JNI mengambil rule `version` dan `allowed_clients` segar (`r`) sebagai metadata
+opsional. Core memilih profile DL hanya lewat exact `version=0.3.DL-R1` atau
+aturan DL-only yang dibatasi di bawah; selain itu tetap baseline. Profile itu
+secara atomik menulis `NetGameVersion=4062`, token accepted XOR `4062`, dan
+string `0.3.DL-R1` dalam ClientJoin yang sama. Nilai lain (kosong, `open.mp`,
+`0.3.DL`, atau daftar versi campuran) tetap 4057 agar server tidak menerima
+identitas versi spekulatif.
 
-Dua profile adalah literal tetap, bukan field yang dapat diisi server/UI. Payload
-DL dan session retained loopback mengunci ketiga nilai bersama-sama, serta JSON
-status menampilkan `profil wire` yang dipilih. Netgame 4062 berasal dari audit
-source cabang [FakeSAMP 0.3.DL](https://github.com/cizaquita/FakeSAMP) (`NETGAME_VERSION`);
+Dua profile adalah literal tetap, bukan field yang dapat diisi server/UI. Selain
+versi exact di atas, core boleh memilih profile DL yang sama hanya jika rule
+fresh source-owned `allowed_clients` adalah daftar parseable **DL saja**
+(`0.3.DL` atau `0.3.DL-R1`, whitespace/case ASCII aman) tanpa token `0.3.7` dan
+tanpa token asing. Ini mengikuti writer `LegacyNetwork` open.mp yang mengirim
+`0.3.DL` saat `network.allow_037_clients` mati, sedangkan daftar campuran
+`0.3.7, 0.3.DL`, rule kosong/malformed, atau banner apa pun tetap baseline 4057.
+Rule ini hanya memilih profile 4062 yang telah ada—tidak menambah marker OMP,
+identity arbitrary, atau asset DL. Snapshot/probe JSON juga membawa
+`clientProfileSource` bernilai `baseline`, `version`, atau `allowed_clients`
+agar UI menunjukkan dasar pilihan tanpa menampilkan rule sebagai identity wire.
+
+Payload DL dan session retained loopback mengunci ketiga nilai bersama-sama,
+termasuk kombinasi cookie OMP + rule DL-only, serta JSON status menampilkan
+`profil wire` yang dipilih. Netgame 4062 berasal dari audit source cabang
+[FakeSAMP 0.3.DL](https://github.com/cizaquita/FakeSAMP) (`NETGAME_VERSION`);
 string player `0.3.DL-R1` dicocokkan dengan batas versi player yang
 didokumentasikan [open.mp GetPlayerVersion](https://open.mp/docs/scripting/functions/GetPlayerVersion).
 
@@ -151,6 +165,49 @@ penuh. `ModelFile`, request/receipt file DFF/TXD, unduh asset, validasi asset
 custom, dan artwork/model custom belum diaktifkan atau diklaim. Tidak ada URL
 server yang dibuka native atau completion-download yang dipalsukan.
 
+### Transport open.mp query-gated (tanpa spoof identitas ClientJoin)
+
+Selain pemilih **profile ClientJoin** di atas, native mempunyai pemilih transport
+yang terpisah dan fail-closed. Ia hanya aktif bila rule `version` hasil query
+baru (INFO liveness + `r`) memiliki bentuk source-owned lengkap
+`omp <major>.<minor>.<patch>.<build>` (prefix `omp`, pemisah whitespace, dan
+empat komponen decimal; case-insensitive ASCII). Bentuk itu persis yang ditulis `LegacyNetwork` open.mp sebagai rule
+`version`. Banner lain—termasuk `open.mp`, kata `omp` di tengah nama server,
+`omp hello`, kosong, atau versi DL—mempertahankan urutan cookie SA-MP lama.
+
+Untuk query yang cocok, native mencoba echo `cookie ^ 0x6D70` (OMP) lebih dulu,
+lalu sekali fallback bounded ke `cookie ^ 0x6969` (SA-MP) bila tidak ada balasan.
+Jadi petunjuk query tidak pernah mengubah `NetGameVersion`, serial, `Modded`,
+channel SyncRPC, string `0.3.7-R2`/`0.3.DL-R1`, atau trailer ClientJoin. Ia juga
+tidak menerima atau mengirim marker versi official/open.mp yang tidak kita
+implementasikan.
+
+Jika server OMP yang dipilih mengaktifkan envelope server→client, source
+`SAMPRakNet` mengirim satu record raw **sebelum** `OPEN_CONNECTION_REPLY`:
+
+```text
+u8  94 (ID_USER_PACKET_ENUM)
+u32 LE 0x006F6D70              // source integer; raw LE bytes: 70 6D 6F 00
+u32 LE randomKey
+u32 LE server client-mod version
+```
+
+Native hanya mengenali panjang tepat 13 byte, magic tepat, dan version nonzero;
+kunci disimpan di native dan tidak pernah masuk JSON/log UI. Sesudah record itu,
+setiap datagram **server→client** didekripsi sebagai
+`checksum | (plain[i] XOR keyLE[i mod 4])`; checksum adalah XOR
+`plain[i] & 0xAA`. Mismatch checksum menutup socket daripada memberi byte
+terenkripsi kepada decoder RakNet legacy. Arah **client→server tetap** memakai
+wrapper SA-MP yang ada—tidak ada XOR envelope tambahan outbound.
+
+Snapshot/probe menampilkan `transportVariant` (`samp`/`omp`) dan flag envelope
+untuk diagnosis transport semata; keduanya tidak berarti official client,
+`ClientJoin` diterima, `PlayerInit`, class, spawn, atau gameplay. Regression
+host memiliki peer UDP lokal yang menjalankan raw access + seluruh envelope dari
+OPEN reply hingga `PlayerInit`/RequestClass, sambil membuktikan ClientJoin masih
+baseline 4057/`0.3.7-R2`; peer legacy lokal lain mengabaikan echo OMP lalu
+mengunci fallback SA-MP. Validasi ini **bukan** traffic atau admission UIF live.
+
 ### Catatan validasi UIF yang terpisah
 
 Pada 2026-10-20 query `INFO` UDP minimal ke `play.uifserver.net:7776` berhasil
@@ -170,16 +227,42 @@ digabungkan atau dipromosikan menjadi admission/gameplay:
    satu pong tanpa retransmit/error, tetapi lagi-lagi tanpa `PlayerInit`, class,
    atau spawn.
 
-Pada 2026-10-21, setelah coalescing saat ini lolos strict host, ASan/UBSan,
-dan CI Android dual-ABI, satu probe SampDroid bounded terbaru juga mencapai open,
-cookie, auth, accepted, lalu mengirim ClientJoin baseline `0.3.7-R2`/4057.
-Server mengirim 7 packet / 2 RPC (`SetPlayerColor`, `PlayerDeath`) dan satu
-remote retained, tetapi tetap **tidak** mengirim `PlayerInit`, class, atau spawn.
-Probe segera menutup socket dan tidak mengirim class, sync, chat, command, atau
-input gameplay. Jadi hasil baru ini menguji coalescing pada endpoint UIF nyata,
-tetapi tetap bukan receipt semantik ClientJoin/admission atau bukti gameplay.
-Probe RakNet referensi read-only yang memang melihat `InitGame` hanya comparator
-compatibility, bukan bukti path SampDroid.
+Pada 2026-10-21, sesudah telemetry receipt bootstrap dipasang dan lolos strict
+host, ASan/UBSan, serta CI Android dual-ABI, satu probe SampDroid source-current
+berjendela **1.000 ms** mencapai open, cookie, auth, accepted, lalu mengirim
+ClientJoin baseline `0.3.7-R2`/4057. Peer meng-ACK ketiga record reliable
+bootstrap secara terpisah: `NEW_INCOMING` msg 2, static-data msg 4, dan
+ClientJoin msg 5. UIF mengirim 9 packet / 4 RPC (`SetPlayerColor` ×2,
+`SendClientMessage` ×2) dan satu remote retained, tetapi tetap **tidak** mengirim
+`PlayerInit`, class, spawn, atau state `joined`. Probe langsung menutup socket
+dan tidak mengirim class, sync, chat, command, atau input gameplay.
+
+Receipt itu membuktikan delivery RakNet untuk record reliable yang tepat saja;
+ia tidak membuktikan server mem-parse ClientJoin, menerima identity client, atau
+membuka gameplay.
+
+Sesudah jalur cookie OMP source-backed/loopback dipasang, satu validasi target
+terpisah pada **2026-10-21** memakai rule segar `version=omp 1.5.8.3170` dan
+window native **2.000 ms** (receive 250 ms). Ia tidak mengirim class, spawn,
+sync, chat, command, atau input. UIF membalas cookie lalu menerima echo
+**OMP** (`^0x6D70`), menyelesaikan AUTH + `CONNECTION_REQUEST_ACCEPTED`, dan
+meng-ACK msg 2/4/5 bootstrap; hasilnya `variant=omp`, 5 packet/0 RPC,
+`PlayerInit=0`, `joined=0`. Tidak ada raw access record/envelope dalam sample
+ini. Itu membuktikan penerimaan cookie transport OMP pada endpoint saat itu,
+bukan implementasi server tertentu, setting encryption global, parsing
+ClientJoin, admission, class, spawn, atau gameplay.
+
+Audit read-only comparator open.mp commit
+`3d20f3dc0e26917264cdc8585c65913e080a143c` mengonfirmasi bentuk enam field
+baseline SampDroid dapat dibaca `PlayerConnect`, serial/batas versi memenuhi
+policy source, dan absent trailer berarti bukan marker open.mp. Dalam jalur
+open.mp itu sendiri, `PlayerInit`/RPC 139 baru dikirim setelah request-player dan
+dispatcher koneksi lolos; hasil penolakan request-player selain `Ignore` mengirim
+RPC 130 sebelum kick. UIF tidak diatribusikan ke implementasi itu; probe legacy
+maupun OMP tidak menerima 130 atau 139. Karena itu audit hanya mempersempit titik
+diagnosis dan tidak membenarkan perubahan channel, serial, profile, marker, atau
+payload spekulatif. Probe RakNet referensi read-only yang memang melihat
+`InitGame` tetap comparator compatibility, bukan bukti path SampDroid.
 
 ## Static GTA world filter dari server (RPC 43)
 
@@ -699,9 +782,11 @@ transport sebagai cara bermain:
   bila tersedia atau fallback generic aman. Saat AIM ditahan dan kandidat
   Packet-203 lolos gate native, scene memakai view aim orang-pertama dari
   yaw/pitch yang sama; HUD menunjukkan reticle/pitch dan status kandidat (tanpa
-  target/hit marker). Tap **USE** tetap memilih pickup dulu lalu meminta
-  driver/exit; tahan USE mengirim intent passenger untuk vehicle dekat. Keduanya
-  hanya request RPC 26/154—seat lokal tidak berubah sampai RPC 70/71 server.
+  target/hit marker). Tap **USE** memilih pickup recipient server yang masih
+  nearby pada interior lokal apa pun lebih dulu lalu meminta driver/exit; tahan
+  USE mengirim intent passenger untuk vehicle dekat. Pickup hanya mengantre RPC
+  131 (tanpa reward lokal), sedangkan vehicle hanya request RPC 26/154—seat lokal
+  tidak berubah sampai RPC 70/71 server.
   Setelah server men-seat player dan vehicle masih streamed, snapshot dunia boleh
   menjadikan transform vehicle server sebagai **anchor kamera/proxy** passenger
   tanpa mengarang offset kursi GTA. Saat RPC 70 server memberi seat nonzero dan

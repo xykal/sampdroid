@@ -646,8 +646,10 @@ struct LocalObjectAttachmentAnchor {
   float angle = 0.0f;
 };
 
-// The CreatePickup RPC has no world/interior field. This is therefore only a
-// bounded visual/interaction fact and never a local ownership claim.
+// CreatePickup has no global/player or interior discriminator on the wire.
+// Current open.mp maps each stream-visible pickup to one client-local ID before
+// sending it, so this is a bounded recipient record; it is never local ownership
+// or a fabricated world/interior assertion.
 struct Pickup {
   int32_t id = 0;
   int32_t model = 0;

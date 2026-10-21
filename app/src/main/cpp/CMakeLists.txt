@@ -24,6 +24,7 @@ add_library(sampdroid SHARED
         local_movement.cpp
         local_vehicle_movement.cpp
         local_player_sync.cpp
+        openmp_transport.cpp
         sync_decoder.cpp
         raknet_codec.cpp
         raknet_handshake.cpp

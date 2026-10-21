@@ -29,11 +29,42 @@ inline constexpr ClientJoinProfile kLegacyClientJoinProfile{
 inline constexpr ClientJoinProfile kDlR1ClientJoinProfile{
     kDlR1NetGameVersion, "0.3.DL-R1", "0.3.DL-R1 (4062)"};
 
+// Why one of the two immutable profiles was selected. This is diagnostic
+// metadata only; it never changes the wire fields beyond the fixed profile.
+enum class ClientJoinProfileSource : uint8_t {
+  LegacyBaseline,
+  ExactDlR1Version,
+  DlOnlyAllowedClients,
+};
+
 // Treat only a whitespace-padded, case-insensitive exact 0.3.DL-R1 query
 // value as DL. Unknown, blank, open.mp, or mixed-version advertisements remain
 // on the well-covered legacy profile rather than speculatively changing wire
 // identity.
 bool isExactDlR1AdvertisedVersion(const std::string& advertisedVersion);
+
+// Current open.mp LegacyNetwork publishes `allowed_clients` as either
+// `0.3.DL` or `0.3.7, 0.3.DL`. A fresh, parseable rule containing only the
+// known DL token is enough to choose the existing 4062/DL-R1 wire profile;
+// any legacy token, unknown token, or malformed list deliberately stays false.
+bool isDlOnlyAllowedClientsRule(const std::string& advertisedAllowedClients);
+
+// Combines the exact version identity above with that source-owned fresh rule.
+// The rule never creates a new identity: it can only choose the existing fixed
+// DL-R1 profile when legacy 0.3.7 is explicitly unavailable.
+ClientJoinProfileSource clientJoinProfileSourceForAdvertisedRules(
+    const std::string& advertisedVersion, const std::string& advertisedAllowedClients);
+
+// Stable machine-readable diagnostic labels: "baseline", "version", or
+// "allowed_clients". They are deliberately not version strings.
+const char* clientJoinProfileSourceLabel(ClientJoinProfileSource source);
+
+ClientJoinProfile clientJoinProfileForAdvertisedRules(
+    const std::string& advertisedVersion, const std::string& advertisedAllowedClients);
+
+// Compatibility wrappers for callers that have no fresh allowed_clients rule.
+ClientJoinProfileSource clientJoinProfileSourceForAdvertisedVersion(
+    const std::string& advertisedVersion);
 ClientJoinProfile clientJoinProfileForAdvertisedVersion(
     const std::string& advertisedVersion);
 
