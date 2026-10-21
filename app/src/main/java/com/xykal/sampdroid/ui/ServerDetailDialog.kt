@@ -112,7 +112,15 @@ object ServerDetailDialog {
                     .append(" fallback custom→base stock; model/artwork custom tidak diunduh.\n")
             }
             append("accepted        : ").append(o.optBoolean("accepted")).append('\n')
-            append("ClientJoin stream: ").append(o.optBoolean("joined")).append('\n')
+            append("ACK bootstrap   : NEW_INCOMING ")
+                .append(if (o.optBoolean("newIncomingTransportAcked")) "ya" else "belum")
+                .append(" · static ")
+                .append(if (o.optBoolean("staticDataTransportAcked")) "ya" else "belum")
+                .append(" · ClientJoin ")
+                .append(if (o.optBoolean("clientJoinTransportAcked")) "ya" else "belum")
+                .append(" (ACK RakNet, bukan admission)\n")
+            append("admission game  : ").append(o.optBoolean("joined"))
+                .append(" (baru true setelah PlayerInit)\n")
             append("PlayerInit       : ").append(o.optBoolean("playerInit")).append('\n')
             if (o.optBoolean("playerInit")) {
                 append("player ID       : ").append(o.optInt("playerId")).append('\n')
@@ -310,9 +318,13 @@ object ServerDetailDialog {
                 !active && transportError.isNotEmpty() ->
                     "Handshake native berhenti: $transportError. Periksa server/koneksi lalu coba lagi manual."
                 !active -> "Sesi belum aktif. Hubungkan native untuk memulai handshake."
+                !playerInit && snapshot.optBoolean("clientJoinTransportAcked") && dlR1Profile ->
+                    "ClientJoin sudah di-ACK RakNet, tetapi server belum memberi PlayerInit. Profil DL R1 hanya memilih layout CustomSkin; unduh/artwork custom belum dijamin."
+                !playerInit && snapshot.optBoolean("clientJoinTransportAcked") ->
+                    "ClientJoin sudah di-ACK RakNet, tetapi itu bukan admission; menunggu PlayerInit dari server sebelum class/spawn."
                 !playerInit && dlR1Profile ->
                     "Profil DL R1 aktif dari versi query; layout CustomSkin inti siap, tetapi unduh/artwork custom masih belum dijamin."
-                !playerInit -> "Transport aktif; menunggu PlayerInit dari server sebelum class/spawn."
+                !playerInit -> "Transport aktif; ClientJoin belum di-ACK atau server belum memberi PlayerInit."
                 snapshot.optBoolean("spawnConfirmationAcked") ->
                     "Spawn dikonfirmasi transport. Buka Dunia untuk kontrol, chat, dan HUD native."
                 snapshot.optBoolean("spawnConfirmationSent") ->

@@ -80,6 +80,15 @@ kecil ACK/retry (750 ms, maksimal lima retransmit), dan record belum di-ACK
 dipindahkan ke session retained—tidak hilang di batas connect/session.
 `ID_REQUEST_STATIC_DATA` dari peer dibalas payload kosong yang sama.
 
+Snapshot session dan hasil Probe juga mengekspos receipt terpisah untuk
+`NEW_INCOMING` msg 2, static-data msg 4, dan `ClientJoin` msg 5. Flag tersebut
+baru menjadi true ketika ACK RakNet peer benar-benar mengakui record reliable
+yang tepat; ia dapat terus berubah setelah socket diserahkan ke poll retained.
+Ini diagnostik transport saja—**bukan** `joined`, bukti admission semantik,
+`PlayerInit`, class, spawn, atau gameplay. UI menyatakan perbedaan itu secara
+langsung agar sebuah ClientJoin yang ter-ACK tidak terlihat seperti pemain sudah
+masuk server.
+
 Fixture host mematok frame `RELIABLE_ORDERED` msg=5 ClientJoin ke
 `02 80 48 80 00 01 00 10 14 19 ...`, serta burst 2/3/4/5 lengkap 70 byte yang
 berawal `01 00 42 38 1E 5E 17 91 89 60 1E 03 00 64 50 ...`. Keduanya dibandingkan

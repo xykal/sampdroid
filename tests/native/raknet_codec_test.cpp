@@ -5962,6 +5962,9 @@ struct LoopbackClassBootstrapPeer {
   // a substantial ordered bootstrap stream before RPC 139.
   size_t prePlayerInitOrderedFrames = 0u;
   bool duplicatePlayerInit = false;
+  // Test-only admission hold: ACK the source bootstrap but deliberately never
+  // send RPC 139, proving a ClientJoin transport receipt is not game admission.
+  bool withholdPlayerInit = false;
   size_t sentPrePlayerInitOrderedFrames = 0u;
   uint16_t port = 0;
   std::string error;
@@ -6008,6 +6011,7 @@ struct LoopbackClassBootstrapPeer {
     uint16_t initialClassMessageNumber = 0u;
     bool initialClassMessageKnown = false;
     std::chrono::steady_clock::time_point firstInitialClassAt{};
+    std::chrono::steady_clock::time_point firstClientJoinAt{};
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
     auto sendServer = [&](const std::vector<uint8_t>& plain) {
       return ::sendto(fd, plain.data(), plain.size(), 0,
@@ -6018,9 +6022,17 @@ struct LoopbackClassBootstrapPeer {
     // Keep receiving briefly after the first class request: a retransmitted
     // packet with the same message number is normal, while a second fresh
     // RequestClass would expose an accidental duplicate PlayerInit bootstrap.
-    while (std::chrono::steady_clock::now() < deadline &&
-           (!sawInitialClass ||
-            std::chrono::steady_clock::now() - firstInitialClassAt < std::chrono::milliseconds(120))) {
+    // The admission-hold fixture instead leaves a short ACK delivery window
+    // after ClientJoin, then closes without inventing an InitGame response.
+    const auto shouldKeepReceiving = [&] {
+      const auto now = std::chrono::steady_clock::now();
+      if (withholdPlayerInit) {
+        return !sawClientJoin || firstClientJoinAt == std::chrono::steady_clock::time_point{} ||
+               now - firstClientJoinAt < std::chrono::milliseconds(120);
+      }
+      return !sawInitialClass || now - firstInitialClassAt < std::chrono::milliseconds(120);
+    };
+    while (std::chrono::steady_clock::now() < deadline && shouldKeepReceiving()) {
       fd_set readable;
       FD_ZERO(&readable);
       FD_SET(fd, &readable);
@@ -6180,13 +6192,16 @@ struct LoopbackClassBootstrapPeer {
             break;
           }
           sawClientJoin = true;
+          if (firstClientJoinAt == std::chrono::steady_clock::time_point{}) {
+            firstClientJoinAt = std::chrono::steady_clock::now();
+          }
           if (!sentPostAcceptPing) {
             // The normal server control still arrives and must be answered, but
             // only after ClientJoin has kept the source's counter progression.
             (void)sendServer(samp::raknet::buildUnreliable(2u, {6u, 1u, 2u, 3u, 4u}));
             sentPostAcceptPing = true;
           }
-          if (!sentPlayerInit) {
+          if (!withholdPlayerInit && !sentPlayerInit) {
             uint16_t serverMessageNumber = 3u;
             uint16_t serverOrderingIndex = 0u;
             // RPC 28 is a source-backed bodyless, idempotent server record.
@@ -6255,7 +6270,9 @@ struct LoopbackClassBootstrapPeer {
         }
       }
     }
-    if (!sawInitialClass && error.empty()) error = "loopback initial RequestClass timeout";
+    if (!withholdPlayerInit && !sawInitialClass && error.empty()) {
+      error = "loopback initial RequestClass timeout";
+    }
     ::close(fd);
   }
 };
@@ -6278,10 +6295,11 @@ void testRetainedSessionInitialClassBootstrap() {
   peer.join();
   const samp::SessionSnapshot closed = samp::raknet_session_disconnect();
 
-  expect(session.active && session.accepted && session.playerInit && session.joined &&
-             session.classRequestPending && session.requestedClassId == 0u &&
-             session.clientProtocol == "0.3.7-R2 (4057)",
-         "PlayerInit must retain the baseline session and queue its first class");
+  expect(session.active && session.accepted && session.newIncomingTransportAcked &&
+             session.staticDataTransportAcked && session.clientJoinTransportAcked &&
+             session.playerInit && session.joined && session.classRequestPending &&
+             session.requestedClassId == 0u && session.clientProtocol == "0.3.7-R2 (4057)",
+         "PlayerInit must retain the baseline session, record post-accept ACKs, and queue its first class");
   expect(world.active && world.playerInit && world.classRequestPending &&
              !world.spawnResponseKnown && !world.spawnAllowed && !world.spawnRequestPending &&
              !world.spawnConfirmationSent && !world.spawnConfirmationAcked,
@@ -6290,6 +6308,35 @@ void testRetainedSessionInitialClassBootstrap() {
              peer.sawInitialClass && peer.error.empty(),
          "retained session must coalesce source bootstrap, then pong and initial RequestClass");
   expect(!closed.active, "loopback retained session must close cleanly");
+}
+
+// A peer can ACK every source-style post-accept reliable record and still
+// deliberately withhold InitGame. This regression keeps transport diagnostics
+// honest: only RPC 139 marks `joined`/game admission.
+void testClientJoinTransportAckIsNotAdmission() {
+  LoopbackClassBootstrapPeer peer;
+  peer.withholdPlayerInit = true;
+  peer.start();
+  for (int attempt = 0; attempt < 200 && !peer.ready; ++attempt) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  expect(peer.ready && peer.port != 0u && peer.error.empty(),
+         "admission-hold loopback peer did not initialize");
+
+  const samp::SessionSnapshot session =
+      samp::raknet_session_connect("127.0.0.1", peer.port, 40, "LoopbackReceipt");
+  peer.join();
+  const samp::SessionSnapshot closed = samp::raknet_session_disconnect();
+
+  expect(session.active && session.accepted && session.newIncomingTransportAcked &&
+             session.staticDataTransportAcked && session.clientJoinTransportAcked &&
+             !session.playerInit && !session.joined && !session.classRequestPending &&
+             session.error.empty(),
+         "ClientJoin transport ACK must remain distinct from PlayerInit/admission");
+  expect(peer.sawSourceBootstrapDatagram && peer.sawClientJoin && !peer.sawInitialClass &&
+             peer.error.empty(),
+         "admission-hold peer must ACK bootstrap without fabricating class flow");
+  expect(!closed.active, "admission-hold retained session must close cleanly");
 }
 
 void testRetainedSessionDlR1ClientJoinProfile() {
@@ -6307,9 +6354,10 @@ void testRetainedSessionDlR1ClientJoinProfile() {
   peer.join();
   const samp::SessionSnapshot closed = samp::raknet_session_disconnect();
 
-  expect(session.active && session.accepted && session.playerInit && session.joined &&
-             session.clientProtocol == "0.3.DL-R1 (4062)",
-         "exact queried DL-R1 must retain its bounded ClientJoin profile in session status");
+  expect(session.active && session.accepted && session.newIncomingTransportAcked &&
+             session.staticDataTransportAcked && session.clientJoinTransportAcked &&
+             session.playerInit && session.joined && session.clientProtocol == "0.3.DL-R1 (4062)",
+         "exact queried DL-R1 must retain its bounded ClientJoin profile and post-accept ACK telemetry");
   expect(peer.sawSourceBootstrapDatagram && peer.sawClientJoin && peer.sawPostAcceptPong &&
              peer.sawInitialClass && peer.receivedClientNetGameVersion == 4062u &&
              peer.receivedClientVersion == "0.3.DL-R1" && peer.error.empty(),
@@ -6338,9 +6386,11 @@ void testRetainedSessionCoalescedBootstrapRetriesIndividually() {
   peer.join();
   const samp::SessionSnapshot closed = samp::raknet_session_disconnect();
 
-  expect(session.active && session.accepted && session.playerInit && session.joined &&
-             session.classRequestPending && session.error.empty(),
-         "individually retried bootstrap must still retain an initialized session");
+  expect(session.active && session.accepted && session.newIncomingTransportAcked &&
+             session.staticDataTransportAcked && session.clientJoinTransportAcked &&
+             session.playerInit && session.joined && session.classRequestPending &&
+             session.error.empty(),
+         "individually retried bootstrap must retain both an initialized session and exact ACK telemetry");
   expect(peer.sawSourceBootstrapDatagram && peer.droppedSourceBootstrap &&
              peer.bootstrapRetryMask.load() == 0x7u && peer.sawClientJoin &&
              peer.sawPostAcceptPong && peer.sawInitialClass && peer.error.empty(),
@@ -8474,6 +8524,7 @@ int main() {
   testSessionSafetyWithoutSocket();
   testBoundedConnectErrors();
   testRetainedSessionInitialClassBootstrap();
+  testClientJoinTransportAckIsNotAdmission();
   testRetainedSessionDlR1ClientJoinProfile();
   testDlR1RpcLayoutReducer();
   testRetainedSessionCoalescedBootstrapRetriesIndividually();
