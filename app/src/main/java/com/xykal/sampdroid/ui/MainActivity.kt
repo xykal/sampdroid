@@ -57,7 +57,10 @@ class MainActivity : AppCompatActivity() {
         data class Local(val request: GtaArchiveInstaller.LocalRequest) : PendingArchiveInstall
     }
 
-    private data class PendingLocalArchiveSource(val expectedSha256: String?)
+    private data class PendingLocalArchiveSource(
+        val expectedSha256: String?,
+        val omitGtaAudio: Boolean
+    )
 
     private data class PersistedTreeRestore(
         val mounted: Boolean,
@@ -114,7 +117,11 @@ class MainActivity : AppCompatActivity() {
                 contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             pendingArchiveInstall = PendingArchiveInstall.Local(
-                GtaArchiveInstaller.LocalRequest(uri, pending.expectedSha256)
+                GtaArchiveInstaller.LocalRequest(
+                    sourceUri = uri,
+                    expectedSha256 = pending.expectedSha256,
+                    omitGtaAudio = pending.omitGtaAudio
+                )
             )
             archiveDestinationTreePicker.launch(null)
         }
@@ -252,14 +259,22 @@ class MainActivity : AppCompatActivity() {
             treeReady -> {
                 val digest = preferences.getString(KEY_GTA_ARCHIVE_SHA256, null)
                 val verified = preferences.getBoolean(KEY_GTA_ARCHIVE_HASH_VERIFIED, false)
+                val liteAudioOmitted = preferences.getBoolean(KEY_GTA_ARCHIVE_LITE_AUDIO_OMITTED, false)
+                val omittedAudioFiles = preferences.getInt(KEY_GTA_ARCHIVE_OMITTED_AUDIO_FILES, 0)
+                val omittedAudioBytes = preferences.getLong(KEY_GTA_ARCHIVE_OMITTED_AUDIO_BYTES, 0L)
                 val worldHint = if (preferences.getBoolean(KEY_GTA_MAP_SOURCES_SYNCED, false)) {
                     " World & collision yang sudah dipilih akan dipulihkan saat aplikasi dibuka."
                 } else {
                     " Berikutnya pilih ‘Siapkan world & collision’ agar gameplay memakai source map yang tersedia."
                 }
-                dataSetupTitle.text = "Data GTA terhubung"
+                dataSetupTitle.text = if (liteAudioOmitted) "Data GTA Lite terhubung" else "Data GTA terhubung"
                 dataSetupDetail.text = if (digest != null) {
-                    "Folder GTA dibaca read-only dari Android SAF/SD card. Arsip tercatat ${if (verified) "terverifikasi SHA-256" else "dengan digest SHA-256"}: ${digest.take(12)}…$worldHint"
+                    val liteHint = if (liteAudioOmitted) {
+                        " Tree Lite melewati $omittedAudioFiles file audio (${formatBytes(omittedAudioBytes)}); sumber asli tetap utuh."
+                    } else {
+                        ""
+                    }
+                    "Folder GTA dibaca read-only dari Android SAF/SD card. Arsip tercatat ${if (verified) "terverifikasi SHA-256" else "dengan digest SHA-256"}: ${digest.take(12)}…$liteHint$worldHint"
                 } else {
                     "Folder GTA dipakai read-only lewat Android SAF. Lokasi SD card tetap dipakai langsung, tanpa salin ke memori internal.$worldHint"
                 }
@@ -287,6 +302,9 @@ class MainActivity : AppCompatActivity() {
             .remove(KEY_GTA_MAP_SOURCES_SYNCED)
             .remove(KEY_GTA_ARCHIVE_SHA256)
             .remove(KEY_GTA_ARCHIVE_HASH_VERIFIED)
+            .remove(KEY_GTA_ARCHIVE_LITE_AUDIO_OMITTED)
+            .remove(KEY_GTA_ARCHIVE_OMITTED_AUDIO_FILES)
+            .remove(KEY_GTA_ARCHIVE_OMITTED_AUDIO_BYTES)
             .apply()
         persistedTreeMountReady = null
         persistedTreeMountProblem = null
@@ -341,14 +359,22 @@ class MainActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_TEXT
             setSingleLine(true)
         }
+        val liteAudio = CheckBox(this).apply {
+            text = "Mode Lite — lewati folder audio/ GTA untuk hemat ruang"
+            isChecked = false
+        }
         container.addView(url)
         container.addView(checksum)
+        container.addView(liteAudio)
         val dialog = MaterialAlertDialogBuilder(this)
             .setTitle("Unduh & pasang arsip milikmu")
             .setMessage(
                 "Masukkan URL ZIP HTTPS yang kamu berhak pakai. Arsip diunduh ke folder pilihan, " +
                     "diekstrak ke folder sementara, diperiksa, lalu baru dicoba dipasang read-only. " +
-                    "Tidak ada asset GTA yang dibundel atau di-host aplikasi. SHA-256 sangat disarankan."
+                    "Mode Lite hanya membuat tree turunan tanpa entry audio/; ZIP asli tidak diubah dan pemasangan " +
+                    "penuh dapat diulang nanti. Mode Lite menghemat tree akhir, tetapi staging tetap perlu ruang untuk ZIP selama proses. " +
+                    "Runtime saat ini tidak memakai asset audio GTA; audio HTTPS dari server " +
+                    "tetap jalur terpisah. Tidak ada asset GTA yang dibundel atau di-host aplikasi. SHA-256 sangat disarankan."
             )
             .setView(container)
             .setNegativeButton("Batal", null)
@@ -367,7 +393,11 @@ class MainActivity : AppCompatActivity() {
                     return@setOnClickListener
                 }
                 pendingArchiveInstall = PendingArchiveInstall.Remote(
-                    GtaArchiveInstaller.Request(rawUrl, rawHash.ifBlank { null })
+                    GtaArchiveInstaller.Request(
+                        url = rawUrl,
+                        expectedSha256 = rawHash.ifBlank { null },
+                        omitGtaAudio = liteAudio.isChecked
+                    )
                 )
                 dialog.dismiss()
                 // The user deliberately selects an SD-card or internal folder;
@@ -388,14 +418,28 @@ class MainActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_TEXT
             setSingleLine(true)
         }
+        val liteAudio = CheckBox(this).apply {
+            text = "Mode Lite — lewati folder audio/ GTA untuk hemat ruang"
+            isChecked = false
+        }
+        val padding = (20 * resources.displayMetrics.density).toInt()
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(padding, 0, padding, 0)
+            addView(checksum)
+            addView(liteAudio)
+        }
         val dialog = MaterialAlertDialogBuilder(this)
             .setTitle("Pasang ZIP milikmu yang sudah ada")
             .setMessage(
                 "Pilih arsip ZIP GTA yang kamu berhak pakai. Arsip asli hanya dibaca, " +
                     "disalin ke staging di folder tujuan, diekstrak sementara, lalu diperiksa sebelum dicoba dipasang. " +
-                    "SHA-256 sangat disarankan bila kamu punya nilai pembanding."
+                    "Mode Lite hanya melewati entry audio/ pada tree turunan; ZIP asli tetap utuh dan kamu dapat " +
+                    "menginstal ulang versi penuh. Mode Lite menghemat tree akhir, tetapi staging tetap perlu ruang untuk ZIP selama proses. " +
+                    "Runtime saat ini tidak memakai asset audio GTA; audio HTTPS server " +
+                    "tetap terpisah. SHA-256 sangat disarankan bila kamu punya nilai pembanding."
             )
-            .setView(checksum)
+            .setView(container)
             .setNegativeButton("Batal", null)
             .setPositiveButton("Pilih ZIP", null)
             .create()
@@ -406,7 +450,10 @@ class MainActivity : AppCompatActivity() {
                     checksum.error = "SHA-256 harus 64 karakter heksadesimal"
                     return@setOnClickListener
                 }
-                pendingLocalArchiveSource = PendingLocalArchiveSource(rawHash.ifBlank { null })
+                pendingLocalArchiveSource = PendingLocalArchiveSource(
+                    expectedSha256 = rawHash.ifBlank { null },
+                    omitGtaAudio = liteAudio.isChecked
+                )
                 dialog.dismiss()
                 gtaArchiveZipPicker.launch(
                     arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")
@@ -477,15 +524,28 @@ class MainActivity : AppCompatActivity() {
                     progress.visibility = View.GONE
                     val mountJson = mounted.getOrNull()?.let { raw -> runCatching { JSONObject(raw) }.getOrNull() }
                     if (mountJson?.optBoolean("ok") == true) {
+                        // This is provenance for the newly derived destination
+                        // only. The source ZIP URI is never persisted as a
+                        // runtime mount, and a manually selected GTA tree clears
+                        // this record below.
                         getSharedPreferences(GAME_DATA_PREFS, MODE_PRIVATE).edit()
                             .putString(KEY_GTA_ARCHIVE_SHA256, result.archiveSha256)
                             .putBoolean(KEY_GTA_ARCHIVE_HASH_VERIFIED, result.verifiedAgainstExpectedHash)
+                            .putBoolean(KEY_GTA_ARCHIVE_LITE_AUDIO_OMITTED, result.gtaAudioOmitted)
+                            .putInt(KEY_GTA_ARCHIVE_OMITTED_AUDIO_FILES, result.omittedAudioFiles)
+                            .putLong(KEY_GTA_ARCHIVE_OMITTED_AUDIO_BYTES, result.omittedAudioBytes)
                             .apply()
                         updateDashboard()
                         val verification = if (result.verifiedAgainstExpectedHash) {
                             "SHA-256 cocok dengan nilai yang kamu masukkan."
                         } else {
                             "SHA-256 dihitung tetapi tidak dibandingkan karena kamu tidak memasukkan nilai pembanding."
+                        }
+                        val liteInstallNote = if (result.gtaAudioOmitted) {
+                            "\nMode Lite: ${result.omittedAudioFiles} file audio (${formatBytes(result.omittedAudioBytes)}) " +
+                                "tidak diekstrak dari tree turunan. ZIP/sumber asli tidak diubah; audio HTTPS server tetap terpisah."
+                        } else {
+                            "\nMode penuh: folder audio/ dari arsip tidak dilewati."
                         }
                         val destinationNote = if (result.renamedForUser) {
                             ""
@@ -497,6 +557,7 @@ class MainActivity : AppCompatActivity() {
                             "Data GTA terpasang",
                             "$verification\nDigest: ${result.archiveSha256}\n" +
                                 "Entry diekstrak: ${result.extractedFiles} · ${formatBytes(result.extractedBytes)}\n" +
+                                "$liteInstallNote\n" +
                                 "$destinationNote\n" +
                                 "Data dibaca langsung dari folder pilihan (termasuk SD card), tidak disalin ke memori internal. " +
                                 "Berikutnya pilih ‘Siapkan world & collision’ dari kartu Data GTA agar source map/collision yang tersedia ikut dimuat."
@@ -702,6 +763,9 @@ class MainActivity : AppCompatActivity() {
                     .remove(KEY_GTA_MAP_SOURCES_SYNCED)
                     .remove(KEY_GTA_ARCHIVE_SHA256)
                     .remove(KEY_GTA_ARCHIVE_HASH_VERIFIED)
+                    .remove(KEY_GTA_ARCHIVE_LITE_AUDIO_OMITTED)
+                    .remove(KEY_GTA_ARCHIVE_OMITTED_AUDIO_FILES)
+                    .remove(KEY_GTA_ARCHIVE_OMITTED_AUDIO_BYTES)
                     .apply()
                 persistedTreeMountReady = null
                 persistedTreeMountProblem = null
@@ -821,6 +885,9 @@ class MainActivity : AppCompatActivity() {
                 // mount below succeeds.
                 .remove(KEY_GTA_ARCHIVE_SHA256)
                 .remove(KEY_GTA_ARCHIVE_HASH_VERIFIED)
+                .remove(KEY_GTA_ARCHIVE_LITE_AUDIO_OMITTED)
+                .remove(KEY_GTA_ARCHIVE_OMITTED_AUDIO_FILES)
+                .remove(KEY_GTA_ARCHIVE_OMITTED_AUDIO_BYTES)
                 .apply()
             runOnUiThread {
                 persistedTreeMountReady = true
@@ -1048,6 +1115,7 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Siapkan data GTA milikmu")
             .setMessage(
                 "Pilih folder GTA yang sudah diekstrak, pasang ZIP lokal milikmu, atau gunakan URL HTTPS yang kamu kontrol. " +
+                    "Dua jalur ZIP menawarkan Mode Lite opt-in untuk membuat tree baru tanpa audio/ GTA; sumber asli tetap utuh. " +
                     "Data akhir tetap dibaca lewat Android SAF dari folder pilihan/SD card; APK tidak membundel asset GTA, " +
                     "tidak menyalin tree ke memori internal, dan tidak menjalankan RAR/EXE PC."
             )
@@ -1302,6 +1370,11 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_GTA_MAP_SOURCES_SYNCED = "gta_map_sources_synced"
         private const val KEY_GTA_ARCHIVE_SHA256 = "gta_archive_sha256"
         private const val KEY_GTA_ARCHIVE_HASH_VERIFIED = "gta_archive_hash_verified"
+        // Provenance for a derived Lite tree only; never stores the original ZIP
+        // URI/content or changes an independently mounted source tree.
+        private const val KEY_GTA_ARCHIVE_LITE_AUDIO_OMITTED = "gta_archive_lite_audio_omitted"
+        private const val KEY_GTA_ARCHIVE_OMITTED_AUDIO_FILES = "gta_archive_omitted_audio_files"
+        private const val KEY_GTA_ARCHIVE_OMITTED_AUDIO_BYTES = "gta_archive_omitted_audio_bytes"
         private const val TREE_BATCH_SIZE = 32
         private const val MAX_TREE_MAP_FILES_PER_KIND = 512
         private const val MAX_TREE_AUX_IMG_FILES = 4

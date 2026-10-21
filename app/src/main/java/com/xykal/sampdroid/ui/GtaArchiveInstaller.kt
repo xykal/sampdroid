@@ -25,7 +25,9 @@ internal class GtaArchiveInstaller(private val context: Context) {
 
     data class Request(
         val url: String,
-        val expectedSha256: String? = null
+        val expectedSha256: String? = null,
+        /** Builds a derived SD/card tree without the archive's `audio/` members. */
+        val omitGtaAudio: Boolean = false
     )
 
     data class Progress(
@@ -48,6 +50,10 @@ internal class GtaArchiveInstaller(private val context: Context) {
             val verifiedAgainstExpectedHash: Boolean,
             val extractedFiles: Int,
             val extractedBytes: Long,
+            /** Whether this derived destination intentionally omits GTA audio. */
+            val gtaAudioOmitted: Boolean,
+            val omittedAudioFiles: Int,
+            val omittedAudioBytes: Long,
             val renamedForUser: Boolean
         ) : Result
 
@@ -57,7 +63,9 @@ internal class GtaArchiveInstaller(private val context: Context) {
     data class LocalRequest(
         /** Existing player-selected ZIP. It is read and copied; never modified. */
         val sourceUri: Uri,
-        val expectedSha256: String? = null
+        val expectedSha256: String? = null,
+        /** Builds a derived SD/card tree without the archive's `audio/` members. */
+        val omitGtaAudio: Boolean = false
     )
 
     fun install(
@@ -69,7 +77,9 @@ internal class GtaArchiveInstaller(private val context: Context) {
             .getOrElse { return Result.Failed(it.message ?: "SHA-256 tidak valid") }
         val validatedUrl = runCatching { validatedHttpsUrl(request.url) }
             .getOrElse { return Result.Failed(it.message ?: "URL HTTPS tidak valid") }
-        return installIntoDestination(expectedHash, destinationTreeUri, onProgress) { archive ->
+        return installIntoDestination(
+            expectedHash, destinationTreeUri, request.omitGtaAudio, onProgress
+        ) { archive ->
             downloadArchive(validatedUrl, archive, onProgress)
         }
     }
@@ -87,7 +97,9 @@ internal class GtaArchiveInstaller(private val context: Context) {
     ): Result {
         val expectedHash = runCatching { normalizedExpectedHash(request.expectedSha256) }
             .getOrElse { return Result.Failed(it.message ?: "SHA-256 tidak valid") }
-        return installIntoDestination(expectedHash, destinationTreeUri, onProgress) { archive ->
+        return installIntoDestination(
+            expectedHash, destinationTreeUri, request.omitGtaAudio, onProgress
+        ) { archive ->
             copyLocalArchive(request.sourceUri, archive, onProgress)
         }
     }
@@ -103,6 +115,7 @@ internal class GtaArchiveInstaller(private val context: Context) {
     private fun installIntoDestination(
         expectedHash: String?,
         destinationTreeUri: Uri,
+        omitGtaAudio: Boolean,
         onProgress: (Progress) -> Unit,
         acquireArchive: (DocumentFile) -> Downloaded
     ): Result {
@@ -134,7 +147,7 @@ internal class GtaArchiveInstaller(private val context: Context) {
                 )
             }
 
-            val extraction = extractZip(archive, payloadDirectory, onProgress)
+            val extraction = extractZip(archive, payloadDirectory, omitGtaAudio, onProgress)
             // The temporary input is never altered. Once its contents have
             // passed extraction, remove only our staging copy so the mounted
             // root contains extracted data, not the original ZIP.
@@ -191,6 +204,9 @@ internal class GtaArchiveInstaller(private val context: Context) {
                 verifiedAgainstExpectedHash = expectedHash != null,
                 extractedFiles = extraction.files,
                 extractedBytes = extraction.bytes,
+                gtaAudioOmitted = omitGtaAudio,
+                omittedAudioFiles = extraction.omittedAudioFiles,
+                omittedAudioBytes = extraction.omittedAudioBytes,
                 renamedForUser = renamed
             )
         } catch (error: InstallFailure) {
@@ -208,7 +224,12 @@ internal class GtaArchiveInstaller(private val context: Context) {
     }
 
     private data class Downloaded(val sha256: String)
-    private data class Extraction(val files: Int, val bytes: Long)
+    private data class Extraction(
+        val files: Int,
+        val bytes: Long,
+        val omittedAudioFiles: Int,
+        val omittedAudioBytes: Long
+    )
 
     private fun downloadArchive(
         url: URL,
@@ -331,17 +352,54 @@ internal class GtaArchiveInstaller(private val context: Context) {
     private fun extractZip(
         archive: DocumentFile,
         staging: DocumentFile,
+        omitGtaAudio: Boolean,
         onProgress: (Progress) -> Unit
     ): Extraction {
-        var files = 0
-        var totalBytes = 0L
+        var entriesSeen = 0
+        var retainedEntries = 0
+        var extractedBytes = 0L
+        var processedBytes = 0L
+        var omittedAudioFiles = 0
+        var omittedAudioBytes = 0L
         val seen = HashSet<String>()
         context.contentResolver.openInputStream(archive.uri)?.use { raw ->
             ZipInputStream(BufferedInputStream(raw, BUFFER_SIZE)).use { zip ->
+                fun consumeEntry(write: ((ByteArray, Int) -> Unit)?): Long {
+                    val buffer = ByteArray(BUFFER_SIZE)
+                    var entryBytes = 0L
+                    while (true) {
+                        val read = zip.read(buffer)
+                        if (read < 0) break
+                        entryBytes += read
+                        processedBytes += read
+                        if (entryBytes > MAX_ENTRY_BYTES || processedBytes > MAX_EXTRACTED_BYTES) {
+                            throw InstallFailure("Ekstraksi melewati batas aman ukuran data.")
+                        }
+                        write?.invoke(buffer, read)
+                    }
+                    return entryBytes
+                }
+
+                fun rejectCompressionBomb(path: String, compressedBytes: Long, entryBytes: Long) {
+                    if (compressedBytes <= 0L) return
+                    val ratioLimit = if (compressedBytes >
+                        (Long.MAX_VALUE - ZIP_RATIO_GRACE_BYTES) / MAX_COMPRESSION_RATIO
+                    ) {
+                        Long.MAX_VALUE
+                    } else {
+                        compressedBytes * MAX_COMPRESSION_RATIO + ZIP_RATIO_GRACE_BYTES
+                    }
+                    if (entryBytes > ratioLimit) {
+                        throw InstallFailure("ZIP terindikasi compression bomb pada $path")
+                    }
+                }
+
                 while (true) {
                     val entry = zip.nextEntry ?: break
                     try {
-                        if (++files > MAX_ENTRY_COUNT) throw InstallFailure("ZIP memiliki terlalu banyak entry.")
+                        if (++entriesSeen > MAX_ENTRY_COUNT) {
+                            throw InstallFailure("ZIP memiliki terlalu banyak entry.")
+                        }
                         val path = sanitizeZipPath(entry)
                         if (!seen.add(path.lowercase(Locale.ROOT))) {
                             throw InstallFailure("ZIP memiliki entry duplikat/bertabrakan: $path")
@@ -349,42 +407,58 @@ internal class GtaArchiveInstaller(private val context: Context) {
                         if (entry.size > MAX_ENTRY_BYTES) {
                             throw InstallFailure("Satu file ZIP terlalu besar: $path")
                         }
-                        val parentSegments = path.split('/')
-                        val target = if (entry.isDirectory) {
-                            ensureDirectory(staging, parentSegments)
+
+                        val omitAudioEntry = omitGtaAudio && GtaArchivePathPolicy.isGtaAudioEntry(path)
+                        if (omitAudioEntry) {
+                            // Drain even a directory-marked entry. ZIP writers
+                            // normally give directories zero payload bytes, but
+                            // trusting that would let a hostile `audio/` member
+                            // bypass the same expanded-size/ratio limits.
+                            val entryBytes = consumeEntry(write = null)
+                            rejectCompressionBomb(path, entry.compressedSize, entryBytes)
+                            if (!entry.isDirectory) {
+                                ++omittedAudioFiles
+                                omittedAudioBytes += entryBytes
+                            }
                         } else {
-                            val parent = ensureDirectory(staging, parentSegments.dropLast(1))
-                            createFreshFile(parent, parentSegments.last())
-                        }
-                        if (!entry.isDirectory) {
-                            context.contentResolver.openOutputStream(target.uri, "w")?.use { rawOutput ->
-                                BufferedOutputStream(rawOutput, BUFFER_SIZE).use { output ->
-                                    val buffer = ByteArray(BUFFER_SIZE)
-                                    var entryBytes = 0L
-                                    while (true) {
-                                        val read = zip.read(buffer)
-                                        if (read < 0) break
-                                        entryBytes += read
-                                        totalBytes += read
-                                        if (entryBytes > MAX_ENTRY_BYTES || totalBytes > MAX_EXTRACTED_BYTES) {
-                                            throw InstallFailure("Ekstraksi melewati batas aman ukuran data.")
+                            ++retainedEntries
+                            val parentSegments = path.split('/')
+                            val target = if (entry.isDirectory) {
+                                ensureDirectory(staging, parentSegments)
+                            } else {
+                                val parent = ensureDirectory(staging, parentSegments.dropLast(1))
+                                createFreshFile(parent, parentSegments.last())
+                            }
+                            if (entry.isDirectory) {
+                                // Directory entries ought to be empty, but
+                                // consume them too so malformed ZIPs cannot
+                                // hide expanded data outside the global limits.
+                                val entryBytes = consumeEntry(write = null)
+                                rejectCompressionBomb(path, entry.compressedSize, entryBytes)
+                            } else {
+                                context.contentResolver.openOutputStream(target.uri, "w")?.use { rawOutput ->
+                                    BufferedOutputStream(rawOutput, BUFFER_SIZE).use { output ->
+                                        val entryBytes = consumeEntry { buffer, count ->
+                                            output.write(buffer, 0, count)
                                         }
-                                        output.write(buffer, 0, read)
+                                        output.flush()
+                                        rejectCompressionBomb(path, entry.compressedSize, entryBytes)
+                                        extractedBytes += entryBytes
                                     }
-                                    output.flush()
-                                    val compressed = entry.compressedSize
-                                    if (compressed > 0L && entryBytes > compressed * MAX_COMPRESSION_RATIO + ZIP_RATIO_GRACE_BYTES) {
-                                        throw InstallFailure("ZIP terindikasi compression bomb pada $path")
-                                    }
-                                }
-                            } ?: throw InstallFailure("Tidak bisa menulis entry ZIP: $path")
+                                } ?: throw InstallFailure("Tidak bisa menulis entry ZIP: $path")
+                            }
                         }
-                        if (files % EXTRACTION_PROGRESS_EVERY_ENTRIES == 0) {
+                        if (entriesSeen % EXTRACTION_PROGRESS_EVERY_ENTRIES == 0) {
+                            val detail = if (omitGtaAudio && omittedAudioFiles > 0) {
+                                "Mengekstrak data GTA; audio dilewati dari folder sementara…"
+                            } else {
+                                "Mengekstrak data GTA ke folder sementara…"
+                            }
                             onProgress(Progress(
                                 phase = Progress.Phase.EXTRACTING,
-                                completedBytes = totalBytes,
-                                entries = files,
-                                detail = "Mengekstrak file $files ke folder sementara…"
+                                completedBytes = processedBytes,
+                                entries = retainedEntries,
+                                detail = detail
                             ))
                         }
                     } finally {
@@ -393,8 +467,8 @@ internal class GtaArchiveInstaller(private val context: Context) {
                 }
             }
         } ?: throw InstallFailure("Arsip sementara tidak dapat dibaca ulang.")
-        if (files == 0) throw InstallFailure("ZIP kosong.")
-        return Extraction(files, totalBytes)
+        if (entriesSeen == 0) throw InstallFailure("ZIP kosong.")
+        return Extraction(retainedEntries, extractedBytes, omittedAudioFiles, omittedAudioBytes)
     }
 
     private fun findGameRoot(staging: DocumentFile): DocumentFile? {
