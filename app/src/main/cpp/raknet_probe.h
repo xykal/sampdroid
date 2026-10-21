@@ -26,6 +26,8 @@ struct ProbeResult {
   int reassembledPackets = 0;
   int trackedPlayers = 0;        // PlayerJoin/Quit/Name/Color reducer
   std::string clientProtocol;    // exact selected ClientJoin wire identity
+  // "baseline", "version", or "allowed_clients"; explains fixed profile choice.
+  std::string clientProfileSource;
   std::string serverName;        // dari PlayerInit, bila server mengirimnya
   std::string rpcSummary;        // ringkasan RPC yang terlihat selama probe
   std::string stateSummary;      // event state terakhir yang berhasil direduce

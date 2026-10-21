@@ -120,7 +120,9 @@ tanpa token asing. Ini mengikuti writer `LegacyNetwork` open.mp yang mengirim
 `0.3.DL` saat `network.allow_037_clients` mati, sedangkan daftar campuran
 `0.3.7, 0.3.DL`, rule kosong/malformed, atau banner apa pun tetap baseline 4057.
 Rule ini hanya memilih profile 4062 yang telah ada—tidak menambah marker OMP,
-identity arbitrary, atau asset DL.
+identity arbitrary, atau asset DL. Snapshot/probe JSON juga membawa
+`clientProfileSource` bernilai `baseline`, `version`, atau `allowed_clients`
+agar UI menunjukkan dasar pilihan tanpa menampilkan rule sebagai identity wire.
 
 Payload DL dan session retained loopback mengunci ketiga nilai bersama-sama,
 termasuk kombinasi cookie OMP + rule DL-only, serta JSON status menampilkan

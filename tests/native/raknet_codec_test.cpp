@@ -2229,6 +2229,8 @@ void testLegacyHandshakeBuilders() {
   using samp::handshake::clientJoinChallengeResponse;
   using samp::handshake::clientJoinProfileForAdvertisedRules;
   using samp::handshake::clientJoinProfileForAdvertisedVersion;
+  using samp::handshake::clientJoinProfileSourceForAdvertisedRules;
+  using samp::handshake::clientJoinProfileSourceLabel;
   using samp::handshake::buildInternalPing;
   using samp::handshake::buildNewIncoming;
   using samp::handshake::generateLegacySerial;
@@ -2278,6 +2280,16 @@ void testLegacyHandshakeBuilders() {
              clientJoinProfileForAdvertisedRules("omp 1.5.8.3170", "0.3.DL,").netGameVersion ==
                  4057u,
          "fresh allowed_clients must select DL only when legacy/unknown tokens are absent");
+  const auto versionProfileSource =
+      clientJoinProfileSourceForAdvertisedRules(" 0.3.dl-r1 ", "0.3.7, 0.3.DL");
+  const auto dlRuleProfileSource =
+      clientJoinProfileSourceForAdvertisedRules("omp 1.5.8.3170", " 0.3.DL ");
+  const auto baselineProfileSource =
+      clientJoinProfileSourceForAdvertisedRules("omp 1.5.8.3170", "0.3.7, 0.3.DL");
+  expect(std::string(clientJoinProfileSourceLabel(versionProfileSource)) == "version" &&
+             std::string(clientJoinProfileSourceLabel(dlRuleProfileSource)) == "allowed_clients" &&
+             std::string(clientJoinProfileSourceLabel(baselineProfileSource)) == "baseline",
+         "ClientJoin profile source must expose only the fixed selection basis");
   expect(clientJoinChallengeResponse(0x12345678u, legacyProfile) == 0x123459A1u &&
              clientJoinChallengeResponse(0x12345678u, dlProfile) == 0x123459A6u &&
              clientJoinChallengeResponse(0x12345678u, dlOnlyRuleProfile) == 0x123459A6u,
@@ -6676,7 +6688,8 @@ void testRetainedSessionOpenMpCookieWithoutEnvelope() {
 
   expect(session.active && session.accepted && session.playerInit && session.joined &&
              session.transportVariant == "omp" && !session.openMpServerEnvelope &&
-             session.clientProtocol == "0.3.7-R2 (4057)",
+             session.clientProtocol == "0.3.7-R2 (4057)" &&
+             session.clientProfileSource == "baseline",
          "OMP cookie without access record must retain the unencrypted server direction");
   expect(peer.sawOpenMpCookie && peer.sawSourceBootstrapDatagram && peer.sawClientJoin &&
              peer.sawInitialClass && peer.error.empty(),
@@ -6755,7 +6768,8 @@ void testRetainedSessionDlR1ClientJoinProfile() {
 
   expect(session.active && session.accepted && session.newIncomingTransportAcked &&
              session.staticDataTransportAcked && session.clientJoinTransportAcked &&
-             session.playerInit && session.joined && session.clientProtocol == "0.3.DL-R1 (4062)",
+             session.playerInit && session.joined && session.clientProtocol == "0.3.DL-R1 (4062)" &&
+             session.clientProfileSource == "version",
          "exact queried DL-R1 must retain its bounded ClientJoin profile and post-accept ACK telemetry");
   expect(peer.sawSourceBootstrapDatagram && peer.sawClientJoin && peer.sawPostAcceptPong &&
              peer.sawInitialClass && peer.receivedClientNetGameVersion == 4062u &&
@@ -6785,7 +6799,8 @@ void testRetainedSessionDlR1AllowedClientsProfile() {
 
   expect(session.active && session.accepted && session.playerInit && session.joined &&
              session.transportVariant == "omp" && !session.openMpServerEnvelope &&
-             session.clientProtocol == "0.3.DL-R1 (4062)",
+             session.clientProtocol == "0.3.DL-R1 (4062)" &&
+             session.clientProfileSource == "allowed_clients",
          "fresh DL-only rule must select 4062 without adding an OMP marker");
   expect(peer.sawOpenMpCookie && peer.sawClientJoin && peer.sawInitialClass &&
              peer.receivedClientNetGameVersion == 4062u &&

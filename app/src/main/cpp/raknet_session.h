@@ -705,6 +705,9 @@ struct SessionSnapshot {
   // Exact bounded ClientJoin identity selected before the socket opens.
   // It reports transport compatibility only, not 0.3.DL artwork support.
   std::string clientProtocol;
+  // "baseline", "version", or "allowed_clients"; this is a diagnostic
+  // source for the fixed profile, not an official client/version assertion.
+  std::string clientProfileSource;
   // `omp` means only that the OMP-cookie transport branch was selected; it is
   // neither an official-client version claim nor PlayerInit/game admission.
   std::string transportVariant;

@@ -335,6 +335,9 @@ struct LiveSession {
   bool joined = false;
   // Copied from a fixed handshake profile before socket ownership is retained.
   std::string clientProtocol;
+  // The source rule that chose the fixed profile, never a user/server-supplied
+  // version identity.
+  std::string clientProfileSource;
   // `omp` only records a selected/accepted OMP-cookie transport branch. It is
   // not an official client-version assertion and it never means PlayerInit.
   std::string transportVariant;
@@ -1609,6 +1612,7 @@ SessionSnapshot snapshotFrom(const LiveSession* session) {
   snapshot.localAimStateKnown = session->localAimStateKnown;
   snapshot.localPassengerStateKnown = session->localPassengerStateKnown;
   snapshot.clientProtocol = session->clientProtocol;
+  snapshot.clientProfileSource = session->clientProfileSource;
   snapshot.transportVariant = session->transportVariant;
   snapshot.openMpServerEnvelope = session->openMpServerEnvelope.enabled;
   snapshot.serverName = snapshot.playerInit ? session->world.playerInit().serverName : "";
@@ -2232,12 +2236,13 @@ WorldSnapshot worldSnapshotFrom(const LiveSession* session) {
 
 }  // namespace
 
-static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int timeoutMs,
-                                       bool retainSession, const std::string& requestedNickname,
-                                       const handshake::ClientJoinProfile& clientProfile,
-                                       bool preferOpenMpTransport) {
+static ProbeResult raknet_connect_impl(
+    const std::string& ip, uint16_t port, int timeoutMs, bool retainSession,
+    const std::string& requestedNickname, const handshake::ClientJoinProfile& clientProfile,
+    handshake::ClientJoinProfileSource clientProfileSource, bool preferOpenMpTransport) {
   ProbeResult res;
   res.clientProtocol = clientProfile.displayName != nullptr ? clientProfile.displayName : "";
+  res.clientProfileSource = handshake::clientJoinProfileSourceLabel(clientProfileSource);
   // Android invokes this from an IO coroutine, but a dead UDP endpoint must not
   // hold the connect action for every historical retry/read loop. Keep each
   // receive caller-configurable within a sane range and cap the complete
@@ -2820,6 +2825,7 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     live->accepted = res.accepted;
     live->joined = res.joined;
     live->clientProtocol = res.clientProtocol;
+    live->clientProfileSource = res.clientProfileSource;
     live->transportVariant = res.variant;
     live->openMpServerEnvelope = std::move(openMpServerEnvelope);
     live->bootstrapTransportReceipts = bootstrapTransportReceipts;
@@ -2849,10 +2855,14 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
 ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs,
                          const std::string& advertisedServerVersion,
                          const std::string& advertisedAllowedClients) {
+  const handshake::ClientJoinProfileSource clientProfileSource =
+      handshake::clientJoinProfileSourceForAdvertisedRules(advertisedServerVersion,
+                                                           advertisedAllowedClients);
   const handshake::ClientJoinProfile clientProfile =
       handshake::clientJoinProfileForAdvertisedRules(advertisedServerVersion,
                                                      advertisedAllowedClients);
   return raknet_connect_impl(ip, port, timeoutMs, false, "SampDroid", clientProfile,
+                             clientProfileSource,
                              openmp::isOpenMpAdvertisement(advertisedServerVersion));
 }
 
@@ -2863,11 +2873,14 @@ SessionSnapshot raknet_session_connect(const std::string& ip, uint16_t port, int
   std::lock_guard<std::mutex> lock(gLiveSessionMutex);
   gLiveSession.reset();
 
+  const handshake::ClientJoinProfileSource clientProfileSource =
+      handshake::clientJoinProfileSourceForAdvertisedRules(advertisedServerVersion,
+                                                           advertisedAllowedClients);
   const handshake::ClientJoinProfile clientProfile =
       handshake::clientJoinProfileForAdvertisedRules(advertisedServerVersion,
                                                      advertisedAllowedClients);
   const ProbeResult result = raknet_connect_impl(
-      ip, port, timeoutMs, true, nickname, clientProfile,
+      ip, port, timeoutMs, true, nickname, clientProfile, clientProfileSource,
       openmp::isOpenMpAdvertisement(advertisedServerVersion));
   if (!gLiveSession) {
     SessionSnapshot snapshot;
@@ -2879,6 +2892,7 @@ SessionSnapshot raknet_session_connect(const std::string& ip, uint16_t port, int
     snapshot.playerInit = result.playerInit;
     snapshot.playerId = result.playerId;
     snapshot.clientProtocol = result.clientProtocol;
+    snapshot.clientProfileSource = result.clientProfileSource;
     snapshot.transportVariant = result.variant;
     snapshot.openMpServerEnvelope = result.openMpServerEnvelope;
     snapshot.serverName = result.serverName;

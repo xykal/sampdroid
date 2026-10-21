@@ -928,6 +928,7 @@ std::string session_json(const samp::SessionSnapshot& s) {
     << ",\"localAimStateKnown\":" << (s.localAimStateKnown ? "true" : "false")
     << ",\"localPassengerStateKnown\":" << (s.localPassengerStateKnown ? "true" : "false")
     << ",\"clientProtocol\":\"" << samp::json_escape(s.clientProtocol) << "\""
+    << ",\"clientProfileSource\":\"" << samp::json_escape(s.clientProfileSource) << "\""
     << ",\"transportVariant\":\"" << samp::json_escape(s.transportVariant) << "\""
     << ",\"openMpServerEnvelope\":" << (s.openMpServerEnvelope ? "true" : "false")
     << ",\"serverName\":\"" << samp::json_escape(s.serverName) << "\""
@@ -1803,6 +1804,7 @@ Java_com_xykal_sampdroid_NativeBridge_nativeRaknetProbe(JNIEnv* env, jclass, jst
     << ",\"reassembledPackets\":" << r.reassembledPackets
     << ",\"trackedPlayers\":" << r.trackedPlayers
     << ",\"clientProtocol\":\"" << samp::json_escape(r.clientProtocol) << "\""
+    << ",\"clientProfileSource\":\"" << samp::json_escape(r.clientProfileSource) << "\""
     << ",\"serverName\":\"" << samp::json_escape(r.serverName) << "\""
     << ",\"rpcSummary\":\"" << samp::json_escape(r.rpcSummary) << "\""
     << ",\"stateSummary\":\"" << samp::json_escape(r.stateSummary) << "\""

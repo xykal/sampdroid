@@ -370,7 +370,9 @@ case-insensitive **persis** `0.3.DL-R1`. Selain itu, ia menerima hanya rule fres
 `0.3.DL` persis pada konfigurasi yang mematikan 0.3.7. Daftar campuran
 `0.3.7, 0.3.DL`, kosong/malformed, `open.mp`, nilai parsial, atau token asing
 selalu kembali baseline. Jadi rule tidak membentuk identity baru—ia hanya memilih
-literal DL R1/4062 yang sudah ada. Konstanta 4062 telah diaudit pada source
+literal DL R1/4062 yang sudah ada. Snapshot/probe mengekspos alasan pilihan
+sebagai `clientProfileSource=baseline|version|allowed_clients`, bukan sebagai
+claim capability baru. Konstanta 4062 telah diaudit pada source
 [FakeSAMP 0.3.DL](https://github.com/cizaquita/FakeSAMP) (`NETGAME_VERSION`),
 sedangkan string normal player `0.3.DL-R1` didokumentasikan oleh
 [open.mp GetPlayerVersion](https://open.mp/docs/scripting/functions/GetPlayerVersion).

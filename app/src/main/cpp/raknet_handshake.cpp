@@ -112,11 +112,40 @@ bool isDlOnlyAllowedClientsRule(const std::string& advertisedAllowedClients) {
   return hasDl && !hasLegacy037;
 }
 
+ClientJoinProfileSource clientJoinProfileSourceForAdvertisedRules(
+    const std::string& advertisedVersion, const std::string& advertisedAllowedClients) {
+  if (isExactDlR1AdvertisedVersion(advertisedVersion)) {
+    return ClientJoinProfileSource::ExactDlR1Version;
+  }
+  if (isDlOnlyAllowedClientsRule(advertisedAllowedClients)) {
+    return ClientJoinProfileSource::DlOnlyAllowedClients;
+  }
+  return ClientJoinProfileSource::LegacyBaseline;
+}
+
+const char* clientJoinProfileSourceLabel(ClientJoinProfileSource source) {
+  switch (source) {
+    case ClientJoinProfileSource::ExactDlR1Version:
+      return "version";
+    case ClientJoinProfileSource::DlOnlyAllowedClients:
+      return "allowed_clients";
+    case ClientJoinProfileSource::LegacyBaseline:
+      return "baseline";
+  }
+  return "baseline";
+}
+
 ClientJoinProfile clientJoinProfileForAdvertisedRules(
     const std::string& advertisedVersion, const std::string& advertisedAllowedClients) {
-  const bool useDlProfile = isExactDlR1AdvertisedVersion(advertisedVersion) ||
-                            isDlOnlyAllowedClientsRule(advertisedAllowedClients);
-  return useDlProfile ? kDlR1ClientJoinProfile : kLegacyClientJoinProfile;
+  const ClientJoinProfileSource source =
+      clientJoinProfileSourceForAdvertisedRules(advertisedVersion, advertisedAllowedClients);
+  return source == ClientJoinProfileSource::LegacyBaseline ? kLegacyClientJoinProfile
+                                                            : kDlR1ClientJoinProfile;
+}
+
+ClientJoinProfileSource clientJoinProfileSourceForAdvertisedVersion(
+    const std::string& advertisedVersion) {
+  return clientJoinProfileSourceForAdvertisedRules(advertisedVersion, "");
 }
 
 ClientJoinProfile clientJoinProfileForAdvertisedVersion(

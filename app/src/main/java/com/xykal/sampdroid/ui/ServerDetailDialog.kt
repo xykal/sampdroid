@@ -115,6 +115,13 @@ object ServerDetailDialog {
             )
         }.getOrDefault(FreshAdvertisement())
 
+        fun describeClientProfileSource(source: String, blank: String): String = when (source) {
+            "version" -> "rule version fresh exact 0.3.DL-R1"
+            "allowed_clients" -> "rule allowed_clients fresh DL-only"
+            "baseline" -> "baseline aman (rule tidak spesifik/mixed)"
+            else -> blank
+        }
+
         fun formatSession(o: JSONObject): String = buildString {
             append("=== STATUS SESI NATIVE ===\n")
             append("Android native tanpa Winlator/samp.exe. Stream dipoll otomatis selama sesi ini terbuka.\n")
@@ -123,6 +130,9 @@ object ServerDetailDialog {
                 "Hit/damage/ammo lokal dan gameplay GTA penuh belum diklaim.\n\n")
             append("aktif           : ").append(o.optBoolean("active")).append('\n')
             append("profil wire     : ").append(o.optString("clientProtocol").ifBlank { "belum dipilih" }).append('\n')
+            append("dasar profil    : ").append(
+                describeClientProfileSource(o.optString("clientProfileSource"), "belum dipilih")
+            ).append('\n')
             val transport = o.optString("transportVariant").ifBlank { "belum dipilih" }
             append("transport       : ").append(transport)
             if (o.optBoolean("openMpServerEnvelope")) {
@@ -741,6 +751,9 @@ object ServerDetailDialog {
                     append("cookie ok       : ").append(o.optBoolean("cookieOk")).append('\n')
                     append("auth challenge  : ").append(o.optBoolean("authenticated")).append('\n')
                     append("profil wire     : ").append(o.optString("clientProtocol").ifBlank { "-" }).append('\n')
+                    append("dasar profil    : ").append(
+                        describeClientProfileSource(o.optString("clientProfileSource"), "-")
+                    ).append('\n')
                     append("transport       : ").append(o.optString("variant").ifBlank { "-" })
                     if (o.optBoolean("openMpServerEnvelope")) {
                         append(" + envelope OMP server→client")

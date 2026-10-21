@@ -205,8 +205,9 @@ object NativeBridge {
     external fun nativeQueryPing(ip: String, port: Int, timeoutMs: Int): Int
 
     /**
-     * @return JSON status handshake + stream: connection/auth/join, fragment
-     * reassembly, RPC summary, and PlayerInit data when the server sends it.
+     * @return JSON status handshake + stream: connection/auth/join, fixed
+     * ClientJoin profile plus its selection source, fragment reassembly, RPC
+     * summary, and PlayerInit data when the server sends it.
      */
     external fun nativeRaknetProbe(
         ip: String,
