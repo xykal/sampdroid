@@ -617,6 +617,7 @@ class MainActivity : AppCompatActivity() {
                         ?: error("Hostname tidak memberi alamat IPv4; transport legacy saat ini memakai IPv4.")
                     val info = JSONObject(NativeBridge.nativeQueryInfo(ipv4.hostAddress, port, 2_500))
                     if (!info.optBoolean("ok")) error(info.optString("error").ifBlank { "Query server gagal" })
+                    val advertisedVersion = info.optString("version")
                     ServerEntry(
                         ip = ipv4.hostAddress,
                         port = port,
@@ -626,8 +627,11 @@ class MainActivity : AppCompatActivity() {
                         gamemode = info.optString("gamemode"),
                         language = info.optString("language"),
                         passworded = info.optBoolean("password"),
-                        isOpenMp = false,
-                        version = info.optString("version")
+                        // Cosmetic directory badge only. Native independently
+                        // applies its stricter fresh numeric version gate before
+                        // choosing an OMP cookie transport branch.
+                        isOpenMp = advertisedVersion.trim().startsWith("omp ", ignoreCase = true),
+                        version = advertisedVersion
                     )
                 }
             }

@@ -97,6 +97,14 @@ object ServerDetailDialog {
             }
         }
 
+        // The SA-MP INFO (`i`) record has no protocol-version field. Native
+        // augments a successful fresh INFO result with its fresh `version` rule
+        // (`r`), so ClientJoin/OMP selection never trusts a directory label.
+        fun freshAdvertisedVersion(): String = runCatching {
+            val info = JSONObject(NativeBridge.nativeQueryInfo(server.ip, server.port, 1_500))
+            if (info.optBoolean("ok")) info.optString("version") else ""
+        }.getOrDefault("")
+
         fun formatSession(o: JSONObject): String = buildString {
             append("=== STATUS SESI NATIVE ===\n")
             append("Android native tanpa Winlator/samp.exe. Stream dipoll otomatis selama sesi ini terbuka.\n")
@@ -105,6 +113,12 @@ object ServerDetailDialog {
                 "Hit/damage/ammo lokal dan gameplay GTA penuh belum diklaim.\n\n")
             append("aktif           : ").append(o.optBoolean("active")).append('\n')
             append("profil wire     : ").append(o.optString("clientProtocol").ifBlank { "belum dipilih" }).append('\n')
+            val transport = o.optString("transportVariant").ifBlank { "belum dipilih" }
+            append("transport       : ").append(transport)
+            if (o.optBoolean("openMpServerEnvelope")) {
+                append(" + envelope OMP server→client")
+            }
+            append(" (transport saja, bukan admission)\n")
             if (o.optString("clientProtocol").startsWith("0.3.DL-R1")) {
                 val objectFallbacks = o.optInt("dlObjectFallbacks").coerceAtLeast(0)
                 append("DL R1          : ClientJoin + layout CustomSkin inti aktif. ")
@@ -434,6 +448,7 @@ object ServerDetailDialog {
                         append("hostname  : ").append(json.optString("hostname")).append('\n')
                         append("gamemode  : ").append(json.optString("gamemode")).append('\n')
                         append("language  : ").append(json.optString("language")).append('\n')
+                        append("version   : ").append(json.optString("version").ifBlank { "-" }).append('\n')
                         append("players   : ").append(json.optInt("players")).append(" / ")
                             .append(json.optInt("maxPlayers")).append('\n')
                         append("password  : ").append(if (json.optBoolean("password")) "ya" else "tidak")
@@ -510,17 +525,10 @@ object ServerDetailDialog {
                             NativeBridge.nativeSessionPoll(SESSION_POLL_TIMEOUT_MS)
                         } else {
                             // A directory/index value can be stale or describe a
-                            // compatibility range. Re-query immediately before
-                            // ClientJoin so the native DL profile is selected
-                            // only from this endpoint's fresh version response.
-                            val advertisedVersion = runCatching {
-                                val info = JSONObject(NativeBridge.nativeQueryInfo(
-                                    server.ip,
-                                    server.port,
-                                    1_500
-                                ))
-                                if (info.optBoolean("ok")) info.optString("version") else ""
-                            }.getOrElse { "" }
+                            // compatibility range. INFO has no version field;
+                            // resolve the endpoint's fresh `version` rule before
+                            // native selects its fixed DL/OMP transport profile.
+                            val advertisedVersion = freshAdvertisedVersion()
                             NativeBridge.nativeSessionConnect(
                                 server.ip,
                                 server.port,
@@ -703,12 +711,9 @@ object ServerDetailDialog {
 
         btnProbe.setOnClickListener {
             run {
-                // Keep this diagnostic on the same fresh, bounded profile
+                // Keep this diagnostic on the same fresh, bounded rule-version
                 // selection as the player-facing retained-session action.
-                val advertisedVersion = runCatching {
-                    val info = JSONObject(NativeBridge.nativeQueryInfo(server.ip, server.port, 1_500))
-                    if (info.optBoolean("ok")) info.optString("version") else ""
-                }.getOrElse { "" }
+                val advertisedVersion = freshAdvertisedVersion()
                 val o = JSONObject(NativeBridge.nativeRaknetProbe(
                     server.ip,
                     server.port,
@@ -722,6 +727,11 @@ object ServerDetailDialog {
                     append("cookie ok       : ").append(o.optBoolean("cookieOk")).append('\n')
                     append("auth challenge  : ").append(o.optBoolean("authenticated")).append('\n')
                     append("profil wire     : ").append(o.optString("clientProtocol").ifBlank { "-" }).append('\n')
+                    append("transport       : ").append(o.optString("variant").ifBlank { "-" })
+                    if (o.optBoolean("openMpServerEnvelope")) {
+                        append(" + envelope OMP server→client")
+                    }
+                    append(" (bukan admission)\n")
                     append("client join     : ").append(o.optBoolean("joined")).append('\n')
                     append("accepted        : ").append(o.optBoolean("accepted")).append('\n')
                     append("PlayerInit RPC  : ").append(o.optBoolean("playerInit")).append('\n')

@@ -928,6 +928,8 @@ std::string session_json(const samp::SessionSnapshot& s) {
     << ",\"localAimStateKnown\":" << (s.localAimStateKnown ? "true" : "false")
     << ",\"localPassengerStateKnown\":" << (s.localPassengerStateKnown ? "true" : "false")
     << ",\"clientProtocol\":\"" << samp::json_escape(s.clientProtocol) << "\""
+    << ",\"transportVariant\":\"" << samp::json_escape(s.transportVariant) << "\""
+    << ",\"openMpServerEnvelope\":" << (s.openMpServerEnvelope ? "true" : "false")
     << ",\"serverName\":\"" << samp::json_escape(s.serverName) << "\""
     << ",\"rpcSummary\":\"" << samp::json_escape(s.rpcSummary) << "\""
     << ",\"syncSummary\":\"" << samp::json_escape(s.syncSummary) << "\""
@@ -1705,6 +1707,21 @@ Java_com_xykal_sampdroid_NativeBridge_nativeQueryInfo(JNIEnv* env, jclass, jstri
                                                       jint port, jint timeoutMs) {
   auto host = to_std(env, ip);
   auto info = samp::query_info(host, static_cast<uint16_t>(port), timeoutMs);
+  // INFO itself does not carry a protocol version. If the endpoint is alive,
+  // augment this one UI-facing response with its fresh `version` rule so the
+  // next native ClientJoin/OMP decision never relies on a directory label.
+  // A missing/slow rules reply is optional metadata, not an INFO failure.
+  std::string advertisedVersion;
+  if (info.ok) {
+    const int ruleTimeoutMs = timeoutMs < 100 ? 100 : (timeoutMs > 1500 ? 1500 : timeoutMs);
+    const auto rules = samp::query_rules(host, static_cast<uint16_t>(port), ruleTimeoutMs);
+    for (const samp::Rule& rule : rules) {
+      if (rule.name == "version") {
+        advertisedVersion = rule.value;
+        break;
+      }
+    }
+  }
   std::ostringstream o;
   o << "{";
   o << "\"ok\":" << (info.ok ? "true" : "false") << ",";
@@ -1714,7 +1731,8 @@ Java_com_xykal_sampdroid_NativeBridge_nativeQueryInfo(JNIEnv* env, jclass, jstri
   o << "\"maxPlayers\":" << info.maxPlayers << ",";
   o << "\"hostname\":\"" << samp::json_escape(info.hostname) << "\",";
   o << "\"gamemode\":\"" << samp::json_escape(info.gamemode) << "\",";
-  o << "\"language\":\"" << samp::json_escape(info.language) << "\"";
+  o << "\"language\":\"" << samp::json_escape(info.language) << "\",";
+  o << "\"version\":\"" << samp::json_escape(advertisedVersion) << "\"";
   o << "}";
   return to_java(env, o.str());
 }
@@ -1784,6 +1802,7 @@ Java_com_xykal_sampdroid_NativeBridge_nativeRaknetProbe(JNIEnv* env, jclass, jst
     << ",\"rpcSummary\":\"" << samp::json_escape(r.rpcSummary) << "\""
     << ",\"stateSummary\":\"" << samp::json_escape(r.stateSummary) << "\""
     << ",\"variant\":\"" << samp::json_escape(r.variant) << "\""
+    << ",\"openMpServerEnvelope\":" << (r.openMpServerEnvelope ? "true" : "false")
     << ",\"error\":\"" << samp::json_escape(r.error) << "\""
     << ",\"log\":\"" << samp::json_escape(r.log) << "\"}";
   return to_java(env, o.str());

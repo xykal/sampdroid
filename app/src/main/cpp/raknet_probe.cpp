@@ -7,6 +7,7 @@
 #include "input_state.h"
 #include "local_gameplay_bridge.h"
 #include "local_player_sync.h"
+#include "openmp_transport.h"
 #include "raknet_codec.h"
 #include "raknet_handshake.h"
 #include "raknet_session.h"
@@ -188,6 +189,33 @@ struct Net {
   ~Net() { close(); }
 };
 
+// open.mp optionally emits one raw access record after an OMP-cookie request,
+// before it wraps every later server-to-client datagram with its own key-XOR
+// envelope. This state is intentionally narrow: outbound Android packets keep
+// the existing SA-MP wrapper, and no OMP client-version field is fabricated.
+struct OpenMpServerEnvelope {
+  bool enabled = false;
+  uint32_t key = 0u;
+  uint32_t serverClientModVersion = 0u;
+
+  bool acceptAccessRequest(const std::vector<uint8_t>& wire) {
+    const auto request = openmp::parseAccessRequest(wire);
+    if (!request) return false;
+    enabled = true;
+    key = request->encryptionKey;
+    serverClientModVersion = request->serverClientModVersion;
+    return true;
+  }
+
+  bool decryptInPlace(std::vector<uint8_t>& wire) const {
+    if (!enabled) return true;
+    std::vector<uint8_t> plain;
+    if (!openmp::decryptServerDatagram(wire, key, plain)) return false;
+    wire = std::move(plain);
+    return true;
+  }
+};
+
 enum class ReliablePurpose : uint8_t {
   Generic,
   // The three source-style records sent immediately after RakNet acceptance.
@@ -307,6 +335,10 @@ struct LiveSession {
   bool joined = false;
   // Copied from a fixed handshake profile before socket ownership is retained.
   std::string clientProtocol;
+  // `omp` only records a selected/accepted OMP-cookie transport branch. It is
+  // not an official client-version assertion and it never means PlayerInit.
+  std::string transportVariant;
+  OpenMpServerEnvelope openMpServerEnvelope;
   // Receipt flags start during synchronous connect and keep updating in poll.
   // They are diagnostics only; WorldState/PlayerInit remains the admission gate.
   BootstrapTransportReceipts bootstrapTransportReceipts;
@@ -1126,6 +1158,16 @@ std::vector<raknet::IncomingPacket> applyInboundReliableOrder(
   return ordered.push(std::move(packet));
 }
 
+bool unwrapOpenMpSessionDatagram(LiveSession& session, std::vector<uint8_t>& bytes) {
+  if (session.openMpServerEnvelope.decryptInPlace(bytes)) return true;
+  // Once the exact raw access record supplied a key, a checksum failure must
+  // not fall through into the legacy decoder. Doing so would turn corrupted or
+  // mismatched encrypted traffic into arbitrary RakNet state.
+  session.error = "envelope open.mp dari server gagal verifikasi checksum";
+  if (session.net) session.net->close();
+  return false;
+}
+
 void processSessionDatagram(LiveSession& session, const std::vector<uint8_t>& bytes) {
   // Net has already peer-filtered this UDP datagram. Count any peer traffic as
   // transport liveness even if its application payload is malformed; protocol
@@ -1567,6 +1609,8 @@ SessionSnapshot snapshotFrom(const LiveSession* session) {
   snapshot.localAimStateKnown = session->localAimStateKnown;
   snapshot.localPassengerStateKnown = session->localPassengerStateKnown;
   snapshot.clientProtocol = session->clientProtocol;
+  snapshot.transportVariant = session->transportVariant;
+  snapshot.openMpServerEnvelope = session->openMpServerEnvelope.enabled;
   snapshot.serverName = snapshot.playerInit ? session->world.playerInit().serverName : "";
   snapshot.rpcSummary = session->rpcSummary;
   snapshot.syncSummary = session->syncSummary;
@@ -2190,7 +2234,8 @@ WorldSnapshot worldSnapshotFrom(const LiveSession* session) {
 
 static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int timeoutMs,
                                        bool retainSession, const std::string& requestedNickname,
-                                       const handshake::ClientJoinProfile& clientProfile) {
+                                       const handshake::ClientJoinProfile& clientProfile,
+                                       bool preferOpenMpTransport) {
   ProbeResult res;
   res.clientProtocol = clientProfile.displayName != nullptr ? clientProfile.displayName : "";
   // Android invokes this from an IO coroutine, but a dead UDP endpoint must not
@@ -2233,13 +2278,36 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   }
 
   logln(res, "target " + ip + ":" + std::to_string(port));
+  if (preferOpenMpTransport) {
+    // The decision is query-gated by the exact source-owned numeric `omp x.y.z.build`
+    // rule, not by a user nickname, host name, or a fabricated client marker.
+    logln(res, "transport query omp terdeteksi; coba cookie OMP dulu (fallback SA-MP tetap ada)");
+  }
 
   std::vector<uint8_t> resp;
+  OpenMpServerEnvelope openMpServerEnvelope;
 
   // ---- 1. probe tanpa cookie ------------------------------------------------
-  logln(res, "[1] OPEN_CONNECTION_REQUEST (probe)");
-  net.send(wrap_packet({ID_OPEN_CONNECTION_REQUEST, 0x00, 0x00}, port));
-  if (receiveDuringConnect(resp) <= 0) {
+  // UDP query liveness does not guarantee the first independent RakNet socket
+  // reply arrives in one scheduling slice. Retry this idempotent raw probe a
+  // few times inside the existing complete-handshake deadline; do not promote
+  // a short first receive timeout into a false endpoint/OMP diagnosis.
+  constexpr int kMaxOpenProbeAttempts = 3;
+  bool gotOpenProbeReply = false;
+  for (int attempt = 0; attempt < kMaxOpenProbeAttempts && !gotOpenProbeReply; ++attempt) {
+    logln(res, attempt == 0 ? "[1] OPEN_CONNECTION_REQUEST (probe)"
+                            : "[1] OPEN_CONNECTION_REQUEST ulang (probe)");
+    if (!net.send(wrap_packet({ID_OPEN_CONNECTION_REQUEST, 0x00, 0x00}, port))) {
+      res.error = "gagal mengirim OPEN_CONNECTION_REQUEST";
+      return res;
+    }
+    if (receiveDuringConnect(resp) > 0) {
+      gotOpenProbeReply = true;
+      break;
+    }
+    if (connectionDeadlineReached) break;
+  }
+  if (!gotOpenProbeReply) {
     res.error = connectionDeadlineReached ? connectionDeadlineError()
                                           : "timeout: server tidak membalas sama sekali";
     logln(res, "    " + res.error);
@@ -2257,40 +2325,95 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     std::snprintf(cbuf, sizeof(cbuf), "    cookie challenge 0x%04X", cookie);
     logln(res, cbuf);
 
-    // ---- 2. echo cookie (SA-MP dulu, lalu open.mp) ------------------------
+    // ---- 2. echo cookie ------------------------------------------------------
+    // A fresh direct query with exact numeric `omp x.y.z.build` selects the OMP
+    // cookie first. Any blank/unknown/non-source banner preserves the historic
+    // SA-MP-first order. Both paths retain one bounded fallback cookie attempt.
     bool got = false;
     for (int attempt = 0; attempt < 6 && !got; ++attempt) {
       bool newCookie = false;
-      const uint16_t variants[2] = {static_cast<uint16_t>(cookie ^ 0x6969),
-                                    static_cast<uint16_t>(cookie ^ 0x6D70)};
-      const char* names[2] = {"samp", "omp"};
+      const uint16_t sampCookie = static_cast<uint16_t>(cookie ^ 0x6969u);
+      const uint16_t ompCookie = static_cast<uint16_t>(cookie ^ 0x6D70u);
+      const uint16_t variants[2] = {
+          preferOpenMpTransport ? ompCookie : sampCookie,
+          preferOpenMpTransport ? sampCookie : ompCookie,
+      };
+      const char* names[2] = {
+          preferOpenMpTransport ? "omp" : "samp",
+          preferOpenMpTransport ? "samp" : "omp",
+      };
       for (int i = 0; i < 2 && !got && !newCookie; ++i) {
+        const bool tryingOmp = std::strcmp(names[i], "omp") == 0;
         const uint16_t x = variants[i];
         std::vector<uint8_t> p = {ID_OPEN_CONNECTION_REQUEST,
-                                  static_cast<uint8_t>(x & 0xFF),
-                                  static_cast<uint8_t>(x >> 8)};
+                                  static_cast<uint8_t>(x & 0xFFu),
+                                  static_cast<uint8_t>(x >> 8u)};
         logln(res, std::string("[2] echo cookie (") + names[i] + ")");
-        net.send(wrap_packet(p, port));
-        if (receiveDuringConnect(resp) <= 0) continue;
-        logln(res, "    <- " + hex(resp));
-        if (resp[0] == ID_OPEN_CONNECTION_REPLY) {
-          got = true;
-          res.openConnection = true;
-          res.cookieOk = true;
-          res.variant = names[i];
-          logln(res, std::string("    OPEN_CONNECTION_REPLY - server menerima (") + names[i] + ")");
-        } else if (resp[0] == ID_OPEN_CONNECTION_COOKIE && resp.size() >= 3) {
-          // cookie di-reseed server; ulangi dengan nilai terbaru
-          cookie = static_cast<uint16_t>(resp[1] | (resp[2] << 8));
-          newCookie = true;
-          std::snprintf(cbuf, sizeof(cbuf), "    cookie baru 0x%04X", cookie);
-          logln(res, cbuf);
-        } else if (handshake::isTerminalSessionControlId(resp[0])) {
-          res.error = describeOpenConnectionReply(resp[0], resp.size());
+        if (!net.send(wrap_packet(p, port))) {
+          res.error = "gagal mengirim echo cookie";
+          return res;
+        }
+
+        // A configured open.mp peer first emits its raw access record, then
+        // its encrypted OPEN_CONNECTION_REPLY. Read a tiny bounded burst for
+        // that two-datagram transition instead of treating the access record as
+        // an unknown RakNet ID or sending a second cookie meanwhile.
+        constexpr int kMaxCookieResponseDatagrams = 3;
+        for (int response = 0;
+             response < kMaxCookieResponseDatagrams && !got && !newCookie;
+             ++response) {
+          if (receiveDuringConnect(resp) <= 0) break;
+          if (tryingOmp && !openMpServerEnvelope.enabled &&
+              openMpServerEnvelope.acceptAccessRequest(resp)) {
+            res.openMpServerEnvelope = true;
+            logln(res, "    raw access open.mp diterima; kunci envelope disimpan native");
+            continue;
+          }
+          if (openMpServerEnvelope.enabled && !openMpServerEnvelope.decryptInPlace(resp)) {
+            res.error = "envelope open.mp saat handshake gagal verifikasi checksum";
+            logln(res, "    " + res.error);
+            return res;
+          }
+          if (resp.empty()) continue;
+          logln(res, "    <- " + hex(resp));
+          if (resp[0] == ID_OPEN_CONNECTION_REPLY) {
+            got = true;
+            res.openConnection = true;
+            res.cookieOk = true;
+            res.variant = names[i];
+            logln(res, std::string("    OPEN_CONNECTION_REPLY - server menerima (") +
+                           names[i] + ")");
+          } else if (resp[0] == ID_OPEN_CONNECTION_COOKIE && resp.size() >= 3u) {
+            // A peer which has already supplied an OMP envelope key must not
+            // be silently reclassified by a fresh legacy cookie. Fail closed:
+            // the configured peer should have sent its encrypted open reply.
+            if (openMpServerEnvelope.enabled) {
+              res.error = "open.mp mengirim cookie ulang setelah access envelope";
+              logln(res, "    " + res.error);
+              return res;
+            }
+            cookie = static_cast<uint16_t>(resp[1] | (resp[2] << 8u));
+            newCookie = true;
+            std::snprintf(cbuf, sizeof(cbuf), "    cookie baru 0x%04X", cookie);
+            logln(res, cbuf);
+          } else if (handshake::isTerminalSessionControlId(resp[0])) {
+            res.error = describeOpenConnectionReply(resp[0], resp.size());
+            logln(res, "    " + res.error);
+            return res;
+          } else {
+            logln(res, "    " + describeOpenConnectionReply(resp[0], resp.size()));
+          }
+          // Preserve the old one-response-per-cookie behavior unless the exact
+          // OMP access record above explicitly asked us to await its encrypted
+          // follow-up reply.
+          if (!got && !newCookie) break;
+        }
+        if (openMpServerEnvelope.enabled && !got) {
+          res.error = connectionDeadlineReached
+              ? connectionDeadlineError()
+              : "access envelope open.mp diterima tetapi OPEN_CONNECTION_REPLY tidak valid";
           logln(res, "    " + res.error);
           return res;
-        } else {
-          logln(res, "    " + describeOpenConnectionReply(resp[0], resp.size()));
         }
       }
     }
@@ -2304,6 +2427,17 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     logln(res, "    " + res.error);
     return res;
   }
+
+  // Once the OMP access record is accepted, every following server datagram is
+  // wrapped. Never pass a bad envelope to the legacy RakNet decoder.
+  const auto receiveProtocolDuringConnect = [&](std::vector<uint8_t>& out) {
+    const int received = receiveDuringConnect(out);
+    if (received <= 0 || !openMpServerEnvelope.enabled) return received;
+    if (openMpServerEnvelope.decryptInPlace(out)) return received;
+    res.error = "envelope open.mp saat handshake gagal verifikasi checksum";
+    logln(res, "    " + res.error);
+    return -2;
+  };
 
   // ---- 3. connection request ----------------------------------------------
   // RakNet starts its reliable message-number space at zero.  Beginning at
@@ -2332,7 +2466,8 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   raknet::SplitReassembler reassembler;
   raknet::ReliableOrderedGate inboundOrdered;
   for (int i = 0; i < 20 && !res.accepted; ++i) {
-    if (receiveDuringConnect(resp) <= 0) {
+    if (receiveProtocolDuringConnect(resp) <= 0) {
+      if (!res.error.empty()) return res;
       if (!resendTrackedReliableDue(net, handshakePending, res.error)) return res;
       continue;
     }
@@ -2516,8 +2651,9 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   // before its first game-layer frame without turning connect into a long wait.
   constexpr int kMaxInitialSessionReadPolls = 8;
   for (int i = 0; i < kMaxInitialSessionReadPolls && !connectionDeadlineReached; ++i) {
-    if (receiveDuringConnect(resp) <= 0) {
-      if (connectionDeadlineReached || !resendTrackedReliableDue(net, handshakePending, res.error)) break;
+    if (receiveProtocolDuringConnect(resp) <= 0) {
+      if (!res.error.empty() || connectionDeadlineReached ||
+          !resendTrackedReliableDue(net, handshakePending, res.error)) break;
       continue;
     }
     raknet::Datagram dg = raknet::decodeDatagram(resp);
@@ -2620,6 +2756,10 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   res.rpcSummary = rpcSummary;
   res.stateSummary = stateSummary;
   res.playerInit = world.initialized();
+  res.openMpServerEnvelope = openMpServerEnvelope.enabled;
+  if (res.openMpServerEnvelope) {
+    logln(res, "    envelope open.mp inbound aktif (transport saja, bukan admission)");
+  }
   logln(res, std::string("    ACK transport bootstrap: NEW_INCOMING=") +
                  (res.newIncomingTransportAcked ? "ya" : "belum") +
                  " static=" + (res.staticDataTransportAcked ? "ya" : "belum") +
@@ -2680,6 +2820,8 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     live->accepted = res.accepted;
     live->joined = res.joined;
     live->clientProtocol = res.clientProtocol;
+    live->transportVariant = res.variant;
+    live->openMpServerEnvelope = std::move(openMpServerEnvelope);
     live->bootstrapTransportReceipts = bootstrapTransportReceipts;
     live->receivedPackets = rxPackets;
     live->receivedRpcs = rpcCount;
@@ -2708,7 +2850,8 @@ ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs,
                          const std::string& advertisedServerVersion) {
   const handshake::ClientJoinProfile clientProfile =
       handshake::clientJoinProfileForAdvertisedVersion(advertisedServerVersion);
-  return raknet_connect_impl(ip, port, timeoutMs, false, "SampDroid", clientProfile);
+  return raknet_connect_impl(ip, port, timeoutMs, false, "SampDroid", clientProfile,
+                             openmp::isOpenMpAdvertisement(advertisedServerVersion));
 }
 
 SessionSnapshot raknet_session_connect(const std::string& ip, uint16_t port, int timeoutMs,
@@ -2719,8 +2862,9 @@ SessionSnapshot raknet_session_connect(const std::string& ip, uint16_t port, int
 
   const handshake::ClientJoinProfile clientProfile =
       handshake::clientJoinProfileForAdvertisedVersion(advertisedServerVersion);
-  const ProbeResult result = raknet_connect_impl(ip, port, timeoutMs, true, nickname,
-                                                 clientProfile);
+  const ProbeResult result = raknet_connect_impl(
+      ip, port, timeoutMs, true, nickname, clientProfile,
+      openmp::isOpenMpAdvertisement(advertisedServerVersion));
   if (!gLiveSession) {
     SessionSnapshot snapshot;
     snapshot.accepted = result.accepted;
@@ -2731,6 +2875,8 @@ SessionSnapshot raknet_session_connect(const std::string& ip, uint16_t port, int
     snapshot.playerInit = result.playerInit;
     snapshot.playerId = result.playerId;
     snapshot.clientProtocol = result.clientProtocol;
+    snapshot.transportVariant = result.variant;
+    snapshot.openMpServerEnvelope = result.openMpServerEnvelope;
     snapshot.serverName = result.serverName;
     snapshot.receivedPackets = result.receivedPackets;
     snapshot.receivedRpcs = result.receivedRpcs;
@@ -2756,7 +2902,7 @@ SessionSnapshot raknet_session_poll(int timeoutMs) {
 
   std::vector<uint8_t> packet;
   const int firstReceive = gLiveSession->net->recv(packet);
-  if (firstReceive > 0) {
+  if (firstReceive > 0 && unwrapOpenMpSessionDatagram(*gLiveSession, packet)) {
     processSessionDatagram(*gLiveSession, packet);
   }
   // A 30–40 ms Android poll must not reduce a busy server to one queued
@@ -2772,7 +2918,9 @@ SessionSnapshot raknet_session_poll(int timeoutMs) {
          ++index) {
       const int received = gLiveSession->net->recv(packet, true);
       if (received < 0) break;
-      if (received > 0) processSessionDatagram(*gLiveSession, packet);
+      if (received > 0 && unwrapOpenMpSessionDatagram(*gLiveSession, packet)) {
+        processSessionDatagram(*gLiveSession, packet);
+      }
     }
   }
   resendDueReliable(*gLiveSession);

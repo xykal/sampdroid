@@ -103,9 +103,10 @@ dan bootstrap RequestClass berikutnya.
 
 Baseline tetap menulis `NetGameVersion=4057`, token accepted XOR `4057`, dan
 string `0.3.7-R2`. Sebelum socket dibuka, UI hanya meneruskan versi dari **query
-server yang baru dilakukan**; core memilih profile DL bila—dan hanya bila—nilai
-itu sama dengan `0.3.DL-R1` setelah trim whitespace ASCII dan perbandingan ASCII
-case-insensitive. Profile itu secara atomik menulis `NetGameVersion=4062`, token
+server yang baru dilakukan**: INFO lebih dulu membuktikan endpoint hidup, lalu
+JNI mengambil rule `version` segar (`r`) sebagai metadata opsional. Core memilih
+profile DL bila—dan hanya bila—nilai itu sama dengan `0.3.DL-R1` setelah trim
+whitespace ASCII dan perbandingan ASCII case-insensitive. Profile itu secara atomik menulis `NetGameVersion=4062`, token
 accepted XOR `4062`, dan string `0.3.DL-R1` dalam ClientJoin yang sama. Nilai
 lain (kosong, `open.mp`, `0.3.DL`, atau daftar versi campuran) tetap 4057 agar
 server tidak menerima identitas versi spekulatif.
@@ -151,6 +152,49 @@ penuh. `ModelFile`, request/receipt file DFF/TXD, unduh asset, validasi asset
 custom, dan artwork/model custom belum diaktifkan atau diklaim. Tidak ada URL
 server yang dibuka native atau completion-download yang dipalsukan.
 
+### Transport open.mp query-gated (tanpa spoof identitas ClientJoin)
+
+Selain pemilih **profile ClientJoin** di atas, native mempunyai pemilih transport
+yang terpisah dan fail-closed. Ia hanya aktif bila rule `version` hasil query
+baru (INFO liveness + `r`) memiliki bentuk source-owned lengkap
+`omp <major>.<minor>.<patch>.<build>` (prefix `omp`, pemisah whitespace, dan
+empat komponen decimal; case-insensitive ASCII). Bentuk itu persis yang ditulis `LegacyNetwork` open.mp sebagai rule
+`version`. Banner lain—termasuk `open.mp`, kata `omp` di tengah nama server,
+`omp hello`, kosong, atau versi DL—mempertahankan urutan cookie SA-MP lama.
+
+Untuk query yang cocok, native mencoba echo `cookie ^ 0x6D70` (OMP) lebih dulu,
+lalu sekali fallback bounded ke `cookie ^ 0x6969` (SA-MP) bila tidak ada balasan.
+Jadi petunjuk query tidak pernah mengubah `NetGameVersion`, serial, `Modded`,
+channel SyncRPC, string `0.3.7-R2`/`0.3.DL-R1`, atau trailer ClientJoin. Ia juga
+tidak menerima atau mengirim marker versi official/open.mp yang tidak kita
+implementasikan.
+
+Jika server OMP yang dipilih mengaktifkan envelope server→client, source
+`SAMPRakNet` mengirim satu record raw **sebelum** `OPEN_CONNECTION_REPLY`:
+
+```text
+u8  94 (ID_USER_PACKET_ENUM)
+u32 LE 0x006F6D70              // source integer; raw LE bytes: 70 6D 6F 00
+u32 LE randomKey
+u32 LE server client-mod version
+```
+
+Native hanya mengenali panjang tepat 13 byte, magic tepat, dan version nonzero;
+kunci disimpan di native dan tidak pernah masuk JSON/log UI. Sesudah record itu,
+setiap datagram **server→client** didekripsi sebagai
+`checksum | (plain[i] XOR keyLE[i mod 4])`; checksum adalah XOR
+`plain[i] & 0xAA`. Mismatch checksum menutup socket daripada memberi byte
+terenkripsi kepada decoder RakNet legacy. Arah **client→server tetap** memakai
+wrapper SA-MP yang ada—tidak ada XOR envelope tambahan outbound.
+
+Snapshot/probe menampilkan `transportVariant` (`samp`/`omp`) dan flag envelope
+untuk diagnosis transport semata; keduanya tidak berarti official client,
+`ClientJoin` diterima, `PlayerInit`, class, spawn, atau gameplay. Regression
+host memiliki peer UDP lokal yang menjalankan raw access + seluruh envelope dari
+OPEN reply hingga `PlayerInit`/RequestClass, sambil membuktikan ClientJoin masih
+baseline 4057/`0.3.7-R2`; peer legacy lokal lain mengabaikan echo OMP lalu
+mengunci fallback SA-MP. Validasi ini **bukan** traffic atau admission UIF live.
+
 ### Catatan validasi UIF yang terpisah
 
 Pada 2026-10-20 query `INFO` UDP minimal ke `play.uifserver.net:7776` berhasil
@@ -182,17 +226,30 @@ dan tidak mengirim class, sync, chat, command, atau input gameplay.
 
 Receipt itu membuktikan delivery RakNet untuk record reliable yang tepat saja;
 ia tidak membuktikan server mem-parse ClientJoin, menerima identity client, atau
-membuka gameplay. Audit read-only comparator open.mp commit
-`3d20f3dc0e26917264cdc8585c65913e080a143c` kini mengonfirmasi bentuk enam field
+membuka gameplay.
+
+Sesudah jalur cookie OMP source-backed/loopback dipasang, satu validasi target
+terpisah pada **2026-10-21** memakai rule segar `version=omp 1.5.8.3170` dan
+window native **2.000 ms** (receive 250 ms). Ia tidak mengirim class, spawn,
+sync, chat, command, atau input. UIF membalas cookie lalu menerima echo
+**OMP** (`^0x6D70`), menyelesaikan AUTH + `CONNECTION_REQUEST_ACCEPTED`, dan
+meng-ACK msg 2/4/5 bootstrap; hasilnya `variant=omp`, 5 packet/0 RPC,
+`PlayerInit=0`, `joined=0`. Tidak ada raw access record/envelope dalam sample
+ini. Itu membuktikan penerimaan cookie transport OMP pada endpoint saat itu,
+bukan implementasi server tertentu, setting encryption global, parsing
+ClientJoin, admission, class, spawn, atau gameplay.
+
+Audit read-only comparator open.mp commit
+`3d20f3dc0e26917264cdc8585c65913e080a143c` mengonfirmasi bentuk enam field
 baseline SampDroid dapat dibaca `PlayerConnect`, serial/batas versi memenuhi
 policy source, dan absent trailer berarti bukan marker open.mp. Dalam jalur
 open.mp itu sendiri, `PlayerInit`/RPC 139 baru dikirim setelah request-player dan
 dispatcher koneksi lolos; hasil penolakan request-player selain `Ignore` mengirim
-RPC 130 sebelum kick. UIF tidak diatribusikan ke implementasi itu, dan probe tidak menerima 130
-maupun 139. Karena itu audit hanya mempersempit titik diagnosis dan tidak
-membenarkan perubahan channel, serial, profile, marker, atau payload spekulatif.
-Probe RakNet referensi read-only yang memang melihat `InitGame` tetap comparator
-compatibility, bukan bukti path SampDroid.
+RPC 130 sebelum kick. UIF tidak diatribusikan ke implementasi itu; probe legacy
+maupun OMP tidak menerima 130 atau 139. Karena itu audit hanya mempersempit titik
+diagnosis dan tidak membenarkan perubahan channel, serial, profile, marker, atau
+payload spekulatif. Probe RakNet referensi read-only yang memang melihat
+`InitGame` tetap comparator compatibility, bukan bukti path SampDroid.
 
 ## Static GTA world filter dari server (RPC 43)
 

@@ -49,6 +49,7 @@ jobs:
             app/src/main/cpp/local_movement.cpp \
             app/src/main/cpp/local_vehicle_movement.cpp \
             app/src/main/cpp/local_player_sync.cpp \
+            app/src/main/cpp/openmp_transport.cpp \
             app/src/main/cpp/sync_decoder.cpp \
             app/src/main/cpp/raknet_codec.cpp \
             app/src/main/cpp/raknet_handshake.cpp \
@@ -87,6 +88,7 @@ jobs:
             app/src/main/cpp/local_movement.cpp \
             app/src/main/cpp/local_vehicle_movement.cpp \
             app/src/main/cpp/local_player_sync.cpp \
+            app/src/main/cpp/openmp_transport.cpp \
             app/src/main/cpp/sync_decoder.cpp \
             app/src/main/cpp/raknet_codec.cpp \
             app/src/main/cpp/raknet_handshake.cpp \

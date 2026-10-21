@@ -188,7 +188,11 @@ object NativeBridge {
     /** Discovers strict parent_streamN.ipl placement members from mounted IMG. */
     external fun nativeGameDataLoadImgStreamingIpls(): String
 
-    /** @return JSON: {ok,error,password,players,maxPlayers,hostname,gamemode,language} */
+    /**
+     * @return JSON: {ok,error,password,players,maxPlayers,hostname,gamemode,language,version}.
+     * `version` is optional fresh `r`-rule metadata after a successful INFO
+     * reply; it is never a directory/index compatibility label.
+     */
     external fun nativeQueryInfo(ip: String, port: Int, timeoutMs: Int): String
 
     /** @return JSON array: [{name,value}] */

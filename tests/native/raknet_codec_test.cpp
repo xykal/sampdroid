@@ -15,6 +15,7 @@
 #include "local_movement.h"
 #include "local_vehicle_movement.h"
 #include "local_player_sync.h"
+#include "openmp_transport.h"
 #include "raknet_codec.h"
 #include "raknet_handshake.h"
 #include "raknet_string_compressor.h"
@@ -2443,6 +2444,59 @@ void testLegacyHandshakeBuilders() {
              decodedBootstrap.packets[3].orderingIndex == 0u &&
              decodedBootstrap.packets[3].payload == join,
          "coalesced post-accept bootstrap did not retain individual frames");
+}
+
+void testOpenMpTransportHelpers() {
+  // Current open.mp SAMPRakNet sends this raw 13-byte record after an OMP
+  // cookie when optional server-to-client transport encryption is enabled.
+  // The literal vector deliberately does not use the production parser to
+  // construct itself.
+  const std::vector<uint8_t> access = {
+      94u, 0x70u, 0x6Du, 0x6Fu, 0x00u,
+      0x12u, 0x34u, 0x56u, 0x78u,
+      0x04u, 0x01u, 0x00u, 0x00u,
+  };
+  const auto parsed = samp::openmp::parseAccessRequest(access);
+  expect(parsed && parsed->encryptionKey == 0x78563412u &&
+             parsed->serverClientModVersion == 0x00000104u,
+         "open.mp raw access request layout changed");
+
+  std::vector<uint8_t> wrongMagic = access;
+  wrongMagic[1] = 0u;
+  std::vector<uint8_t> zeroVersion = access;
+  zeroVersion[9] = zeroVersion[10] = zeroVersion[11] = zeroVersion[12] = 0u;
+  std::vector<uint8_t> shortAccess = access;
+  shortAccess.pop_back();
+  expect(!samp::openmp::parseAccessRequest(wrongMagic) &&
+             !samp::openmp::parseAccessRequest(zeroVersion) &&
+             !samp::openmp::parseAccessRequest(shortAccess),
+         "open.mp access parser must reject malformed/raw unrelated records");
+
+  // Source SAMPRakNet Encrypt with key 0x78563412 over plaintext {25, 0}:
+  // checksum=(25 & 0xAA)=0x08, followed by each byte XOR key low-to-high.
+  const std::vector<uint8_t> encryptedOpenReply = {0x08u, 0x0Bu, 0x34u};
+  std::vector<uint8_t> decrypted;
+  expect(samp::openmp::decryptServerDatagram(encryptedOpenReply, 0x78563412u, decrypted) &&
+             decrypted == std::vector<uint8_t>({25u, 0u}),
+         "open.mp server envelope XOR/checksum decode changed");
+  std::vector<uint8_t> corruptEnvelope = encryptedOpenReply;
+  corruptEnvelope[0] ^= 0x01u;
+  expect(!samp::openmp::decryptServerDatagram(corruptEnvelope, 0x78563412u, decrypted) &&
+             decrypted.empty() &&
+             !samp::openmp::decryptServerDatagram({0x08u}, 0x78563412u, decrypted),
+         "open.mp server envelope must fail closed on checksum/short input");
+
+  expect(samp::openmp::isOpenMpAdvertisement("omp 1.5.8.3170") &&
+             samp::openmp::isOpenMpAdvertisement(" \tOMP\t1.5.8.3170\r\n") &&
+             !samp::openmp::isOpenMpAdvertisement("") &&
+             !samp::openmp::isOpenMpAdvertisement("omp") &&
+             !samp::openmp::isOpenMpAdvertisement("omp   ") &&
+             !samp::openmp::isOpenMpAdvertisement("omp hello") &&
+             !samp::openmp::isOpenMpAdvertisement("omp 1.5.8") &&
+             !samp::openmp::isOpenMpAdvertisement("omp 1.5.8.3170 extra") &&
+             !samp::openmp::isOpenMpAdvertisement("open.mp 1.5.8") &&
+             !samp::openmp::isOpenMpAdvertisement("UIF build omp 1.5.8"),
+         "open.mp query-version selection must stay exact and fail closed");
 }
 
 void testReliableAndAck() {
@@ -5897,6 +5951,31 @@ std::vector<uint8_t> unwrapClientToServerForLoopback(const uint8_t* wire, size_t
   return checksum == wire[0] ? plain : std::vector<uint8_t>{};
 }
 
+// Source SAMPRakNet's optional OMP server-to-client envelope. This test helper
+// intentionally produces its literal checksum/XOR transform independently of
+// production openmp_transport.cpp, so an end-to-end loopback can catch a shared
+// encoder/decoder mistake.
+std::vector<uint8_t> wrapOpenMpServerForLoopback(const std::vector<uint8_t>& plain,
+                                                 uint32_t key) {
+  // The local UDP fixture itself is bounded to 2048 bytes. Keep the helper
+  // bounded too rather than relying on a theoretical size_t + 1 allocation.
+  if (plain.empty() || plain.size() > 2047u) return {};
+  const uint8_t keyBytes[4] = {
+      static_cast<uint8_t>(key & 0xFFu),
+      static_cast<uint8_t>((key >> 8u) & 0xFFu),
+      static_cast<uint8_t>((key >> 16u) & 0xFFu),
+      static_cast<uint8_t>((key >> 24u) & 0xFFu),
+  };
+  std::vector<uint8_t> wire(plain.size() + 1u, 0u);
+  uint8_t checksum = 0u;
+  for (size_t i = 0u; i < plain.size(); ++i) {
+    checksum ^= static_cast<uint8_t>(plain[i] & 0xAAu);
+    wire[i + 1u] = static_cast<uint8_t>(plain[i] ^ keyBytes[i % 4u]);
+  }
+  wire[0] = checksum;
+  return wire;
+}
+
 // A legacy datagram can contain several internal frames after its one leading
 // hasAcks bit. Batch the test stream so the loopback uses ordinary bounded UDP
 // datagrams rather than relying on a host socket's burst-buffer size.
@@ -5922,6 +6001,9 @@ struct LoopbackOpenReplyPeer {
   std::atomic<bool> ready{false};
   uint16_t port = 0;
   std::vector<uint8_t> reply;
+  // Deliberately swallow this many raw open probes before replying, to lock the
+  // native bounded retransmission behavior independently of cookie/auth.
+  unsigned ignoreInitialRequests = 0u;
   std::chrono::milliseconds keepOpenFor{0};
   std::string error;
   std::thread worker;
@@ -5958,22 +6040,29 @@ struct LoopbackOpenReplyPeer {
     port = ntohs(local.sin_port);
     ready = true;
 
-    fd_set readable;
-    FD_ZERO(&readable);
-    FD_SET(fd, &readable);
-    timeval wait{1, 0};
-    if (::select(fd + 1, &readable, nullptr, nullptr, &wait) <= 0) {
-      error = "open-reply receive timeout";
-      ::close(fd);
-      return;
-    }
     uint8_t wire[256]{};
     sockaddr_in peer{};
     socklen_t peerLength = sizeof(peer);
-    const ssize_t received = ::recvfrom(fd, wire, sizeof(wire), 0,
-                                        reinterpret_cast<sockaddr*>(&peer), &peerLength);
-    if (received <= 0 || reply.empty()) {
-      error = "open-reply receive";
+    for (unsigned request = 0u; request <= ignoreInitialRequests; ++request) {
+      fd_set readable;
+      FD_ZERO(&readable);
+      FD_SET(fd, &readable);
+      timeval wait{1, 0};
+      if (::select(fd + 1, &readable, nullptr, nullptr, &wait) <= 0) {
+        error = "open-reply receive timeout";
+        ::close(fd);
+        return;
+      }
+      const ssize_t received = ::recvfrom(fd, wire, sizeof(wire), 0,
+                                          reinterpret_cast<sockaddr*>(&peer), &peerLength);
+      if (received <= 0) {
+        error = "open-reply receive";
+        ::close(fd);
+        return;
+      }
+    }
+    if (reply.empty()) {
+      error = "open-reply missing reply";
       ::close(fd);
       return;
     }
@@ -6006,6 +6095,25 @@ void testBoundedConnectErrors() {
     expect(!refused.active && refused.error == "server penuh sebelum open connection" &&
                peer.error.empty() && !closed.active,
            "pre-cookie server-full reply must remain actionable in Android session status");
+  }
+
+  {
+    LoopbackOpenReplyPeer peer;
+    peer.reply = {31u};
+    peer.ignoreInitialRequests = 1u;
+    peer.start();
+    for (int attempt = 0; attempt < 200 && !peer.ready; ++attempt) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    expect(peer.ready && peer.port != 0u && peer.error.empty(),
+           "open-retry peer did not initialize");
+    const samp::SessionSnapshot retried =
+        samp::raknet_session_connect("127.0.0.1", peer.port, 100, "LoopbackRetry");
+    peer.join();
+    const samp::SessionSnapshot closed = samp::raknet_session_disconnect();
+    expect(!retried.active && retried.error == "server penuh sebelum open connection" &&
+               peer.error.empty() && !closed.active,
+           "one ignored raw open request must retry before reporting endpoint timeout");
   }
 
   {
@@ -6052,6 +6160,20 @@ void testBoundedConnectErrors() {
 
 struct LoopbackClassBootstrapPeer {
   std::atomic<bool> ready{false};
+  // Use the query-gated OMP-cookie route and envelope in one all-local peer.
+  // This confirms the Android client does not claim an OMP ClientJoin marker:
+  // only the cookie transport changes while the legacy profile remains fixed.
+  bool requireOpenMpCookie = false;
+  // Current servers may accept an OMP cookie with encryption disabled. Leave
+  // the source-style access/envelope fixture on by default, but test the plain
+  // branch separately as well.
+  bool sendOpenMpAccessEnvelope = true;
+  // A legacy-only cookie fixture intentionally ignores a first OMP echo so the
+  // client must use its one bounded SA-MP fallback rather than assuming every
+  // `omp <version>` query has the optional branch enabled.
+  bool requireSampCookie = false;
+  std::atomic<bool> sawOpenMpCookie{false};
+  std::atomic<bool> sawSampCookie{false};
   // Test-only loss switch: the peer ignores the first source-coalesced burst
   // so the client must recover each tracked reliable frame independently.
   bool dropInitialSourceBootstrap = false;
@@ -6123,11 +6245,21 @@ struct LoopbackClassBootstrapPeer {
     bool initialClassMessageKnown = false;
     std::chrono::steady_clock::time_point firstInitialClassAt{};
     std::chrono::steady_clock::time_point firstClientJoinAt{};
+    constexpr uint16_t kOpenMpCookie = 0x1234u;
+    constexpr uint32_t kOpenMpEnvelopeKey = 0x78563412u;
+    bool sentCookieChallenge = false;
+    bool openMpEnvelopeActive = false;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(4);
-    auto sendServer = [&](const std::vector<uint8_t>& plain) {
-      return ::sendto(fd, plain.data(), plain.size(), 0,
+    auto sendRawServer = [&](const std::vector<uint8_t>& bytes) {
+      return ::sendto(fd, bytes.data(), bytes.size(), 0,
                       reinterpret_cast<const sockaddr*>(&peer), peerLength) ==
-             static_cast<ssize_t>(plain.size());
+             static_cast<ssize_t>(bytes.size());
+    };
+    auto sendServer = [&](const std::vector<uint8_t>& plain) {
+      const std::vector<uint8_t> wire = openMpEnvelopeActive
+          ? wrapOpenMpServerForLoopback(plain, kOpenMpEnvelopeKey)
+          : plain;
+      return sendRawServer(wire);
     };
 
     // Keep receiving briefly after the first class request: a retransmitted
@@ -6161,7 +6293,66 @@ struct LoopbackClassBootstrapPeer {
         break;
       }
       if (plain[0] == 24u) {  // OPEN_CONNECTION_REQUEST
-        (void)sendServer({25u, 0u});
+        const bool requiresCookie = requireOpenMpCookie || requireSampCookie;
+        if (!requiresCookie) {
+          (void)sendServer({25u, 0u});
+          continue;
+        }
+        if (!sentCookieChallenge) {
+          if (!sendRawServer({26u, static_cast<uint8_t>(kOpenMpCookie & 0xFFu),
+                               static_cast<uint8_t>(kOpenMpCookie >> 8u)})) {
+            error = "loopback cookie send";
+            break;
+          }
+          sentCookieChallenge = true;
+          continue;
+        }
+        if (plain.size() != 3u) {
+          error = "loopback cookie echo layout";
+          break;
+        }
+        const uint16_t receivedCookie =
+            static_cast<uint16_t>(plain[1] | (static_cast<uint16_t>(plain[2]) << 8u));
+        const uint16_t expectedOmp = static_cast<uint16_t>(kOpenMpCookie ^ 0x6D70u);
+        const uint16_t expectedSamp = static_cast<uint16_t>(kOpenMpCookie ^ 0x6969u);
+        if (requireSampCookie && receivedCookie == expectedOmp) {
+          // This is the deliberate silent first attempt. SampDroid must time
+          // out once, then send the legacy cookie without an invented marker.
+          continue;
+        }
+        const uint16_t expected = requireOpenMpCookie ? expectedOmp : expectedSamp;
+        if (receivedCookie != expected) {
+          error = requireOpenMpCookie ? "loopback expected OMP cookie first"
+                                      : "loopback expected SA-MP fallback cookie";
+          break;
+        }
+        if (requireSampCookie) {
+          sawSampCookie = true;
+          if (!sendServer({25u, 0u})) {
+            error = "loopback SA-MP fallback open reply send";
+            break;
+          }
+          continue;
+        }
+
+        sawOpenMpCookie = true;
+        if (sendOpenMpAccessEnvelope) {
+          const std::vector<uint8_t> access = {
+              94u, 0x70u, 0x6Du, 0x6Fu, 0x00u,
+              0x12u, 0x34u, 0x56u, 0x78u,
+              0x04u, 0x01u, 0x00u, 0x00u,
+          };
+          if (!sendRawServer(access)) {
+            error = "loopback OMP access send";
+            break;
+          }
+          openMpEnvelopeActive = true;
+        }
+        if (!sendServer({25u, 0u})) {
+          error = sendOpenMpAccessEnvelope ? "loopback OMP open reply send"
+                                            : "loopback plain OMP open reply send";
+          break;
+        }
         continue;
       }
       // ACK-only frames have the first legacy bit set and no application body.
@@ -6419,6 +6610,88 @@ void testRetainedSessionInitialClassBootstrap() {
              peer.sawInitialClass && peer.error.empty(),
          "retained session must coalesce source bootstrap, then pong and initial RequestClass");
   expect(!closed.active, "loopback retained session must close cleanly");
+}
+
+// The full local lifecycle below exercises the encrypted OMP server direction
+// from raw access record through PlayerInit and RequestClass.
+void testRetainedSessionOpenMpCookieEnvelope() {
+  LoopbackClassBootstrapPeer peer;
+  peer.requireOpenMpCookie = true;
+  peer.start();
+  for (int attempt = 0; attempt < 200 && !peer.ready; ++attempt) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  expect(peer.ready && peer.port != 0u && peer.error.empty(),
+         "open.mp-envelope loopback peer did not initialize");
+
+  // This exact source-style query hint switches only the cookie order. The
+  // ClientJoin assertion below remains the truthful legacy 0.3.7 profile.
+  const samp::SessionSnapshot session = samp::raknet_session_connect(
+      "127.0.0.1", peer.port, 40, "LoopbackOmp", "omp 1.5.8.3170");
+  peer.join();
+  const samp::SessionSnapshot closed = samp::raknet_session_disconnect();
+
+  expect(session.active && session.accepted && session.playerInit && session.joined &&
+             session.newIncomingTransportAcked && session.staticDataTransportAcked &&
+             session.clientJoinTransportAcked && session.transportVariant == "omp" &&
+             session.openMpServerEnvelope && session.clientProtocol == "0.3.7-R2 (4057)",
+         "OMP cookie/envelope must retain a truthful legacy ClientJoin identity and full native lifecycle");
+  expect(peer.sawOpenMpCookie && peer.sawSourceBootstrapDatagram && peer.sawClientJoin &&
+             peer.sawPostAcceptPong && peer.sawInitialClass &&
+             peer.receivedClientNetGameVersion == 4057u &&
+             peer.receivedClientVersion == "0.3.7-R2" && peer.error.empty(),
+         "query-gated OMP peer must receive OMP cookie first and decode the ordinary client direction");
+  expect(!closed.active, "OMP envelope retained session must close cleanly");
+}
+
+void testRetainedSessionOpenMpCookieWithoutEnvelope() {
+  LoopbackClassBootstrapPeer peer;
+  peer.requireOpenMpCookie = true;
+  peer.sendOpenMpAccessEnvelope = false;
+  peer.start();
+  for (int attempt = 0; attempt < 200 && !peer.ready; ++attempt) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  expect(peer.ready && peer.port != 0u && peer.error.empty(),
+         "plain-open.mp loopback peer did not initialize");
+
+  const samp::SessionSnapshot session = samp::raknet_session_connect(
+      "127.0.0.1", peer.port, 40, "LoopbackOmpPlain", "omp 1.5.8.3170");
+  peer.join();
+  const samp::SessionSnapshot closed = samp::raknet_session_disconnect();
+
+  expect(session.active && session.accepted && session.playerInit && session.joined &&
+             session.transportVariant == "omp" && !session.openMpServerEnvelope &&
+             session.clientProtocol == "0.3.7-R2 (4057)",
+         "OMP cookie without access record must retain the unencrypted server direction");
+  expect(peer.sawOpenMpCookie && peer.sawSourceBootstrapDatagram && peer.sawClientJoin &&
+             peer.sawInitialClass && peer.error.empty(),
+         "plain OMP loopback must complete native bootstrap without a guessed envelope");
+  expect(!closed.active, "plain OMP retained session must close cleanly");
+}
+
+void testOpenMpQueryFallsBackToSampCookie() {  LoopbackClassBootstrapPeer peer;
+  peer.requireSampCookie = true;
+  peer.start();
+  for (int attempt = 0; attempt < 200 && !peer.ready; ++attempt) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  expect(peer.ready && peer.port != 0u && peer.error.empty(),
+         "OMP-fallback loopback peer did not initialize");
+
+  const samp::SessionSnapshot session = samp::raknet_session_connect(
+      "127.0.0.1", peer.port, 40, "LoopbackFallback", "omp 1.5.8.3170");
+  peer.join();
+  const samp::SessionSnapshot closed = samp::raknet_session_disconnect();
+
+  expect(session.active && session.accepted && session.playerInit && session.joined &&
+             session.transportVariant == "samp" && !session.openMpServerEnvelope &&
+             session.clientProtocol == "0.3.7-R2 (4057)",
+         "an OMP-query hint must fall back to the legacy cookie without changing ClientJoin identity");
+  expect(peer.sawSampCookie && !peer.sawOpenMpCookie && peer.sawClientJoin &&
+             peer.error.empty(),
+         "legacy-only loopback must observe the bounded SA-MP fallback after its ignored OMP echo");
+  expect(!closed.active, "OMP fallback retained session must close cleanly");
 }
 
 // A peer can ACK every source-style post-accept reliable record and still
@@ -8600,6 +8873,7 @@ void testSetVehicleVelocityReducer() {
 
 int main() {
   testLegacyHandshakeBuilders();
+  testOpenMpTransportHelpers();
   testReliableAndAck();
   testUnreliableSequencedTransport();
   testReliableMessageTransportGate();
@@ -8635,6 +8909,9 @@ int main() {
   testSessionSafetyWithoutSocket();
   testBoundedConnectErrors();
   testRetainedSessionInitialClassBootstrap();
+  testRetainedSessionOpenMpCookieEnvelope();
+  testRetainedSessionOpenMpCookieWithoutEnvelope();
+  testOpenMpQueryFallsBackToSampCookie();
   testClientJoinTransportAckIsNotAdmission();
   testRetainedSessionDlR1ClientJoinProfile();
   testDlR1RpcLayoutReducer();

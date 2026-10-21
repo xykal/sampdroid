@@ -133,9 +133,20 @@ hasil penolakan request-player selain `Ignore` mengirim `ConnectionRejected`
 (130). Ini hanya
 memberi titik diagnosis comparator: UIF belum diidentifikasi sebagai open.mp,
 dan tidak ada RPC 130 atau 139 pada probe. Tidak ada perubahan wire spekulatif
-atau klaim admission dari audit tersebut. Validasi APK/device terukur masih
-pending. Workspace ini tidak memiliki Gradle/Kotlin/Android SDK lokal; build APK
-tetap hanya boleh lewat GitHub Actions sesuai gate rilis.
+atau klaim admission dari audit tersebut. Directory pihak ketiga kini memberi
+lead versi `omp 1.5.8.3170` untuk UIF, tetapi belum menjadi atribusi wire atau
+bukti setting encryption/admission server. Karena itu native baru memilih cookie
+OMP lebih dulu hanya untuk query sumber `omp major.minor.patch.build`, memiliki fallback SA-MP,
+dan dapat memverifikasi envelope OMP server→client bila record access source
+benar-benar datang. ClientJoin tetap jujur pada profile 4057/4062 tanpa marker
+official. Satu probe OMP UIF source-current pada 2026-10-21 (2 detik, tanpa
+class/spawn/sync/chat/command/input) menerima cookie OMP, auth, accepted, dan
+ACK bootstrap 2/4/5; tidak ada record envelope, `PlayerInit`, class, spawn,
+RPC, atau state joined. Jadi itu hanya bukti transport OMP endpoint saat itu,
+bukan klaim encryption server/global, ClientJoin semantic, admission, atau
+gameplay. Validasi APK/device terukur masih pending. Workspace ini tidak memiliki
+Gradle/Kotlin/Android SDK lokal; build APK tetap hanya boleh lewat GitHub Actions
+sesuai gate rilis.
 
 Tombol **Probe RakNet** di detail server memberi observability alur transport,
 bukan bukti gameplay:

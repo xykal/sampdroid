@@ -14,6 +14,14 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   `ModelInfo` 179 passively memetakan custom-object signed ke base stock
   bounded untuk CreateObject/attachment fallback. Downloader/renderer artwork/
   model custom DL penuh tetap belum ada.
+- [x] Transport query-gated OMP: query source-style `omp major.minor.patch.build` mencoba cookie
+  `^0x6D70` dulu, fallback bounded SA-MP tetap ada; raw access 13-byte dan
+  envelope checksum/XOR server→client didekode fail-closed. Full loopback
+  OpenReply→PlayerInit/RequestClass dan fallback legacy lulus, sementara
+  ClientJoin tetap baseline/DL jujur tanpa marker official. Probe UIF OMP
+  2026-10-21 (rule segar `omp 1.5.8.3170`, window 2 s) menerima cookie OMP,
+  auth, accepted, dan ACK bootstrap tanpa access-envelope/PlayerInit/class/spawn;
+  itu transport-only, bukan admission atau setting encryption global.
 - [x] ACK reliable, multi-packet datagram, gate receipt reliable bounded, split reassembly, dan gate inbound `RELIABLE_ORDERED` per channel.
 - [x] `PlayerInit`, PlayerJoin/Quit/Name/Color state reducer.
 - [x] Host regression tests untuk wire vector dan lifecycle player state.
@@ -35,11 +43,14 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   open/cookie/auth/accepted + ClientJoin legacy, menerima ACK RakNet untuk msg
   2/4/5, serta 9 packet/4 RPC (`SetPlayerColor` ×2, `SendClientMessage` ×2)
   dengan satu remote retained, tetapi tanpa PlayerInit/class/spawn/joined.
-  Receipt ini transport-only, bukan admission. Comparator open.mp read-only
+  Sesudah rule fresh `omp 1.5.8.3170` diketahui, satu probe OMP native 2.000 ms
+  juga mencapai cookie OMP/auth/accepted + ACK msg 2/4/5 dengan 5 packet/0 RPC,
+  tanpa raw access-envelope, PlayerInit/class/spawn/joined. Receipt ini
+  transport-only, bukan admission. Comparator open.mp read-only
   commit `3d20f3dc` menerima bentuk baseline enam field dan menunjukkan RPC 139
-  hanya dikirim sesudah jalur request-player/dispatcher; UIF tidak diidentifikasi
-  sebagai open.mp dan tidak mengirim RPC 130 atau 139 pada probe. Jadi tidak ada
-  perubahan wire spekulatif. Reference RakNet read-only yang mendapat PlayerInit
+  hanya dikirim sesudah jalur request-player/dispatcher; UIF belum diatribusikan
+  sebagai open.mp pada wire (listing pihak ketiga hanya lead) dan tidak mengirim
+  RPC 130 atau 139 pada probe. Jadi tidak ada perubahan wire spekulatif. Reference RakNet read-only yang mendapat PlayerInit
   hanya comparator, bukan bukti path SampDroid. PlayerInit/class/spawn SampDroid
   pada APK/device dan server lain masih pending.
 - [x] Decode player StreamIn/StreamOut, exact non-DL `SetPlayerSkin` (153), dan

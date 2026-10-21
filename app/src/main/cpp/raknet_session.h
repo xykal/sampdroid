@@ -705,6 +705,10 @@ struct SessionSnapshot {
   // Exact bounded ClientJoin identity selected before the socket opens.
   // It reports transport compatibility only, not 0.3.DL artwork support.
   std::string clientProtocol;
+  // `omp` means only that the OMP-cookie transport branch was selected; it is
+  // neither an official-client version claim nor PlayerInit/game admission.
+  std::string transportVariant;
+  bool openMpServerEnvelope = false;
   std::string serverName;
   std::string rpcSummary;
   std::string syncSummary;
@@ -717,8 +721,10 @@ struct SessionSnapshot {
 // never a bundled/shared bot name. Per-receive timeout is clamped 25–1500 ms;
 // open/cookie/auth/post-accept is capped at 8x that value (1–12 s), then a
 // quiet post-ClientJoin socket hands off to normal polling. The optional query
-// version chooses DL only for an exact 0.3.DL-R1 value; all other input uses
-// the legacy baseline. Always call off the UI thread.
+// version chooses DL only for an exact 0.3.DL-R1 value; its exact source-style
+// `omp <major>.<minor>.<patch>.<build>` form chooses the OMP cookie first with
+// a bounded SA-MP fallback. This changes transport negotiation only, never ClientJoin identity
+// or PlayerInit/game admission. Always call off the UI thread.
 SessionSnapshot raknet_session_connect(const std::string& ip, uint16_t port,
                                       int timeoutMs, const std::string& nickname,
                                       const std::string& advertisedServerVersion = "");

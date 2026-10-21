@@ -29,13 +29,15 @@ struct ProbeResult {
   std::string serverName;        // dari PlayerInit, bila server mengirimnya
   std::string rpcSummary;        // ringkasan RPC yang terlihat selama probe
   std::string stateSummary;      // event state terakhir yang berhasil direduce
-  std::string variant;           // "samp" / "omp" / ""
+  // Transport branch only: never game admission or an official OMP identity.
+  std::string variant;           // "samp" / "omp" / "cache" / ""
+  bool openMpServerEnvelope = false;  // exact access record enabled inbound unwrap
   std::string log;               // log langkah demi langkah
   std::string error;
 };
 
-// Probe uses the same fixed ClientJoin profile selection as a retained session;
-// blank/unknown advertisement remains baseline.
+// Probe uses the same fixed ClientJoin profile and query-gated cookie transport
+// selection as a retained session; blank/unknown advertisement remains baseline.
 ProbeResult raknet_probe(const std::string& ip, uint16_t port, int timeoutMs = 1500,
                          const std::string& advertisedServerVersion = "");
 

@@ -77,12 +77,49 @@ xordCookie = cookie ^ 0x6D70      // OMP_PETARDED  (open.mp)
 ```
 
 `0x6969` = "ii", `0x6D70` = "mp". Nama konstanta di source: `SAMP_PETARDED`,
-`OMP_PETARDED`, `MAGIC_OMP_IDENTIFICATION_NUMBER = 0x006F6D70` ("omp").
+`OMP_PETARDED`, `MAGIC_OMP_IDENTIFICATION_NUMBER = 0x006F6D70` (komentar source
+menyebutnya `omp`; writer native-`uint32_t` saat ini menghasilkan bytes LE
+`70 6D 6F 00`).
 
 **Catatan penting:** cookie di-*reseed* berkala oleh server. Kalau echo datang
 terlambat (beberapa detik), cookie sudah berubah dan server mengirim cookie baru.
 Implementasi harus: probe → terima cookie → echo **segera** → kalau dapat cookie
-baru, ulangi dengan nilai terbaru (maks 5x).
+baru, ulangi dengan nilai terbaru (maks 5x). Probe raw zero-cookie sendiri boleh
+hilang walau query UDP lain hidup; SampDroid mengulangnya maksimal tiga kali di
+dalam deadline handshake yang sama sebelum menyatakan endpoint tidak membalas.
+
+### 2.1 Cabang OMP yang dibatasi oleh query
+
+SampDroid tidak memilih cookie OMP dari nama host, nickname, atau teks banner
+bebas. Hanya rule query baru berbentuk `omp <versi>`—bentuk yang ditulis source
+`LegacyNetwork` open.mp—yang memprioritaskan `^ 0x6D70`; semua input lain tetap
+SA-MP dulu. Bila echo OMP tidak dibalas, satu fallback bounded `^ 0x6969` masih
+dicoba. Pemilihan ini **tidak** mengubah enam field ClientJoin atau menambahkan
+marker/version official yang tidak diimplementasikan.
+
+Pada source RakNet open.mp revision `64d8ddb`, bila OMP encryption server aktif,
+server kemudian mengirim **raw 13 byte** sebelum `ID_OPEN_CONNECTION_REPLY`:
+
+```text
+5E | 70 6D 6F 00 | key u32 LE | client-mod-version u32 LE
+```
+
+`5E` adalah decimal 94 (`ID_USER_PACKET_ENUM` pada `RAKNET_LEGACY`), sedangkan
+empat byte berikutnya adalah `MAGIC_OMP_IDENTIFICATION_NUMBER`. SampDroid
+menerima hanya panjang/magic tersebut, menyimpan key di native (tidak diekspor ke
+UI/log), lalu memverifikasi/dekripsi setiap datagram server berikutnya sebagai:
+
+```text
+wire[0] == XOR_i(plain[i] & 0xAA)
+plain[i] = wire[i + 1] XOR keyLE[i mod 4]
+```
+
+Mismatch checksum menutup sesi; byte tidak pernah diteruskan ke decoder RakNet
+legacy. Ini hanya envelope **server→client**. Paket Android→server tetap memakai
+wrapper SA-MP bab berikutnya, sesuai `SocketLayer::RecvFrom` source. Loopback
+host mencakup raw access → encrypted OpenReply → AUTH/ACCEPTED/bootstrap →
+PlayerInit/RequestClass dan fallback legacy; belum ada probe OMP-cookie UIF
+publik setelah implementasi ini, jadi tidak ada klaim admission UIF baru.
 
 ---
 
@@ -240,12 +277,13 @@ tidak mengirim InitGame.
 | Tahap | Status | Bukti |
 |---|---|---|
 | Query protocol (i/r/c/d/p) | ✅ | 1.237 server dari open.mp index, live query |
-| Open connection + cookie | ✅ | server 185.169.134.67 membalas `19 00` |
+| Open connection + cookie SA-MP | ✅ | server 185.169.134.67 membalas `19 00` |
+| Cookie OMP + envelope inbound optional | 🧪 + transport live | parser 13-byte exact, checksum/XOR source `64d8ddb`, full loopback OpenReply→PlayerInit/RequestClass dan fallback SA-MP host. UIF 2026-10-21 rule `omp 1.5.8.3170` menerima cookie OMP/Auth/Accepted dan ACK bootstrap dalam window 2 s, tetapi tidak mengirim raw access/envelope; itu bukan bukti setting encryption global atau admission |
 | Obfuscation layer | ✅ | semua fase di atas butuh ini |
 | Reliability datagram | ✅ **byte-identical** dengan BitStream RakNet; inbound `RELIABLE_ORDERED` kini juga dirilis per-channel hanya setelah run index kontigu (buffer bounded/overflow → close session) |
 | Connection request accepted | ✅ **diterima dari server live** |
 | AUTH_KEY challenge/response | ✅ 256 entri tabel, lookup runtime |
-| ClientJoin / PlayerConnect RPC 25 | 🧪 frame msg=5/SyncRPC channel 2 dan burst post-accept 2/3/4/5 lengkap 70-byte byte-identical dengan BitStream legacy FakeBots; reliable ACK/retry tetap per-frame, snapshot/probe memisahkan ACK transport msg 2/4/5, dan loopback memverifikasi burst keluar sebagai satu datagram. Reader comparator open.mp current juga mengunci enam field baseline/DL dan absent marker. Probe UIF SampDroid source-current 2026-10-21 (1.000 ms, tanpa traffic gameplay) mencapai accepted + ClientJoin dan menerima ACK RakNet untuk msg 2/4/5, lalu 9 packet/4 RPC (`SetPlayerColor` ×2, `SendClientMessage` ×2) tanpa PlayerInit/class/spawn. ACK hanya receipt RakNet—bukan receipt semantik ClientJoin, admission, atau gameplay |
+| ClientJoin / PlayerConnect RPC 25 | 🧪 frame msg=5/SyncRPC channel 2 dan burst post-accept 2/3/4/5 lengkap 70-byte byte-identical dengan BitStream legacy FakeBots; reliable ACK/retry tetap per-frame, snapshot/probe memisahkan ACK transport msg 2/4/5, dan loopback memverifikasi burst keluar sebagai satu datagram. Reader comparator open.mp current juga mengunci enam field baseline/DL dan absent marker. Probe UIF SampDroid source-current 2026-10-21 (1.000 ms, tanpa traffic gameplay) mencapai accepted + ClientJoin dan menerima ACK RakNet untuk msg 2/4/5, lalu 9 packet/4 RPC (`SetPlayerColor` ×2, `SendClientMessage` ×2) tanpa PlayerInit/class/spawn. Probe OMP terpisah dengan rule segar `omp 1.5.8.3170` (window 2.000 ms) juga accepted + ACK msg 2/4/5, tetapi 5 packet/0 RPC tanpa PlayerInit/class/spawn. ACK hanya receipt RakNet—bukan receipt semantik ClientJoin, admission, atau gameplay |
 | ACK reliable | ✅ setiap fragment reliable di-ACK; outbound sort/dedupe serta range contiguous non-wrap bounded |
 | Multi-paket datagram + split reassembly | ✅ sebelum RPC diserahkan ke decoder |
 | PlayerInit RPC 139 | ✅ decoder wire format + test vector; observability di UI |
