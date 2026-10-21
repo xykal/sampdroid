@@ -161,12 +161,16 @@ digabungkan atau dipromosikan menjadi admission/gameplay:
    satu pong tanpa retransmit/error, tetapi lagi-lagi tanpa `PlayerInit`, class,
    atau spawn.
 
-Tidak ada traffic UIF lagi setelah coalescing ditambahkan. Hasil kedua tidak
-memberi bukti langsung receipt semantik ClientJoin meski tidak tampak retransmit;
-keduanya hanya menunjukkan transport/broadcast yang aktif. Probe RakNet
-referensi read-only memang melihat `InitGame`, tetapi itu comparator compatibility,
-bukan bukti path SampDroid. Tidak ada spawn, sync, chat, command, atau input
-gameplay yang dikirim pada observasi UIF mana pun.
+Pada 2026-10-21, setelah coalescing saat ini lolos strict host, ASan/UBSan,
+dan CI Android dual-ABI, satu probe SampDroid bounded terbaru juga mencapai open,
+cookie, auth, accepted, lalu mengirim ClientJoin baseline `0.3.7-R2`/4057.
+Server mengirim 7 packet / 2 RPC (`SetPlayerColor`, `PlayerDeath`) dan satu
+remote retained, tetapi tetap **tidak** mengirim `PlayerInit`, class, atau spawn.
+Probe segera menutup socket dan tidak mengirim class, sync, chat, command, atau
+input gameplay. Jadi hasil baru ini menguji coalescing pada endpoint UIF nyata,
+tetapi tetap bukan receipt semantik ClientJoin/admission atau bukti gameplay.
+Probe RakNet referensi read-only yang memang melihat `InitGame` hanya comparator
+compatibility, bukan bukti path SampDroid.
 
 ## Static GTA world filter dari server (RPC 43)
 

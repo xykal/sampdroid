@@ -63,7 +63,7 @@ live-server penuh setara PC.
 |---|---:|---|
 | Browser + query server | ✅ | info, rules, player list, ping native |
 | RakNet 2.x open/cookie/auth | ✅ | diverifikasi terhadap server live |
-| `CONNECTION_REQUEST_ACCEPTED` + ClientJoin | 🧪 | frame ClientJoin msg=5/SyncRPC channel 2 **dan** burst post-accept 2/3/4/5 70-byte dalam satu datagram no-ACK byte-identical dengan BitStream legacy FakeBots; reliable tetap punya ACK/retry masing-masing; peer loopback memastikan empat frame itu keluar bersama-sama dan, saat burst pertama sengaja dibuang, msg 2/4/5 diretry terpisah dengan identitas asli. Profil default tetap `0.3.7-R2`/4057; hanya hasil query yang persis `0.3.DL-R1` (abaikan huruf besar/kecil dan whitespace tepi) memilih ClientJoin `0.3.DL-R1`/4062 serta XOR challenge 4062, dengan regresi payload + retained-session loopback. Profile itu juga memilih layout core DL `CustomSkin/CustomModelID` untuk StreamIn/SetSpawnInfo/class/SetPlayerSkin/ShowActor serta ModelInfo 179 pasif bounded untuk fallback custom-object→base stock; downloader/model-artwork custom DL penuh belum diklaim. UIF belum memberi `PlayerInit`/class/spawn; coalescing/profile baru tervalidasi host, bukan receipt semantik/live admission |
+| `CONNECTION_REQUEST_ACCEPTED` + ClientJoin | 🧪 | frame ClientJoin msg=5/SyncRPC channel 2 **dan** burst post-accept 2/3/4/5 70-byte dalam satu datagram no-ACK byte-identical dengan BitStream legacy FakeBots; reliable tetap punya ACK/retry masing-masing; peer loopback memastikan empat frame itu keluar bersama-sama dan, saat burst pertama sengaja dibuang, msg 2/4/5 diretry terpisah dengan identitas asli. Profil default tetap `0.3.7-R2`/4057; hanya hasil query yang persis `0.3.DL-R1` (abaikan huruf besar/kecil dan whitespace tepi) memilih ClientJoin `0.3.DL-R1`/4062 serta XOR challenge 4062, dengan regresi payload + retained-session loopback. Profile itu juga memilih layout core DL `CustomSkin/CustomModelID` untuk StreamIn/SetSpawnInfo/class/SetPlayerSkin/ShowActor serta ModelInfo 179 pasif bounded untuk fallback custom-object→base stock; downloader/model-artwork custom DL penuh belum diklaim. Probe UIF 2026-10-21 menjalankan coalescing baseline hingga accepted + ClientJoin dan menerima 7 packet/2 RPC, tetapi belum memberi `PlayerInit`/class/spawn; ini bukan receipt semantik/live admission |
 | ACK reliable + multi-packet datagram | ✅ | retransmisi tetap di-ACK lalu gate receipt `u16` bounded membuang duplikat sebelum split/reducer |
 | Split reassembly | ✅ | fragment disusun sebelum RPC didecode |
 | State pemain dasar | ✅ | `PlayerInit`, Join/Quit/Name/Color, StreamIn/Out, roster score/ping RPC 155, policy nametag `ShowNameTags`/jarak + RPC 80 per-player, dan local spawn/posisi/vitals → model native bounded |
@@ -96,10 +96,10 @@ serta deadline connect saat cookie berhenti. Batch DL profile/catalog saat ini
 juga lulus strict host C++17 dan ASan+UBSan (termasuk cap 4.096 mapping,
 malformed non-mutation, legacy reject, reset, dan fallback object/attachment);
 workflow GitHub sekarang mengulang sanitizer itu sebelum Gradle. Build GitHub
-Actions `39475012329` adalah validasi Kotlin/GLES, NDK packaging, dan kedua ABI
-**sebelum batch ini**; artifact debug internalnya lolos cek ZIP/ELF
-`armeabi-v7a` + `arm64-v8a`, tetapi batch lokal ini masih wajib menjalani CI
-Android baru sebelum rilis.
+Actions [`39570681426`](https://github.com/xykal/sampdroid/actions/runs/39570681426)
+lulus strict host, ASan+UBSan, Kotlin/GLES, NDK packaging, serta verifikasi APK
+debug berisi `libsampdroid.so` untuk `armeabi-v7a` dan `arm64-v8a`. Artifact itu
+hanya validasi internal; belum release signed dan belum boleh dipublikasikan.
 
 Itu **bukan** bukti kompatibilitas gameplay/live UIF. Query `INFO` UDP minimal
 pada 2026-10-20 ke `play.uifserver.net:7776` memang mendapat respons publik
@@ -111,11 +111,14 @@ source 2/3/4/5, sesi sembilan detik accepted/aktif menerima 36 packet/34 RPC
 broadcast tanpa `PlayerInit`, class, atau spawn; (2) satu konfirmasi bounded
 sesudah koreksi urutan itu—**sebelum** implementasi coalescing saat ini—menerima
 38 packet/33 RPC, satu pong, serta tidak melihat retransmit/error, namun tetap
-tanpa `PlayerInit`, class, atau spawn. Tidak ada traffic UIF lagi setelah
-coalescing ditambahkan. Tidak satu pun observasi membuktikan ACK/receipt semantik
-ClientJoin, class/spawn, atau gameplay UIF; tidak ada sync, chat, command, atau
-input gameplay dikirim. Coalescing hanya bukti fidelity source + regresi host,
-bukan perbaikan admission UIF. Validasi APK/device terukur tetap pending.
+tanpa `PlayerInit`, class, atau spawn; dan (3) probe SampDroid 2026-10-21 sesudah
+coalescing mencapai open/cookie/auth/accepted + ClientJoin baseline dan menerima
+7 packet/2 RPC (`SetPlayerColor`, `PlayerDeath`), tetapi lagi-lagi tanpa
+`PlayerInit`, class, atau spawn. Probe ketiga langsung menutup socket tanpa
+class/spawn/sync/chat/command/input gameplay. Tidak satu pun observasi membuktikan
+ACK/receipt semantik ClientJoin, class/spawn, atau gameplay UIF. Coalescing kini
+punya exercise endpoint nyata selain fidelity source + regresi host, tetapi belum
+terbukti memperbaiki admission UIF. Validasi APK/device terukur masih pending.
 Workspace ini tidak memiliki Gradle/Kotlin/Android SDK lokal; build APK tetap
 hanya boleh lewat GitHub Actions sesuai gate rilis.
 

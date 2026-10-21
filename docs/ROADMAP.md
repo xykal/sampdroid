@@ -30,10 +30,13 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
   accepted/aktif menerima 36 packet/34 RPC broadcast tanpa PlayerInit/class/spawn.
   Satu konfirmasi bounded sesudah koreksi urutan—sebelum coalescing saat ini—
   menerima 38 packet/33 RPC dan satu pong tanpa retransmit/error, tetapi juga
-  tanpa PlayerInit/class/spawn. Tidak ada traffic UIF lagi sesudah coalescing;
-  reference RakNet read-only yang mendapat PlayerInit hanya comparator, bukan
-  bukti path SampDroid. PlayerInit/class/spawn SampDroid pada APK/device dan
-  server lain masih pending.
+  tanpa PlayerInit/class/spawn. Probe SampDroid terbaru sesudah coalescing pada
+  2026-10-21 mencapai open/cookie/auth/accepted + ClientJoin legacy dan menerima
+  7 packet/2 RPC (`SetPlayerColor`, `PlayerDeath`), namun tetap tanpa PlayerInit,
+  class, atau spawn; tidak ada class/sync/chat/command/input yang dikirim lalu
+  socket langsung ditutup. Reference RakNet read-only yang mendapat PlayerInit
+  hanya comparator, bukan bukti path SampDroid. PlayerInit/class/spawn SampDroid
+  pada APK/device dan server lain masih pending.
 - [x] Decode player StreamIn/StreamOut, exact non-DL `SetPlayerSkin` (153), dan
   broadcast remote `PlayerFootSync` (207) ke state entity bounded; model snapshot
   menuju renderer DFF/proxy bounded ada, tetapi animasi/capture nyata belum.
@@ -139,8 +142,8 @@ Winlator dengan APK Android native. Tidak ada milestone launcher modpack PC.
 - [~] Accessibility source-only: LAYOUT sekarang mengizinkan tombol sampai 172%,
   menyimpan toggle kontras tinggi, serta memberi preset satu tangan kiri/kanan
   yang masih bebas digeser untuk overlay in-scene/radar. Host strict + ASan/UBSan
-  terbaru lulus; TalkBack/device/sensor dan APK dual-ABI validation untuk batch ini
-  masih berikutnya.
+  terbaru dan GitHub Actions `39570681426` dual-ABI lulus; TalkBack/device/sensor
+  serta validasi perangkat nyata masih berikutnya.
 
 ## Milestone 0.9 — world/game bridge
 

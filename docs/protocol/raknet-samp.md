@@ -213,7 +213,7 @@ independensi kedua counter.
 | Reliability datagram | ✅ **byte-identical** dengan BitStream RakNet; inbound `RELIABLE_ORDERED` kini juga dirilis per-channel hanya setelah run index kontigu (buffer bounded/overflow → close session) |
 | Connection request accepted | ✅ **diterima dari server live** |
 | AUTH_KEY challenge/response | ✅ 256 entri tabel, lookup runtime |
-| ClientJoin / PlayerConnect RPC 25 | 🧪 frame msg=5/SyncRPC channel 2 dan burst post-accept 2/3/4/5 lengkap 70-byte byte-identical dengan BitStream legacy FakeBots; reliable ACK/retry tetap per-frame dan loopback memverifikasi burst keluar sebagai satu datagram. UIF SampDroid belum menerima PlayerInit/class/spawn; coalescing belum diuji lagi live dan tidak membuktikan receipt ClientJoin |
+| ClientJoin / PlayerConnect RPC 25 | 🧪 frame msg=5/SyncRPC channel 2 dan burst post-accept 2/3/4/5 lengkap 70-byte byte-identical dengan BitStream legacy FakeBots; reliable ACK/retry tetap per-frame dan loopback memverifikasi burst keluar sebagai satu datagram. Probe UIF SampDroid 2026-10-21 juga menjalankan coalescing ke endpoint nyata dan mencapai accepted + ClientJoin, tetapi hanya menerima 7 packet/2 RPC broadcast tanpa PlayerInit/class/spawn; bukan receipt ClientJoin atau admission |
 | ACK reliable | ✅ setiap fragment reliable di-ACK; outbound sort/dedupe serta range contiguous non-wrap bounded |
 | Multi-paket datagram + split reassembly | ✅ sebelum RPC diserahkan ke decoder |
 | PlayerInit RPC 139 | ✅ decoder wire format + test vector; observability di UI |
@@ -327,9 +327,12 @@ Dua observasi native UIF pada 2026-10-20 perlu dipisahkan: sebelum koreksi uruta
 tanpa `PlayerInit`/class/spawn. Satu konfirmasi bounded sesudah koreksi urutan
 itu—**sebelum** coalescing yang sekarang—menerima 38 packet/33 RPC, satu pong,
 dan tidak melihat retransmit/error, namun tetap tanpa `PlayerInit`/class/spawn.
-Tidak ada traffic UIF lagi sesudah coalescing. Jadi fixture/coalescing adalah
-fidelity source dan bukti host saja; tidak boleh disebut perbaikan admission,
-ACK/receipt semantik ClientJoin, atau gameplay UIF.
+Pada 2026-10-21, probe SampDroid sesudah coalescing mencapai open/cookie/auth/
+accepted lalu ClientJoin baseline dan menerima 7 packet/2 RPC (`SetPlayerColor`,
+`PlayerDeath`), namun tetap tidak menerima `PlayerInit`, class, atau spawn. Ia
+segera menutup socket tanpa class/spawn/sync/chat/command/input gameplay. Jadi
+fixture/coalescing sekarang punya exercise endpoint UIF nyata, tetapi tetap hanya
+bukti transport/broadcast—bukan receipt ClientJoin atau admission.
 
 Setiap paket reliable yang diterima segera di-ACK, termasuk **setiap fragment**
 dari split packet. Sesudah ACK, gate receipt transport yang dibatasi 4.096 nomor
