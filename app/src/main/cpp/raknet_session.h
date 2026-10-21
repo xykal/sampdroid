@@ -588,6 +588,12 @@ struct WorldSnapshot {
 struct SessionSnapshot {
   bool active = false;
   bool accepted = false;
+  // Per-record RakNet ACK telemetry for the source-style post-accept burst.
+  // These receipts are deliberately separate from `joined`/`playerInit`: an
+  // ACK proves only peer transport receipt, not SA-MP gameplay admission.
+  bool newIncomingTransportAcked = false;
+  bool staticDataTransportAcked = false;
+  bool clientJoinTransportAcked = false;
   bool joined = false;
   bool playerInit = false;
   bool classSelectionKnown = false;

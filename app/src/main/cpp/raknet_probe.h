@@ -9,7 +9,15 @@ struct ProbeResult {
   bool cookieOk = false;         // cookie challenge lolos
   bool authenticated = false;    // challenge AUTH_KEY berhasil dijawab
   bool accepted = false;         // CONNECTION_REQUEST_ACCEPTED diterima
-  bool joined = false;           // ClientJoin diproses server (ada stream balik)
+  // These are RakNet transport receipts only. They say the peer ACKed the
+  // exact source-style post-accept records, never that SA-MP semantically
+  // admitted ClientJoin or will send PlayerInit/class/spawn.
+  bool newIncomingTransportAcked = false;
+  bool staticDataTransportAcked = false;
+  bool clientJoinTransportAcked = false;
+  // Kept semantic: only a decoded PlayerInit marks game admission here; a
+  // broadcast or transport ACK after ClientJoin cannot set it.
+  bool joined = false;
   bool playerInit = false;       // RPC 139 berhasil di-reassemble + di-decode
   uint16_t playerId = 0;
   int receivedPackets = 0;

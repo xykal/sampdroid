@@ -213,7 +213,7 @@ independensi kedua counter.
 | Reliability datagram | ✅ **byte-identical** dengan BitStream RakNet; inbound `RELIABLE_ORDERED` kini juga dirilis per-channel hanya setelah run index kontigu (buffer bounded/overflow → close session) |
 | Connection request accepted | ✅ **diterima dari server live** |
 | AUTH_KEY challenge/response | ✅ 256 entri tabel, lookup runtime |
-| ClientJoin / PlayerConnect RPC 25 | 🧪 frame msg=5/SyncRPC channel 2 dan burst post-accept 2/3/4/5 lengkap 70-byte byte-identical dengan BitStream legacy FakeBots; reliable ACK/retry tetap per-frame dan loopback memverifikasi burst keluar sebagai satu datagram. Probe UIF SampDroid 2026-10-21 juga menjalankan coalescing ke endpoint nyata dan mencapai accepted + ClientJoin, tetapi hanya menerima 7 packet/2 RPC broadcast tanpa PlayerInit/class/spawn; bukan receipt ClientJoin atau admission |
+| ClientJoin / PlayerConnect RPC 25 | 🧪 frame msg=5/SyncRPC channel 2 dan burst post-accept 2/3/4/5 lengkap 70-byte byte-identical dengan BitStream legacy FakeBots; reliable ACK/retry tetap per-frame, snapshot/probe memisahkan ACK transport msg 2/4/5, dan loopback memverifikasi burst keluar sebagai satu datagram. ACK ClientJoin hanya receipt RakNet—bukan admission. Probe UIF SampDroid 2026-10-21 juga menjalankan coalescing ke endpoint nyata dan mencapai accepted + ClientJoin, tetapi hanya menerima 7 packet/2 RPC broadcast tanpa PlayerInit/class/spawn; bukan receipt semantik ClientJoin atau admission |
 | ACK reliable | ✅ setiap fragment reliable di-ACK; outbound sort/dedupe serta range contiguous non-wrap bounded |
 | Multi-paket datagram + split reassembly | ✅ sebelum RPC diserahkan ke decoder |
 | PlayerInit RPC 139 | ✅ decoder wire format + test vector; observability di UI |

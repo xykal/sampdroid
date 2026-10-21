@@ -190,7 +190,36 @@ struct Net {
 
 enum class ReliablePurpose : uint8_t {
   Generic,
+  // The three source-style records sent immediately after RakNet acceptance.
+  // Keep their receipts distinct so diagnostics can identify transport loss
+  // without promoting an ACK into ClientJoin/gameplay admission.
+  PostAcceptNewIncoming,
+  PostAcceptStaticData,
+  ClientJoin,
   SpawnConfirmation,
+};
+
+struct BootstrapTransportReceipts {
+  bool newIncomingAcked = false;
+  bool staticDataAcked = false;
+  bool clientJoinAcked = false;
+
+  void note(ReliablePurpose purpose) {
+    switch (purpose) {
+      case ReliablePurpose::PostAcceptNewIncoming:
+        newIncomingAcked = true;
+        break;
+      case ReliablePurpose::PostAcceptStaticData:
+        staticDataAcked = true;
+        break;
+      case ReliablePurpose::ClientJoin:
+        clientJoinAcked = true;
+        break;
+      case ReliablePurpose::Generic:
+      case ReliablePurpose::SpawnConfirmation:
+        break;
+    }
+  }
 };
 
 struct PendingReliable {
@@ -229,11 +258,16 @@ bool sendTrackedReliable(Net& net, uint16_t port, std::vector<PendingReliable>& 
 }
 
 void consumeTrackedReliableAcks(std::vector<PendingReliable>& pending,
-                                const std::vector<uint16_t>& messageNumbers) {
+                                const std::vector<uint16_t>& messageNumbers,
+                                BootstrapTransportReceipts* bootstrapReceipts = nullptr) {
   if (pending.empty() || messageNumbers.empty()) return;
   pending.erase(std::remove_if(pending.begin(), pending.end(), [&](const PendingReliable& record) {
-    return std::find(messageNumbers.begin(), messageNumbers.end(), record.messageNumber) !=
-           messageNumbers.end();
+    const bool acknowledged = std::find(messageNumbers.begin(), messageNumbers.end(),
+                                        record.messageNumber) != messageNumbers.end();
+    if (acknowledged && bootstrapReceipts != nullptr) {
+      bootstrapReceipts->note(record.purpose);
+    }
+    return acknowledged;
   }), pending.end());
 }
 
@@ -273,6 +307,9 @@ struct LiveSession {
   bool joined = false;
   // Copied from a fixed handshake profile before socket ownership is retained.
   std::string clientProtocol;
+  // Receipt flags start during synchronous connect and keep updating in poll.
+  // They are diagnostics only; WorldState/PlayerInit remains the admission gate.
+  BootstrapTransportReceipts bootstrapTransportReceipts;
   int receivedPackets = 0;
   int receivedRpcs = 0;
   int splitFragments = 0;
@@ -497,6 +534,7 @@ void consumeRemoteAcks(LiveSession& session, const std::vector<uint16_t>& messag
         ? rttMs
         : static_cast<uint32_t>((static_cast<uint64_t>(session.smoothedReliableRttMs) * 7u +
                                  rttMs) / 8u);
+    session.bootstrapTransportReceipts.note(it->purpose);
     if (it->purpose == ReliablePurpose::SpawnConfirmation) {
       // The server has transport-ACKed SyncRPC PlayerSpawn, so SyncPacket USeq
       // movement can no longer race in ahead of that spawned-state transition.
@@ -1404,6 +1442,9 @@ SessionSnapshot snapshotFrom(const LiveSession* session) {
 
   snapshot.active = session->net && session->net->fd >= 0;
   snapshot.accepted = session->accepted;
+  snapshot.newIncomingTransportAcked = session->bootstrapTransportReceipts.newIncomingAcked;
+  snapshot.staticDataTransportAcked = session->bootstrapTransportReceipts.staticDataAcked;
+  snapshot.clientJoinTransportAcked = session->bootstrapTransportReceipts.clientJoinAcked;
   snapshot.joined = session->joined;
   snapshot.playerInit = session->world.initialized();
   snapshot.classSelectionKnown = session->world.classSelection().valid;
@@ -2270,6 +2311,9 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   // a permanent hole before NEW_INCOMING / ClientJoin.
   logln(res, "[3] CONNECTION_REQUEST (reliable, msg=0)");
   std::vector<PendingReliable> handshakePending;
+  // This state survives the synchronous handshake → retained-session handoff.
+  // It records only ACKs for the post-accept records below, not game admission.
+  BootstrapTransportReceipts bootstrapTransportReceipts;
   if (!sendTrackedReliable(net, port, handshakePending,
                            raknet::buildReliable(0, {ID_CONNECTION_REQUEST}), 0)) {
     res.error = "gagal mengirim CONNECTION_REQUEST";
@@ -2293,7 +2337,8 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
       continue;
     }
     raknet::Datagram dg = raknet::decodeDatagram(resp);
-    consumeTrackedReliableAcks(handshakePending, dg.receivedAckMessageNumbers);
+    consumeTrackedReliableAcks(handshakePending, dg.receivedAckMessageNumbers,
+                               &bootstrapTransportReceipts);
     if (!dg.ackMessageNumbers.empty()) {
       net.send(wrap_packet(raknet::buildAck(dg.ackMessageNumbers), port));
     }
@@ -2429,9 +2474,12 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   // loss recovery may legally send a later frame alone without changing its
   // message/order identity.
   const size_t pendingBeforeBootstrap = handshakePending.size();
-  if (!queueTrackedReliable(port, handshakePending, incomingFrame, incomingMessageNumber) ||
-      !queueTrackedReliable(port, handshakePending, staticDataFrame, staticDataMessageNumber) ||
-      !queueTrackedReliable(port, handshakePending, joinFrame, joinMessageNumber)) {
+  if (!queueTrackedReliable(port, handshakePending, incomingFrame, incomingMessageNumber,
+                            ReliablePurpose::PostAcceptNewIncoming) ||
+      !queueTrackedReliable(port, handshakePending, staticDataFrame, staticDataMessageNumber,
+                            ReliablePurpose::PostAcceptStaticData) ||
+      !queueTrackedReliable(port, handshakePending, joinFrame, joinMessageNumber,
+                            ReliablePurpose::ClientJoin)) {
     handshakePending.resize(pendingBeforeBootstrap);
     res.error = "antrian reliable bootstrap penuh";
     return res;
@@ -2473,7 +2521,8 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
       continue;
     }
     raknet::Datagram dg = raknet::decodeDatagram(resp);
-    consumeTrackedReliableAcks(handshakePending, dg.receivedAckMessageNumbers);
+    consumeTrackedReliableAcks(handshakePending, dg.receivedAckMessageNumbers,
+                               &bootstrapTransportReceipts);
     if (!dg.ackMessageNumbers.empty()) {
       net.send(wrap_packet(raknet::buildAck(dg.ackMessageNumbers), port));
     }
@@ -2557,6 +2606,12 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     if (!res.error.empty() || !resendTrackedReliableDue(net, handshakePending, res.error)) break;
   }
 
+  // These values preserve precisely what the peer ACKed during the bounded
+  // connect phase. A later retained poll may advance the same flags, but none
+  // of them alter `joined` or replace PlayerInit as the semantic admission gate.
+  res.newIncomingTransportAcked = bootstrapTransportReceipts.newIncomingAcked;
+  res.staticDataTransportAcked = bootstrapTransportReceipts.staticDataAcked;
+  res.clientJoinTransportAcked = bootstrapTransportReceipts.clientJoinAcked;
   res.receivedPackets = rxPackets;
   res.receivedRpcs = rpcCount;
   res.splitFragments = splitFragments;
@@ -2565,6 +2620,11 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
   res.rpcSummary = rpcSummary;
   res.stateSummary = stateSummary;
   res.playerInit = world.initialized();
+  logln(res, std::string("    ACK transport bootstrap: NEW_INCOMING=") +
+                 (res.newIncomingTransportAcked ? "ya" : "belum") +
+                 " static=" + (res.staticDataTransportAcked ? "ya" : "belum") +
+                 " ClientJoin=" + (res.clientJoinTransportAcked ? "ya" : "belum") +
+                 " (bukan admission)");
   if (res.playerInit) {
     res.playerId = world.playerInit().playerId;
     res.serverName = world.playerInit().serverName;
@@ -2620,6 +2680,7 @@ static ProbeResult raknet_connect_impl(const std::string& ip, uint16_t port, int
     live->accepted = res.accepted;
     live->joined = res.joined;
     live->clientProtocol = res.clientProtocol;
+    live->bootstrapTransportReceipts = bootstrapTransportReceipts;
     live->receivedPackets = rxPackets;
     live->receivedRpcs = rpcCount;
     live->splitFragments = splitFragments;
@@ -2663,6 +2724,9 @@ SessionSnapshot raknet_session_connect(const std::string& ip, uint16_t port, int
   if (!gLiveSession) {
     SessionSnapshot snapshot;
     snapshot.accepted = result.accepted;
+    snapshot.newIncomingTransportAcked = result.newIncomingTransportAcked;
+    snapshot.staticDataTransportAcked = result.staticDataTransportAcked;
+    snapshot.clientJoinTransportAcked = result.clientJoinTransportAcked;
     snapshot.joined = result.joined;
     snapshot.playerInit = result.playerInit;
     snapshot.playerId = result.playerId;
